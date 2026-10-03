@@ -17,7 +17,7 @@ public sealed class GameEngineLifecycleTests
 
         game.Advance(1.625, 0, 0);
 
-        await Assert.That(game.Phase).IsEqualTo("playing");
+        await Assert.That(game.Phase).IsEqualTo(GamePhase.Playing);
         await Assert.That(game.Countdown).IsEqualTo(0);
         await Assert.That(game.BallX).IsEqualTo(0.5 + 0.55 * 0.025).Within(1e-10);
         await Assert.That(game.BallY).IsEqualTo(0.5 + 0.19 * 0.025).Within(1e-10);
@@ -33,7 +33,7 @@ public sealed class GameEngineLifecycleTests
 
         game.Advance(1.6, 0, 0);
 
-        await Assert.That(game.Phase).IsEqualTo("playing");
+        await Assert.That(game.Phase).IsEqualTo(GamePhase.Playing);
         await Assert.That(game.Countdown).IsEqualTo(0);
         await Assert.That(game.BallX).IsEqualTo(0.5);
         await Assert.That(game.BallY).IsEqualTo(0.5);
@@ -52,7 +52,7 @@ public sealed class GameEngineLifecycleTests
 
         await Assert.That(game.RightScore).IsEqualTo(1);
         await Assert.That(game.LeftScore).IsEqualTo(0);
-        await Assert.That(game.Phase).IsEqualTo("countdown");
+        await Assert.That(game.Phase).IsEqualTo(GamePhase.Countdown);
         await Assert.That(game.Countdown).IsEqualTo(1.6 - (step - timeToGoal)).Within(1e-10);
         await Assert.That(game.BallX).IsEqualTo(0.5);
         await Assert.That(game.BallY).IsEqualTo(0.5);
@@ -67,7 +67,7 @@ public sealed class GameEngineLifecycleTests
 
         await Assert.That(game.LeftScore).IsEqualTo(7);
         await Assert.That(game.RightScore).IsEqualTo(0);
-        await Assert.That(game.Phase).IsEqualTo("gameover");
+        await Assert.That(game.Phase).IsEqualTo(GamePhase.GameOver);
         await Assert.That(game.Countdown).IsEqualTo(0);
         await Assert.That(game.BallVx).IsEqualTo(0);
         await Assert.That(game.BallVy).IsEqualTo(0);
@@ -80,7 +80,7 @@ public sealed class GameEngineLifecycleTests
         await Assert.That(game.BallX).IsEqualTo(finishedX);
 
         game.StartMatch();
-        await Assert.That(game.Phase).IsEqualTo("countdown");
+        await Assert.That(game.Phase).IsEqualTo(GamePhase.Countdown);
         await Assert.That(game.RoundId).IsEqualTo(13);
         await Assert.That(game.LeftScore).IsEqualTo(0);
         await Assert.That(game.RightScore).IsEqualTo(0);
@@ -96,7 +96,7 @@ public sealed class GameEngineLifecycleTests
 
         game.Advance(0.05, 1, -1);
 
-        await Assert.That(game.Phase).IsEqualTo("gameover");
+        await Assert.That(game.Phase).IsEqualTo(GamePhase.GameOver);
         await Assert.That(game.LeftY).IsEqualTo(0.5 + 0.85 * timeToGoal).Within(1e-10);
         await Assert.That(game.RightY).IsEqualTo(0.5 - 0.85 * timeToGoal).Within(1e-10);
     }

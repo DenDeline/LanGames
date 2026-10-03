@@ -1,0 +1,128 @@
+using System.Buffers;
+using System.Text.Json;
+using LanPong;
+using MessagePack;
+using TUnit.Assertions;
+using TUnit.Assertions.Extensions;
+using TUnit.Core;
+
+namespace LanPong.Tests;
+
+public sealed class PeerEnumWireTests
+{
+    private static readonly JsonSerializerOptions WebJsonOptions = new(JsonSerializerDefaults.Web);
+
+    [Test]
+    public async Task Snapshot_EnumValuesKeepTheBrowserJsonContract()
+    {
+        foreach (var (role, name) in new[]
+                 {
+                     (PeerRole.None, "none"),
+                     (PeerRole.Host, "host"),
+                     (PeerRole.Guest, "guest")
+                 })
+        {
+            using var json = JsonDocument.Parse(JsonSerializer.Serialize(Snapshot(role, ConnectionState.Idle, GamePhase.Waiting), WebJsonOptions));
+            await Assert.That(json.RootElement.GetProperty("role").GetString()).IsEqualTo(name);
+        }
+
+        foreach (var (connection, name) in new[]
+                 {
+                     (ConnectionState.Idle, "idle"),
+                     (ConnectionState.Waiting, "waiting"),
+                     (ConnectionState.Connecting, "connecting"),
+                     (ConnectionState.Connected, "connected")
+                 })
+        {
+            using var json = JsonDocument.Parse(JsonSerializer.Serialize(Snapshot(PeerRole.Host, connection, GamePhase.Waiting), WebJsonOptions));
+            await Assert.That(json.RootElement.GetProperty("connection").GetString()).IsEqualTo(name);
+        }
+
+        foreach (var (phase, name) in new[]
+                 {
+                     (GamePhase.Waiting, "waiting"),
+                     (GamePhase.Countdown, "countdown"),
+                     (GamePhase.Playing, "playing"),
+                     (GamePhase.GameOver, "gameover")
+                 })
+        {
+            using var json = JsonDocument.Parse(JsonSerializer.Serialize(Snapshot(PeerRole.Host, ConnectionState.Connected, phase), WebJsonOptions));
+            await Assert.That(json.RootElement.GetProperty("phase").GetString()).IsEqualTo(name);
+        }
+    }
+
+    [Test]
+    public async Task StatePacket_PhaseIsNumericAndRoundTripsAsEnum()
+    {
+        var bytes = WirePacketCodec.Serialize(new StatePacket { Phase = GamePhase.Playing, Sequence = 42 });
+        var (isInteger, phaseValue) = ReadPackedPhase(bytes);
+
+        await Assert.That(isInteger).IsTrue();
+        await Assert.That(phaseValue).IsEqualTo(2);
+        await Assert.That(WirePacketCodec.TryDeserialize(bytes, out var decoded)).IsTrue();
+        await Assert.That(decoded is StatePacket { Phase: GamePhase.Playing }).IsTrue();
+        await Assert.That(((StatePacket)decoded!).ToGameState().Phase).IsEqualTo(GamePhase.Playing);
+    }
+
+    [Test]
+    public async Task StatePacket_RejectsUndefinedPhaseValue()
+    {
+        var bytes = WirePacketCodec.Serialize(new StatePacket { Phase = (GamePhase)255 });
+
+        await Assert.That(WirePacketCodec.TryDeserialize(bytes, out var decoded)).IsFalse();
+        await Assert.That(decoded).IsNull();
+    }
+
+    [Test]
+    public async Task StatePacket_RejectsLegacyStringPhasePayload()
+    {
+        var bytes = LegacyV2StatePacket();
+
+        await Assert.That(WirePacketCodec.TryDeserialize(bytes, out var decoded)).IsFalse();
+        await Assert.That(decoded).IsNull();
+    }
+
+    private static PongSnapshot Snapshot(PeerRole role, ConnectionState connection, GamePhase phase) => new(
+        Role: role, Connection: connection, Message: "", UdpPort: 0,
+        LocalAddresses: [], PeerAddress: null,
+        LeftY: 0.5, RightY: 0.5, BallX: 0.5, BallY: 0.5,
+        BallVx: 0, BallVy: 0, LeftScore: 0, RightScore: 0,
+        Phase: phase, Countdown: 0, Tick: 0, RoundId: 0, PingMs: null);
+
+    private static (bool IsInteger, int Value) ReadPackedPhase(byte[] bytes)
+    {
+        var reader = new MessagePackReader(new ReadOnlySequence<byte>(bytes));
+        if (reader.ReadArrayHeader() != 2 || reader.ReadInt32() != 5 || reader.ReadArrayHeader() <= 11)
+            return (false, 0);
+
+        for (var key = 0; key < 11; key++) reader.Skip();
+        return reader.NextMessagePackType == MessagePackType.Integer
+            ? (true, reader.ReadInt32())
+            : (false, 0);
+    }
+
+    private static byte[] LegacyV2StatePacket()
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new MessagePackWriter(buffer);
+        writer.WriteArrayHeader(2);
+        writer.Write(5); // StatePacket union tag.
+        writer.WriteArrayHeader(14);
+        writer.Write(2); // Protocol v2 used a string phase.
+        writer.Write("session");
+        writer.Write(42L);
+        writer.Write(0.5);
+        writer.Write(0.5);
+        writer.Write(0.5);
+        writer.Write(0.5);
+        writer.Write(0.55);
+        writer.Write(0.19);
+        writer.Write(0);
+        writer.Write(0);
+        writer.Write("playing");
+        writer.Write(0.0);
+        writer.Write(1);
+        writer.Flush();
+        return buffer.WrittenSpan.ToArray();
+    }
+}

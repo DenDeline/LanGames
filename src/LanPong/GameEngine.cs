@@ -17,7 +17,7 @@ internal sealed class GameEngine
     public double BallVy { get; private set; }
     public int LeftScore { get; private set; }
     public int RightScore { get; private set; }
-    public string Phase => GamePhaseWire.Format(_phase);
+    public GamePhase Phase => _phase;
     public double Countdown { get; private set; }
     public long TickNumber { get; private set; }
     public int RoundId { get; private set; }

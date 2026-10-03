@@ -23,7 +23,7 @@ public sealed class WirePacketCodecTests
                 SessionId = "session", Sequence = 123456,
                 LeftY = 0.14, RightY = 0.86,
                 BallX = 0.35, BallY = 0.64, BallVx = -0.72, BallVy = 0.31,
-                LeftScore = 2, RightScore = 3, Phase = "playing",
+                LeftScore = 2, RightScore = 3, Phase = GamePhase.Playing,
                 Countdown = 1.25, RoundId = 7
             },
             new RestartPacket { SessionId = "session", RequestId = "restart" },
@@ -50,7 +50,7 @@ public sealed class WirePacketCodecTests
     [Test]
     public async Task TryDeserialize_RejectsPreviousProtocolAndJson()
     {
-        var oldBinary = WirePacketCodec.Serialize(new OfferPacket { Version = 1, Port = 28080 });
+        var oldBinary = WirePacketCodec.Serialize(new OfferPacket { Version = WirePacket.CurrentVersion - 1, Port = 28080 });
         var oldJson = Encoding.UTF8.GetBytes("{\"version\":1,\"type\":\"offer\",\"port\":28080}");
         var oldFlatMessagePack = new byte[] { 0x92, 0x02, 0xa5, (byte)'h', (byte)'e', (byte)'l', (byte)'l', (byte)'o' };
 

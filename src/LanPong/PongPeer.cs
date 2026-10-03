@@ -26,8 +26,8 @@ internal sealed class PongPeer : IAsyncDisposable
     private string? _lastRestartRequestId;
     private string? _pendingRestartRequestId;
     private int _restartAfterRound;
-    private string _role = "none";
-    private string _connection = "idle";
+    private PeerRole _role = PeerRole.None;
+    private ConnectionState _connection = ConnectionState.Idle;
     private string _message = "Создайте игру или подключитесь к другу.";
     private int _udpPort;
     private int _remoteAxis;
@@ -63,7 +63,7 @@ internal sealed class PongPeer : IAsyncDisposable
                 (_peerEndpoint ?? _targetEndpoint)?.ToString(),
                 state.LeftY, state.RightY, state.BallX, state.BallY,
                 state.BallVx, state.BallVy,
-                state.LeftScore, state.RightScore, GamePhaseWire.Format(state.Phase),
+                state.LeftScore, state.RightScore, state.Phase,
                 state.Countdown, state.TickNumber, state.RoundId, _pingMs);
         }
     }
@@ -91,8 +91,8 @@ internal sealed class PongPeer : IAsyncDisposable
             {
                 _socket = socket;
                 _socketStop = stop;
-                _role = "host";
-                _connection = "waiting";
+                _role = PeerRole.Host;
+                _connection = ConnectionState.Waiting;
                 _message = "Ожидание второго игрока. Передайте ему ваш IP-адрес.";
                 _udpPort = port;
             }
@@ -120,8 +120,8 @@ internal sealed class PongPeer : IAsyncDisposable
                 _socket = socket;
                 _socketStop = stop;
                 _targetEndpoint = new IPEndPoint(ip, port);
-                _role = "guest";
-                _connection = "connecting";
+                _role = PeerRole.Guest;
+                _connection = ConnectionState.Connecting;
                 _message = "Подключаемся к игроку…";
                 _udpPort = ((IPEndPoint)socket.Client.LocalEndPoint!).Port;
             }
@@ -134,9 +134,9 @@ internal sealed class PongPeer : IAsyncDisposable
     {
         lock (_gate)
         {
-            if (_connection != "connected") throw new InvalidOperationException("Сначала подключитесь к игре.");
-            if (_role == "host") _game.StartMatch();
-            else if (_role == "guest")
+            if (_connection != ConnectionState.Connected) throw new InvalidOperationException("Сначала подключитесь к игре.");
+            if (_role == PeerRole.Host) _game.StartMatch();
+            else if (_role == PeerRole.Guest)
             {
                 _pendingRestartRequestId = Guid.NewGuid().ToString("N");
                 _restartAfterRound = _game.RoundId;
@@ -220,8 +220,8 @@ internal sealed class PongPeer : IAsyncDisposable
             _peerEndpoint = _targetEndpoint = null;
             _sessionId = _lastRestartRequestId = _pendingRestartRequestId = null;
             _restartAfterRound = 0;
-            _role = "none";
-            _connection = "idle";
+            _role = PeerRole.None;
+            _connection = ConnectionState.Idle;
             _message = "Создайте игру или подключитесь к другу.";
             _udpPort = _remoteAxis = 0;
             _controllers.Clear();
@@ -270,13 +270,13 @@ internal sealed class PongPeer : IAsyncDisposable
                         continue;
                     }
 
-                    if (_role == "host")
+                    if (_role == PeerRole.Host)
                     {
                         if (_peerEndpoint is not null && now - _lastPeerSeen > NetworkConstants.PeerIdleTimeout)
                         {
                             _peerEndpoint = null;
                             _sessionId = null;
-                            _connection = "waiting";
+                            _connection = ConnectionState.Waiting;
                             _message = "Связь потеряна. Ожидание второго игрока…";
                             _remoteAxis = 0;
                             _lastStateSentTick = 0;
@@ -305,13 +305,13 @@ internal sealed class PongPeer : IAsyncDisposable
                         }
                         else accumulatedTime = 0;
                     }
-                    else if (_role == "guest" && _targetEndpoint is not null)
+                    else if (_role == PeerRole.Guest && _targetEndpoint is not null)
                     {
                         accumulatedTime = 0;
                         destination = _targetEndpoint;
-                        if (_connection == "connected" && now - _lastPeerSeen > NetworkConstants.PeerIdleTimeout)
+                        if (_connection == ConnectionState.Connected && now - _lastPeerSeen > NetworkConstants.PeerIdleTimeout)
                         {
-                            _connection = "connecting";
+                            _connection = ConnectionState.Connecting;
                             _message = "Связь потеряна. Повторное подключение…";
                             _sessionId = null;
                             _pendingRestartRequestId = null;
@@ -319,12 +319,12 @@ internal sealed class PongPeer : IAsyncDisposable
                             ResetPing();
                             _game.ResetWaiting();
                         }
-                        if (_connection == "connecting" && now - _lastHelloSent >= NetworkConstants.HelloRetryInterval)
+                        if (_connection == ConnectionState.Connecting && now - _lastHelloSent >= NetworkConstants.HelloRetryInterval)
                         {
                             _lastHelloSent = now;
                             packet = new HelloPacket();
                         }
-                        else if (_connection == "connected" && _sessionId is not null)
+                        else if (_connection == ConnectionState.Connected && _sessionId is not null)
                         {
                             if (_pendingRestartRequestId is not null &&
                                 now - _lastRestartSent >= NetworkConstants.RestartRetryInterval)
@@ -339,7 +339,7 @@ internal sealed class PongPeer : IAsyncDisposable
                             }
                         }
                     }
-                    if (_connection == "connected" && _sessionId is not null &&
+                    if (_connection == ConnectionState.Connected && _sessionId is not null &&
                         destination is not null && now - _lastPingSent >= NetworkConstants.PingInterval)
                     {
                         _lastPingSent = now;
@@ -369,7 +369,7 @@ internal sealed class PongPeer : IAsyncDisposable
             BallX = state.BallX, BallY = state.BallY,
             BallVx = state.BallVx, BallVy = state.BallVy,
             LeftScore = state.LeftScore, RightScore = state.RightScore,
-            Phase = GamePhaseWire.Format(state.Phase), Countdown = state.Countdown, RoundId = state.RoundId
+            Phase = state.Phase, Countdown = state.Countdown, RoundId = state.RoundId
         };
     }
 
@@ -440,7 +440,7 @@ internal sealed class PongPeer : IAsyncDisposable
         lock (_gate)
         {
             if (_socket != socket) return;
-            if (_role == "host")
+            if (_role == PeerRole.Host)
             {
                 if (packet is DiscoverPacket)
                 {
@@ -452,7 +452,7 @@ internal sealed class PongPeer : IAsyncDisposable
                     {
                         _peerEndpoint = remote;
                         _sessionId = Guid.NewGuid().ToString("N");
-                        _connection = "connected";
+                        _connection = ConnectionState.Connected;
                         _message = "Соперник подключился. Игра началась!";
                         _lastInputSequence = -1;
                         _lastStateSentTick = 0;
@@ -497,7 +497,7 @@ internal sealed class PongPeer : IAsyncDisposable
                         case ByePacket bye when bye.SessionId == _sessionId:
                             _peerEndpoint = null;
                             _sessionId = null;
-                            _connection = "waiting";
+                            _connection = ConnectionState.Waiting;
                             _message = "Соперник вышел. Ожидание нового игрока…";
                             _remoteAxis = 0;
                             _lastStateSentTick = 0;
@@ -507,13 +507,13 @@ internal sealed class PongPeer : IAsyncDisposable
                     }
                 }
             }
-            else if (_role == "guest" && _targetEndpoint?.Equals(remote) == true)
+            else if (_role == PeerRole.Guest && _targetEndpoint?.Equals(remote) == true)
             {
                 switch (packet)
                 {
                     case WelcomePacket welcome when !string.IsNullOrEmpty(welcome.SessionId):
                         // A delayed welcome from an old match must not replace an active session.
-                        if (_connection == "connected" && _sessionId != welcome.SessionId) return;
+                        if (_connection == ConnectionState.Connected && _sessionId != welcome.SessionId) return;
                         if (_sessionId != welcome.SessionId)
                         {
                             _sessionId = welcome.SessionId;
@@ -523,7 +523,7 @@ internal sealed class PongPeer : IAsyncDisposable
                             ResetPing();
                             _game.ResetWaiting();
                         }
-                        _connection = "connected";
+                        _connection = ConnectionState.Connected;
                         _message = "Вы подключились. Игра началась!";
                         _lastPeerSeen = now;
                         break;
@@ -544,7 +544,7 @@ internal sealed class PongPeer : IAsyncDisposable
                             _pendingRestartRequestId = null;
                         break;
                     case ByePacket bye when _sessionId is not null && bye.SessionId == _sessionId:
-                        _connection = "connecting";
+                        _connection = ConnectionState.Connecting;
                         _message = "Соперник вышел. Повторное подключение…";
                         _sessionId = null;
                         _pendingRestartRequestId = null;

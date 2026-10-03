@@ -134,6 +134,11 @@ try:
     wait_until("web servers", lambda: request(5180, "/api/status") and request(5181, "/api/status"))
     assert b"game-canvas" in urllib.request.urlopen("http://127.0.0.1:5180/").read()
 
+    for port in (5180, 5181):
+        idle = request(port, "/api/status")
+        assert idle["role"] == "none" and idle["connection"] == "idle", idle
+        assert idle["phase"] == "waiting", idle
+
     host = request(5180, "/api/host", {"port": 47888})
     assert host["role"] == "host" and host["connection"] == "waiting", host
     hosts = request(5181, "/api/discover?port=47888")["hosts"]
@@ -190,9 +195,14 @@ try:
 
     request(5181, "/api/restart", {})
     wait_until("guest restart request", lambda: request(5180, "/api/status")["phase"] == "countdown")
-    request(5181, "/api/leave", {})
+    left_guest = request(5181, "/api/leave", {})
+    assert left_guest["role"] == "none" and left_guest["connection"] == "idle", left_guest
+    assert left_guest["phase"] == "waiting", left_guest
     wait_until("host observes guest leave", lambda: request(5180, "/api/status")["connection"] == "waiting")
     assert request(5180, "/api/status").get("pingMs") is None
+    left_host = request(5180, "/api/leave", {})
+    assert left_host["role"] == "none" and left_host["connection"] == "idle", left_host
+    assert left_host["phase"] == "waiting", left_host
     print("PASS: static UI, discovery, UDP handshake, ping RTT, gameplay, WebSocket snapshots, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, leave")
 finally:
     for process in processes:

@@ -88,7 +88,7 @@ public sealed class GameEngineTests
 
         await Assert.That(game.RightScore).IsEqualTo(1);
         await Assert.That(game.LeftScore).IsEqualTo(0);
-        await Assert.That(game.Phase).IsEqualTo("countdown");
+        await Assert.That(game.Phase).IsEqualTo(GamePhase.Countdown);
         await Assert.That(game.BallX).IsEqualTo(0.5).Within(1e-8);
     }
 
@@ -112,7 +112,7 @@ public sealed class GameEngineTests
 
         game.Advance(4, 0, 0);
 
-        await Assert.That(game.Phase).IsEqualTo("playing");
+        await Assert.That(game.Phase).IsEqualTo(GamePhase.Playing);
         await Assert.That(game.LeftScore).IsEqualTo(0);
         await Assert.That(game.RightScore).IsEqualTo(0);
         await Assert.That(game.BallVx).IsEqualTo(-0.655).Within(1e-10);

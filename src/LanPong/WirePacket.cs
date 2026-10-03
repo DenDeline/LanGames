@@ -15,7 +15,8 @@ namespace LanPong;
 [MessagePackObject]
 public abstract record WirePacket
 {
-    public const int CurrentVersion = 2;
+    // Version 3 encodes StatePacket.Phase as a MessagePack enum integer.
+    public const int CurrentVersion = 3;
 
     [Key(0)]
     public int Version { get; set; } = CurrentVersion;
@@ -76,7 +77,7 @@ public sealed record StatePacket : WirePacket
     [Key(10)]
     public int RightScore { get; init; }
     [Key(11)]
-    public string Phase { get; set; } = "waiting";
+    public GamePhase Phase { get; init; }
     [Key(12)]
     public double Countdown { get; init; }
     [Key(13)]
@@ -88,7 +89,7 @@ public sealed record StatePacket : WirePacket
         BallX = BallX, BallY = BallY,
         BallVx = BallVx, BallVy = BallVy,
         LeftScore = LeftScore, RightScore = RightScore,
-        Phase = GamePhaseWire.Parse(Phase), Countdown = Countdown,
+        Phase = Phase, Countdown = Countdown,
         TickNumber = Sequence, RoundId = RoundId
     };
 }
@@ -143,8 +144,13 @@ internal static class WirePacketCodec
 
         try
         {
-            packet = MessagePackSerializer.Deserialize<WirePacket>(data, Options);
-            return packet is { Version: WirePacket.CurrentVersion };
+            var decoded = MessagePackSerializer.Deserialize<WirePacket>(data, Options);
+            if (decoded is not { Version: WirePacket.CurrentVersion } ||
+                decoded is StatePacket state && !Enum.IsDefined(state.Phase))
+                return false;
+
+            packet = decoded;
+            return true;
         }
         catch (MessagePackSerializationException)
         {
@@ -154,8 +160,8 @@ internal static class WirePacketCodec
 }
 
 public sealed record PongSnapshot(
-    string Role,
-    string Connection,
+    PeerRole Role,
+    ConnectionState Connection,
     string Message,
     int UdpPort,
     string[] LocalAddresses,
@@ -168,7 +174,7 @@ public sealed record PongSnapshot(
     double BallVy,
     int LeftScore,
     int RightScore,
-    string Phase,
+    GamePhase Phase,
     double Countdown,
     long Tick,
     int RoundId,

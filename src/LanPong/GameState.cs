@@ -1,11 +1,20 @@
+using System.Text.Json.Serialization;
+
 namespace LanPong;
 
-internal enum GamePhase
+[JsonConverter(typeof(JsonStringEnumConverter<GamePhase>))]
+public enum GamePhase
 {
-    Waiting,
-    Countdown,
-    Playing,
-    GameOver
+    // These ordinals are carried by MessagePack StatePacket.Phase (protocol v3).
+    // Keep them stable until the protocol version changes again.
+    [JsonStringEnumMemberName("waiting")]
+    Waiting = 0,
+    [JsonStringEnumMemberName("countdown")]
+    Countdown = 1,
+    [JsonStringEnumMemberName("playing")]
+    Playing = 2,
+    [JsonStringEnumMemberName("gameover")]
+    GameOver = 3
 }
 
 /// <summary>An observable simulation state, independent of the UDP packet format.</summary>
@@ -23,23 +32,4 @@ internal readonly record struct GameState
     public double Countdown { get; init; }
     public long TickNumber { get; init; }
     public int RoundId { get; init; }
-}
-
-internal static class GamePhaseWire
-{
-    public static string Format(GamePhase phase) => phase switch
-    {
-        GamePhase.Countdown => "countdown",
-        GamePhase.Playing => "playing",
-        GamePhase.GameOver => "gameover",
-        _ => "waiting"
-    };
-
-    public static GamePhase Parse(string? phase) => phase switch
-    {
-        "countdown" => GamePhase.Countdown,
-        "playing" => GamePhase.Playing,
-        "gameover" => GamePhase.GameOver,
-        _ => GamePhase.Waiting
-    };
 }
