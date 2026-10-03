@@ -172,7 +172,7 @@ internal sealed class PongPeer : IAsyncDisposable
         using var probe = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
         probe.EnableBroadcast = true;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromMilliseconds(1300));
+        timeout.CancelAfter(NetworkConstants.DiscoveryResponseWindow);
         var query = WirePacketCodec.Serialize(new DiscoverPacket());
         var destinations = new[] { IPAddress.Broadcast, IPAddress.Loopback };
         foreach (var destination in destinations)
@@ -197,7 +197,7 @@ internal sealed class PongPeer : IAsyncDisposable
             {
                 // Some systems report ICMP "port unreachable" for the loopback probe here.
                 _logger.LogDebug(ex, "Discovery receive failed");
-                try { await Task.Delay(50, timeout.Token); }
+                try { await Task.Delay(NetworkConstants.DiscoveryReceiveRetryDelay, timeout.Token); }
                 catch (OperationCanceledException) { break; }
             }
         }
@@ -245,7 +245,7 @@ internal sealed class PongPeer : IAsyncDisposable
     private async Task ClockAsync(CancellationToken cancellationToken)
     {
         const double fixedStep = GameConstants.FixedStepSeconds;
-        const int maxCatchUpSteps = 4;
+        const int maxCatchUpSteps = NetworkConstants.MaximumSimulationCatchUpSteps;
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(fixedStep));
         var previousTimestamp = Stopwatch.GetTimestamp();
         var accumulatedTime = 0.0;
@@ -272,7 +272,7 @@ internal sealed class PongPeer : IAsyncDisposable
 
                     if (_role == "host")
                     {
-                        if (_peerEndpoint is not null && now - _lastPeerSeen > TimeSpan.FromSeconds(5))
+                        if (_peerEndpoint is not null && now - _lastPeerSeen > NetworkConstants.PeerIdleTimeout)
                         {
                             _peerEndpoint = null;
                             _sessionId = null;
@@ -287,7 +287,7 @@ internal sealed class PongPeer : IAsyncDisposable
                         if (_peerEndpoint is not null)
                         {
                             destination = _peerEndpoint;
-                            var remoteAxis = now - _lastInputSeen < TimeSpan.FromMilliseconds(350) ? _remoteAxis : 0;
+                            var remoteAxis = now - _lastInputSeen < NetworkConstants.InputStaleAfter ? _remoteAxis : 0;
                             var localAxis = LocalAxis(now);
                             // PeriodicTimer coalesces missed wakes. Measure elapsed monotonic time
                             // and catch up a bounded number of fixed physics steps instead.
@@ -297,7 +297,7 @@ internal sealed class PongPeer : IAsyncDisposable
                                 _game.Advance(fixedStep, localAxis, remoteAxis);
                                 accumulatedTime -= fixedStep;
                             }
-                            if (_game.TickNumber - _lastStateSentTick >= 2)
+                            if (_game.TickNumber - _lastStateSentTick >= NetworkConstants.StateSendIntervalTicks)
                             {
                                 packet = CreateStatePacket();
                                 _lastStateSentTick = _game.TickNumber;
@@ -309,7 +309,7 @@ internal sealed class PongPeer : IAsyncDisposable
                     {
                         accumulatedTime = 0;
                         destination = _targetEndpoint;
-                        if (_connection == "connected" && now - _lastPeerSeen > TimeSpan.FromSeconds(5))
+                        if (_connection == "connected" && now - _lastPeerSeen > NetworkConstants.PeerIdleTimeout)
                         {
                             _connection = "connecting";
                             _message = "Связь потеряна. Повторное подключение…";
@@ -319,7 +319,7 @@ internal sealed class PongPeer : IAsyncDisposable
                             ResetPing();
                             _game.ResetWaiting();
                         }
-                        if (_connection == "connecting" && now - _lastHelloSent >= TimeSpan.FromMilliseconds(500))
+                        if (_connection == "connecting" && now - _lastHelloSent >= NetworkConstants.HelloRetryInterval)
                         {
                             _lastHelloSent = now;
                             packet = new HelloPacket();
@@ -327,12 +327,12 @@ internal sealed class PongPeer : IAsyncDisposable
                         else if (_connection == "connected" && _sessionId is not null)
                         {
                             if (_pendingRestartRequestId is not null &&
-                                now - _lastRestartSent >= TimeSpan.FromMilliseconds(250))
+                                now - _lastRestartSent >= NetworkConstants.RestartRetryInterval)
                             {
                                 _lastRestartSent = now;
                                 packet = new RestartPacket { SessionId = _sessionId, RequestId = _pendingRestartRequestId };
                             }
-                            else if (now - _lastInputSent >= TimeSpan.FromMilliseconds(33))
+                            else if (now - _lastInputSent >= NetworkConstants.GuestInputSendInterval)
                             {
                                 _lastInputSent = now;
                                 packet = new InputPacket { SessionId = _sessionId, Sequence = ++_outSequence, Axis = LocalAxis(now) };
@@ -340,14 +340,14 @@ internal sealed class PongPeer : IAsyncDisposable
                         }
                     }
                     if (_connection == "connected" && _sessionId is not null &&
-                        destination is not null && now - _lastPingSent >= TimeSpan.FromSeconds(1))
+                        destination is not null && now - _lastPingSent >= NetworkConstants.PingInterval)
                     {
                         _lastPingSent = now;
                         _pendingPingSequence = ++_pingSequence;
                         _pingSentTimestamp = Stopwatch.GetTimestamp();
                         pingPacket = new PingPacket { SessionId = _sessionId, Sequence = _pendingPingSequence };
                     }
-                    if (_pingMs is not null && now - _lastPongSeen > TimeSpan.FromSeconds(4))
+                    if (_pingMs is not null && now - _lastPongSeen > NetworkConstants.PingStaleAfter)
                         _pingMs = null;
                 }
                 if (socket is not null && destination is not null && packet is not null)
@@ -378,9 +378,11 @@ internal sealed class PongPeer : IAsyncDisposable
     {
         if (_pendingPingSequence == 0 || packet.Sequence != _pendingPingSequence) return;
         var sample = Stopwatch.GetElapsedTime(_pingSentTimestamp).TotalMilliseconds;
-        if (sample is >= 0 and < 5000)
+        if (sample >= 0 && sample < NetworkConstants.MaximumPingRoundTrip.TotalMilliseconds)
         {
-            _pingMs = _pingMs is { } previous ? previous * 0.75 + sample * 0.25 : sample;
+            _pingMs = _pingMs is { } previous
+                ? previous * (1 - NetworkConstants.PingSmoothingAlpha) + sample * NetworkConstants.PingSmoothingAlpha
+                : sample;
             _lastPongSeen = DateTime.UtcNow;
         }
         _pendingPingSequence = 0;
@@ -401,7 +403,7 @@ internal sealed class PongPeer : IAsyncDisposable
         var axis = 0;
         foreach (var control in _controllers.Values)
         {
-            if (control.Axis == 0 || now - control.Updated > TimeSpan.FromMilliseconds(350) || control.Updated <= newest)
+            if (control.Axis == 0 || now - control.Updated > NetworkConstants.InputStaleAfter || control.Updated <= newest)
                 continue;
             newest = control.Updated;
             axis = control.Axis;
@@ -425,7 +427,7 @@ internal sealed class PongPeer : IAsyncDisposable
             catch (SocketException ex)
             {
                 _logger.LogDebug(ex, "UDP receive failed");
-                try { await Task.Delay(100, cancellationToken); }
+                try { await Task.Delay(NetworkConstants.UdpReceiveRetryDelay, cancellationToken); }
                 catch (OperationCanceledException) { break; }
             }
         }

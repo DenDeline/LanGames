@@ -45,11 +45,13 @@ const ui = {
   toast: $("toast")
 };
 
+const DEFAULT_UDP_PORT = 47777;
+const TOAST_DURATION_MS = 5000;
 const defaultSnapshot = {
   role: "none",
   connection: "idle",
   message: "",
-  udpPort: 47777,
+  udpPort: DEFAULT_UDP_PORT,
   localAddresses: [],
   peerAddress: null,
   leftY: 0.5,
@@ -78,6 +80,7 @@ let lastUiSignature = null;
 const pressedKeys = new Set();
 const pressedTouch = new Set();
 const ctx = ui.canvas.getContext("2d");
+const MILLISECONDS_PER_SECOND = 1000;
 // Mirror the normalized gameplay geometry in GameConstants.cs for prediction and drawing.
 const TICKS_PER_SECOND = 60;
 const LEFT_PADDLE_CENTER_X = 0.045;
@@ -93,15 +96,42 @@ const LEFT_CONTACT_X = LEFT_PADDLE_CENTER_X + PADDLE_HALF_WIDTH + BALL_RADIUS_X;
 const RIGHT_CONTACT_X = RIGHT_PADDLE_CENTER_X - PADDLE_HALF_WIDTH - BALL_RADIUS_X;
 const TOP_CONTACT_Y = BALL_RADIUS_Y;
 const BOTTOM_CONTACT_Y = 1 - BALL_RADIUS_Y;
+// WebSocket snapshots run at 30 Hz and simulation at 60 Hz; their timers are independent.
+const INITIAL_INTERPOLATION_MS = 60;
 const MIN_INTERPOLATION_MS = 50;
 const MAX_INTERPOLATION_MS = 110;
-const MAX_EXTRAPOLATION_TICKS = TICKS_PER_SECOND * 0.035;
+const INTERPOLATION_JITTER_MULTIPLIER = 2;
+const INTERPOLATION_RISE_FACTOR = 0.65;
+const INTERPOLATION_FALL_FACTOR = 0.035;
+const MAX_EXTRAPOLATION_SECONDS = 0.035;
+const MAX_EXTRAPOLATION_TICKS = TICKS_PER_SECOND * MAX_EXTRAPOLATION_SECONDS;
 const MAX_MOTION_SAMPLES = 16;
 const MAX_CONTIGUOUS_TICK_GAP = 6;
+const MIN_BOUNCE_PROGRESS = 0.01;
+const MAX_BOUNCE_PROGRESS = 1 - MIN_BOUNCE_PROGRESS;
+const MAX_RENDER_FRAME_TICKS = 3;
+const RENDER_CORRECTION_FACTOR = 0.18;
+const MAX_RENDER_SPEEDUP_FRACTION = 0.5;
+const RENDER_RESYNC_TICKS = 8;
+// Local paddle prediction and reconciliation use seconds, except the RTT grace period.
+const MAX_LOCAL_FRAME_SECONDS = 0.05;
+const RELEASE_RTT_PADDING_MS = 50;
+const RELEASE_FALLBACK_MS = 100;
+const MIN_RELEASE_GRACE_MS = 100;
+const MAX_RELEASE_GRACE_MS = 250;
+const FALLBACK_PREDICTION_RTT_MS = 90;
+const PREDICTION_RTT_PADDING_SECONDS = 0.05;
+const MIN_PREDICTION_LEAD_Y = 0.09;
+const MAX_PREDICTION_LEAD_Y = 0.25;
+const PADDLE_RECONCILIATION_SECONDS = 0.12;
+const MAX_CANVAS_DPR = 3;
+const SOCKET_RECONNECT_MS = 1500;
+const CONTROL_SEND_INTERVAL_MS = 33;
+const STATUS_POLL_INTERVAL_MS = 4000;
 const motionSamples = [];
 let renderTick = null;
 let lastFrameTime = null;
-let interpolationDelayMs = 60;
+let interpolationDelayMs = INITIAL_INTERPOLATION_MS;
 let localPaddle = null;
 let arenaCache = null;
 let webSocketSnapshotVersion = 0;
@@ -110,7 +140,7 @@ function resetMotionHistory() {
   motionSamples.length = 0;
   renderTick = null;
   lastFrameTime = null;
-  interpolationDelayMs = 60;
+  interpolationDelayMs = INITIAL_INTERPOLATION_MS;
   localPaddle = null;
 }
 
@@ -134,7 +164,7 @@ function showToast(message) {
   ui.toast.textContent = message;
   ui.toast.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { ui.toast.hidden = true; }, 5000);
+  toastTimer = setTimeout(() => { ui.toast.hidden = true; }, TOAST_DURATION_MS);
 }
 
 function writeText(element, value) {
@@ -173,10 +203,14 @@ function applySnapshot(data) {
       const arrivedAt = performance.now();
       if (last) {
         const tickGap = tick - last.tick;
-        const expectedMs = tickGap * 1000 / TICKS_PER_SECOND;
+        const expectedMs = tickGap * MILLISECONDS_PER_SECOND / TICKS_PER_SECOND;
         const arrivalDeviation = Math.abs(arrivedAt - last.arrivedAt - expectedMs);
-        const wantedDelay = clamp(MIN_INTERPOLATION_MS + arrivalDeviation * 2, MIN_INTERPOLATION_MS, MAX_INTERPOLATION_MS);
-        const adjustment = wantedDelay > interpolationDelayMs ? 0.65 : 0.035;
+        const wantedDelay = clamp(
+          MIN_INTERPOLATION_MS + arrivalDeviation * INTERPOLATION_JITTER_MULTIPLIER,
+          MIN_INTERPOLATION_MS,
+          MAX_INTERPOLATION_MS
+        );
+        const adjustment = wantedDelay > interpolationDelayMs ? INTERPOLATION_RISE_FACTOR : INTERPOLATION_FALL_FACTOR;
         interpolationDelayMs = lerp(interpolationDelayMs, wantedDelay, adjustment);
         // A missing stretch can hide one or more collisions; never draw a chord across it.
         if (tickGap > MAX_CONTIGUOUS_TICK_GAP) {
@@ -312,7 +346,7 @@ function render() {
   ui.restartButton.disabled = busy || !connected || snapshot.phase !== "gameover";
   ui.leaveButton.disabled = busy || !inGame;
   ui.shareBox.hidden = snapshot.role !== "host";
-  writeText(ui.sharePort, snapshot.udpPort || Number(ui.hostPort.value) || 47777);
+  writeText(ui.sharePort, snapshot.udpPort || Number(ui.hostPort.value) || DEFAULT_UDP_PORT);
   if (snapshot.role === "host") renderAddresses();
 
 }
@@ -337,7 +371,7 @@ function interpolateBall(a, b, tick) {
   const bounceTime = xBounce
     ? (bounceX - a.x) / a.vx
     : (bounceY - a.y) / a.vy;
-  const bounceProgress = clamp(bounceTime / durationSeconds, 0.01, 0.99);
+  const bounceProgress = clamp(bounceTime / durationSeconds, MIN_BOUNCE_PROGRESS, MAX_BOUNCE_PROGRESS);
   const corner = xBounce
     ? { x: bounceX, y: clamp(a.y + a.vy * bounceTime, TOP_CONTACT_Y, BOTTOM_CONTACT_Y) }
     : { x: clamp(a.x + a.vx * bounceTime, 0, 1), y: bounceY };
@@ -355,15 +389,19 @@ function displayedMotion(now) {
     return { ballX: snapshot.ballX, ballY: snapshot.ballY, leftY: snapshot.leftY, rightY: snapshot.rightY };
   }
   const latest = motionSamples.at(-1);
-  const elapsedTicks = Math.max(0, now - latest.arrivedAt) * TICKS_PER_SECOND / 1000;
-  const targetTick = latest.tick - interpolationDelayMs * TICKS_PER_SECOND / 1000 + elapsedTicks;
+  const elapsedTicks = Math.max(0, now - latest.arrivedAt) * TICKS_PER_SECOND / MILLISECONDS_PER_SECOND;
+  const targetTick = latest.tick - interpolationDelayMs * TICKS_PER_SECOND / MILLISECONDS_PER_SECOND + elapsedTicks;
   if (renderTick === null || lastFrameTime === null) {
     renderTick = targetTick;
   } else {
-    const frameTicks = clamp((now - lastFrameTime) * TICKS_PER_SECOND / 1000, 0, 3);
-    const correction = clamp((targetTick - renderTick) * 0.18, -frameTicks, frameTicks * 0.5);
+    const frameTicks = clamp((now - lastFrameTime) * TICKS_PER_SECOND / MILLISECONDS_PER_SECOND, 0, MAX_RENDER_FRAME_TICKS);
+    const correction = clamp(
+      (targetTick - renderTick) * RENDER_CORRECTION_FACTOR,
+      -frameTicks,
+      frameTicks * MAX_RENDER_SPEEDUP_FRACTION
+    );
     renderTick += Math.max(0, frameTicks + correction);
-    if (targetTick - renderTick > 8) renderTick = targetTick;
+    if (targetTick - renderTick > RENDER_RESYNC_TICKS) renderTick = targetTick;
   }
   lastFrameTime = now;
   renderTick = Math.min(renderTick, latest.tick + MAX_EXTRAPOLATION_TICKS);
@@ -386,7 +424,7 @@ function displayedMotion(now) {
       };
     }
   }
-  let seconds = Math.min((renderTick - latest.tick) / TICKS_PER_SECOND, 0.035);
+  let seconds = Math.min((renderTick - latest.tick) / TICKS_PER_SECOND, MAX_EXTRAPOLATION_SECONDS);
   // Без следующего снимка неизвестно, попал ли мяч в ракетку: прогноз останавливается у контакта.
   if (latest.vx > 0 && latest.x <= RIGHT_CONTACT_X) {
     seconds = Math.min(seconds, Math.max(0, (RIGHT_CONTACT_X - latest.x) / latest.vx));
@@ -426,20 +464,31 @@ function displayedLocalPaddle(now) {
     return localPaddle.y;
   }
 
-  const seconds = clamp((now - localPaddle.lastFrameTime) / 1000, 0, 0.05);
+  const seconds = clamp((now - localPaddle.lastFrameTime) / MILLISECONDS_PER_SECOND, 0, MAX_LOCAL_FRAME_SECONDS);
   const ping = Number(snapshot.pingMs);
   if (localPaddle.lastAxis !== 0 && axis === 0) {
-    localPaddle.releaseUntil = now + clamp(Number.isFinite(ping) ? ping + 50 : 100, 100, 250);
+    localPaddle.releaseUntil = now + clamp(
+      Number.isFinite(ping) ? ping + RELEASE_RTT_PADDING_MS : RELEASE_FALLBACK_MS,
+      MIN_RELEASE_GRACE_MS,
+      MAX_RELEASE_GRACE_MS
+    );
   }
   const predictedY = clamp(localPaddle.y + axis * PADDLE_SPEED * seconds, MIN_PADDLE_Y, MAX_PADDLE_Y);
-  const maxLead = clamp(PADDLE_SPEED * ((Number.isFinite(ping) && ping >= 0 ? ping : 90) / 1000 + 0.05), 0.09, 0.25);
+  const maxLead = clamp(
+    PADDLE_SPEED * (
+      (Number.isFinite(ping) && ping >= 0 ? ping : FALLBACK_PREDICTION_RTT_MS) / MILLISECONDS_PER_SECOND +
+      PREDICTION_RTT_PADDING_SECONDS
+    ),
+    MIN_PREDICTION_LEAD_Y,
+    MAX_PREDICTION_LEAD_Y
+  );
   if (axis > 0) localPaddle.y = Math.max(localPaddle.y, Math.min(predictedY, authoritativeY + maxLead));
   else if (axis < 0) localPaddle.y = Math.min(localPaddle.y, Math.max(predictedY, authoritativeY - maxLead));
 
   // The latest snapshot is older than local input. Never pull the paddle backward while a key is held.
   const difference = authoritativeY - localPaddle.y;
   if ((axis === 0 && now >= localPaddle.releaseUntil) || (axis !== 0 && difference * axis > 0)) {
-    const correction = 1 - Math.exp(-seconds / 0.12);
+    const correction = 1 - Math.exp(-seconds / PADDLE_RECONCILIATION_SECONDS);
     localPaddle.y = clamp(localPaddle.y + difference * correction, MIN_PADDLE_Y, MAX_PADDLE_Y);
   }
   localPaddle.lastAxis = axis;
@@ -447,7 +496,7 @@ function displayedLocalPaddle(now) {
   return localPaddle.y;
 }
 
-function resizeArenaCache(width, height, dpr = Math.min(window.devicePixelRatio || 1, 3)) {
+function resizeArenaCache(width, height, dpr = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR)) {
   if (!ctx || width <= 0 || height <= 0) return;
   const pixelWidth = Math.round(width * dpr);
   const pixelHeight = Math.round(height * dpr);
@@ -504,7 +553,7 @@ function resizeArenaCache(width, height, dpr = Math.min(window.devicePixelRatio 
 
 function drawArena(now = performance.now()) {
   if (!ctx) return;
-  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  const dpr = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR);
   if (arenaCache && dpr !== arenaCache.dpr) resizeArenaCache(ui.canvas.clientWidth, ui.canvas.clientHeight, dpr);
   if (!arenaCache) return;
   const { width, height, pixelWidth, pixelHeight, backgroundCanvas, vignetteCanvas } = arenaCache;
@@ -685,7 +734,7 @@ function connectSocket() {
   });
   socket.addEventListener("close", () => {
     clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(connectSocket, 1500);
+    reconnectTimer = setTimeout(connectSocket, SOCKET_RECONNECT_MS);
   });
   socket.addEventListener("error", () => socket.close());
 }
@@ -753,8 +802,8 @@ if (typeof ResizeObserver !== "undefined") {
 }
 window.addEventListener("resize", () => resizeArenaCache(ui.canvas.clientWidth, ui.canvas.clientHeight));
 resizeArenaCache(ui.canvas.clientWidth, ui.canvas.clientHeight);
-setInterval(sendAxis, 33);
-setInterval(() => { if (socket?.readyState !== WebSocket.OPEN) refreshStatus(); }, 4000);
+setInterval(sendAxis, CONTROL_SEND_INTERVAL_MS);
+setInterval(() => { if (socket?.readyState !== WebSocket.OPEN) refreshStatus(); }, STATUS_POLL_INTERVAL_MS);
 render();
 requestAnimationFrame(animate);
 refreshStatus();

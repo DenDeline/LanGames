@@ -65,7 +65,8 @@ internal sealed class GameEngine
     public void Advance(double dt, int leftAxis, int rightAxis)
     {
         if (!double.IsFinite(dt) || dt < 0 || dt > MaximumAdvanceSeconds)
-            throw new ArgumentOutOfRangeException(nameof(dt), "Step duration must be between zero and ten seconds.");
+            throw new ArgumentOutOfRangeException(nameof(dt),
+                $"Step duration must be between zero and {MaximumAdvanceSeconds} seconds.");
 
         // Ticks continue in terminal states so a lost final UDP snapshot can be resent.
         TickNumber++;
@@ -170,7 +171,7 @@ internal sealed class GameEngine
 
     private Collision FindFirstContact(double remaining)
     {
-        var first = new Collision(Contact.None, remaining + 1);
+        var first = new Collision(Contact.None, double.PositiveInfinity);
         if (BallVy < 0)
             first = Earlier(first, Contact.Top, (TopContactY - BallY) / BallVy, remaining);
         else if (BallVy > 0)

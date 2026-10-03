@@ -34,10 +34,14 @@ internal static class GameConstants
     public const double VerticalBounceScale = 0.8;
     public const int WinningScore = 7;
 
-    // Numerical and replica limits are kept here with the physics they protect.
+    // Normalized-coordinate tolerance admits a contact computed just outside a step
+    // because of floating-point rounding. Separation moves a missed ball off the
+    // paddle plane so the next collision query cannot select the same contact.
     public const double ContactTolerance = 1e-10;
     public const double MissSeparation = 1e-7;
-    // The host normally advances by FixedStepSeconds; this bounds replay callers.
+
+    // The host normally advances by FixedStepSeconds; these bound replay calls and
+    // untrusted guest state without constraining valid host speeds/countdowns.
     public const double MaximumAdvanceSeconds = 10;
     public const double MaximumReplicaBallSpeed = 1.5;
     public const double MaximumReplicaCountdown = 5;

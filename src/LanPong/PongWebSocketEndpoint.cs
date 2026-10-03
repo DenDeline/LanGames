@@ -54,7 +54,7 @@ internal static class PongWebSocketEndpoint
         // Reply to a normal browser close only after the snapshot sender has stopped.
         if (receiveTask.IsCompletedSuccessfully && receiveTask.Result && socket.State == WebSocketState.CloseReceived)
         {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+            using var timeout = new CancellationTokenSource(NetworkConstants.WebSocketCloseTimeout);
             try
             {
                 await socket.CloseOutputAsync(
@@ -68,7 +68,7 @@ internal static class PongWebSocketEndpoint
 
     private static async Task SendSnapshotsAsync(WebSocket socket, PongPeer peer, CancellationToken cancellationToken)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1.0 / 30));
+        using var timer = new PeriodicTimer(NetworkConstants.BrowserSnapshotInterval);
         do
         {
             var bytes = JsonSerializer.SerializeToUtf8Bytes(peer.Snapshot(), JsonOptions);

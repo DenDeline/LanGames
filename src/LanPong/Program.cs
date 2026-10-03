@@ -61,7 +61,7 @@ app.MapGet("/api/discover", async (int? port, CancellationToken cancellationToke
 {
     try
     {
-        var hosts = await peer.DiscoverAsync(port ?? 47777, cancellationToken);
+        var hosts = await peer.DiscoverAsync(port ?? NetworkConstants.DefaultUdpPort, cancellationToken);
         return Results.Ok(new { hosts });
     }
     catch (ArgumentException ex)
