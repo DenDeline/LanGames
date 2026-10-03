@@ -117,6 +117,16 @@ def expect_prompt_close(conn, seconds=2):
     raise AssertionError("WebSocket did not close after the client close frame")
 
 
+def send_oversized_udp_datagrams(*ports):
+    # 0xc1 is reserved by MessagePack. The first size is exactly one byte over
+    # the protocol limit; the second exceeds the new receive buffer by far.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+        for port in ports:
+            for length in (1201, 8 * 1024):
+                payload = bytes([0xc1]) * length
+                assert sender.sendto(payload, ("127.0.0.1", port)) == length
+
+
 subprocess.run(["dotnet", "build", str(PROJECT / "LanPong.csproj"), "-c", "Release"],
                cwd=ROOT, check=True)
 log_dir = ROOT / ".artifacts" / "test-logs"
@@ -141,6 +151,14 @@ try:
 
     host = request(5180, "/api/host", {"port": 47888})
     assert host["role"] == "host" and host["connection"] == "waiting", host
+    # A datagram with a valid Hello prefix must still be rejected in full when
+    # the receive buffer truncates it at the packet-size boundary.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+        hello_prefix = bytes([0x92, 0x02, 0x91, 0x03])
+        payload = hello_prefix + bytes(1201 - len(hello_prefix))
+        assert sender.sendto(payload, ("127.0.0.1", 47888)) == len(payload)
+    time.sleep(0.2)
+    assert request(5180, "/api/status")["connection"] == "waiting"
     hosts = request(5181, "/api/discover?port=47888")["hosts"]
     assert any(item["port"] == 47888 for item in hosts), hosts
     guest = request(5181, "/api/join", {"address": "127.0.0.1", "port": 47888})
@@ -154,8 +172,15 @@ try:
                request(5180, "/api/status").get("pingMs") is not None
                and request(5181, "/api/status").get("pingMs") is not None)
     before = request(5180, "/api/status")
+    before_guest = request(5181, "/api/status")
     assert 0 <= before["pingMs"] < 2000, before
     assert abs(before["ballVx"]) > 0 and before["roundId"] >= 1, before
+    send_oversized_udp_datagrams(before["udpPort"], before_guest["udpPort"])
+    wait_until("gameplay survives oversized UDP datagrams", lambda:
+               request(5180, "/api/status")["tick"] >= before["tick"] + 10
+               and request(5181, "/api/status")["tick"] >= before_guest["tick"] + 10
+               and request(5180, "/api/status")["connection"] == "connected"
+               and request(5181, "/api/status")["connection"] == "connected")
     with websocket(5180) as host_ws, websocket(5180) as passive_ws, websocket(5181) as guest_ws:
         frame = recv_frame(host_ws)
         assert frame is not None and frame[0] == 0x1, frame
@@ -200,10 +225,18 @@ try:
     assert left_guest["phase"] == "waiting", left_guest
     wait_until("host observes guest leave", lambda: request(5180, "/api/status")["connection"] == "waiting")
     assert request(5180, "/api/status").get("pingMs") is None
+    rejoining = request(5181, "/api/join", {"address": "127.0.0.1", "port": 47888})
+    assert rejoining["role"] == "guest" and rejoining["connection"] == "connecting", rejoining
+    wait_until("UDP reconnect after receiver cancellation", lambda:
+               request(5180, "/api/status")["connection"] == "connected"
+               and request(5181, "/api/status")["connection"] == "connected")
+    rejoined_tick = request(5181, "/api/status")["tick"]
+    wait_until("state sync after reconnect", lambda:
+               request(5181, "/api/status")["tick"] >= rejoined_tick + 10)
     left_host = request(5180, "/api/leave", {})
     assert left_host["role"] == "none" and left_host["connection"] == "idle", left_host
     assert left_host["phase"] == "waiting", left_host
-    print("PASS: static UI, discovery, UDP handshake, ping RTT, gameplay, WebSocket snapshots, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, leave")
+    print("PASS: static UI, discovery, UDP handshake, ping RTT, oversized UDP datagrams, gameplay, WebSocket snapshots, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, leave and reconnect")
 finally:
     for process in processes:
         process.terminate()

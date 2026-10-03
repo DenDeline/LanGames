@@ -416,17 +416,29 @@ internal sealed class PongPeer : IAsyncDisposable
 
     private async Task ReceiveAsync(UdpClient socket, CancellationToken cancellationToken)
     {
+        // One receive is outstanding at a time, so the datagram can be decoded
+        // and handled before the next receive overwrites this buffer.
+        var receiveBuffer = new byte[WirePacketCodec.MaxPacketBytes + 1];
+        EndPoint receiveFrom = new IPEndPoint(IPAddress.Any, 0);
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                var received = await socket.ReceiveAsync(cancellationToken);
-                if (!WirePacketCodec.TryDeserialize(received.Buffer, out var packet)) continue;
+                var received = await socket.Client.ReceiveFromAsync(
+                    receiveBuffer.AsMemory(), receiveFrom, cancellationToken);
+                if (received.ReceivedBytes > WirePacketCodec.MaxPacketBytes) continue;
+                if (!WirePacketCodec.TryDeserialize(receiveBuffer.AsMemory(0, received.ReceivedBytes), out var packet))
+                    continue;
                 if (packet is null) continue;
-                await HandlePacketAsync(socket, received.RemoteEndPoint, packet, cancellationToken);
+                await HandlePacketAsync(socket, (IPEndPoint)received.RemoteEndPoint, packet, cancellationToken);
             }
             catch (OperationCanceledException) { break; }
             catch (ObjectDisposedException) { break; }
+            catch (SocketException ex) when (ex.SocketErrorCode == SocketError.MessageSize)
+            {
+                // Windows reports an oversized datagram as MessageSize rather than truncating it.
+                continue;
+            }
             catch (SocketException ex)
             {
                 _logger.LogDebug(ex, "UDP receive failed");
