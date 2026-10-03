@@ -1,33 +1,18 @@
+using static LanPong.GameConstants;
+
 namespace LanPong;
 
 /// <summary>A deterministic host simulation. The guest only applies observable states.</summary>
 internal sealed class GameEngine
 {
-    private const double PaddleHalfHeight = 0.09;
-    private const double PaddleSpeed = 0.85;
-    // The arena is 16:9, so a circular ball has different normalized X and Y radii.
-    private const double BallRadiusX = 0.012 * 9.0 / 16.0;
-    private const double BallRadiusY = 0.012;
-    private const double LeftContactX = 0.045 + 0.009 + BallRadiusX;
-    private const double RightContactX = 0.955 - 0.009 - BallRadiusX;
-    private const double ContactTolerance = 1e-10;
-    private const double MissSeparation = 1e-7;
-    private const double ServeSpeedX = 0.55;
-    private const double ServeSpeedY = 0.19;
-    private const double MaximumBounceAngle = 0.8;
-    private const double VerticalBounceScale = 0.8;
-    // Production steps are 1/60 s; this also bounds headless/replay callers.
-    private const double MaximumAdvanceSeconds = 10;
-    private const int WinningScore = 7;
-
     private GamePhase _phase = GamePhase.Waiting;
     private int _serveDirection = 1;
     private int _hits;
 
-    public double LeftY { get; private set => field = Math.Clamp(value, PaddleHalfHeight, 1 - PaddleHalfHeight); } = 0.5;
-    public double RightY { get; private set => field = Math.Clamp(value, PaddleHalfHeight, 1 - PaddleHalfHeight); } = 0.5;
-    public double BallX { get; private set; } = 0.5;
-    public double BallY { get; private set; } = 0.5;
+    public double LeftY { get; private set => field = Math.Clamp(value, MinPaddleY, MaxPaddleY); } = ArenaCenter;
+    public double RightY { get; private set => field = Math.Clamp(value, MinPaddleY, MaxPaddleY); } = ArenaCenter;
+    public double BallX { get; private set; } = ArenaCenter;
+    public double BallY { get; private set; } = ArenaCenter;
     public double BallVx { get; private set; }
     public double BallVy { get; private set; }
     public int LeftScore { get; private set; }
@@ -49,7 +34,7 @@ internal sealed class GameEngine
 
     public void ResetWaiting()
     {
-        LeftY = RightY = BallX = BallY = 0.5;
+        LeftY = RightY = BallX = BallY = ArenaCenter;
         BallVx = BallVy = 0;
         LeftScore = RightScore = 0;
         Countdown = 0;
@@ -61,7 +46,7 @@ internal sealed class GameEngine
 
     public void StartMatch()
     {
-        LeftY = RightY = 0.5;
+        LeftY = RightY = ArenaCenter;
         LeftScore = RightScore = 0;
         RoundId++;
         StartRound(1);
@@ -71,9 +56,9 @@ internal sealed class GameEngine
     {
         _serveDirection = direction;
         _hits = 0;
-        BallX = BallY = 0.5;
+        BallX = BallY = ArenaCenter;
         BallVx = BallVy = 0;
-        Countdown = 1.6;
+        Countdown = ServeCountdownSeconds;
         _phase = GamePhase.Countdown;
     }
 
@@ -146,11 +131,11 @@ internal sealed class GameEngine
             switch (contact.Kind)
             {
                 case Contact.Top:
-                    BallY = BallRadiusY;
+                    BallY = TopContactY;
                     BallVy = -BallVy;
                     break;
                 case Contact.Bottom:
-                    BallY = 1 - BallRadiusY;
+                    BallY = BottomContactY;
                     BallVy = -BallVy;
                     break;
                 case Contact.LeftPaddle:
@@ -187,9 +172,9 @@ internal sealed class GameEngine
     {
         var first = new Collision(Contact.None, remaining + 1);
         if (BallVy < 0)
-            first = Earlier(first, Contact.Top, (BallRadiusY - BallY) / BallVy, remaining);
+            first = Earlier(first, Contact.Top, (TopContactY - BallY) / BallVy, remaining);
         else if (BallVy > 0)
-            first = Earlier(first, Contact.Bottom, (1 - BallRadiusY - BallY) / BallVy, remaining);
+            first = Earlier(first, Contact.Bottom, (BottomContactY - BallY) / BallVy, remaining);
 
         if (BallVx < 0)
         {
@@ -220,12 +205,12 @@ internal sealed class GameEngine
     }
 
     private static double PaddleAt(double startY, int axis, double elapsed) =>
-        Math.Clamp(startY + axis * PaddleSpeed * elapsed, PaddleHalfHeight, 1 - PaddleHalfHeight);
+        Math.Clamp(startY + axis * PaddleSpeed * elapsed, MinPaddleY, MaxPaddleY);
 
     private void Bounce(double paddleY, int direction)
     {
         _hits++;
-        var launchSpeed = Math.Min(ServeSpeedX + _hits * 0.035, 0.9);
+        var launchSpeed = Math.Min(ServeSpeedX + _hits * BounceSpeedIncrease, MaximumBounceSpeed);
         var angle = Math.Clamp((BallY - paddleY) / PaddleHalfHeight, -1, 1) * MaximumBounceAngle;
         BallVx = direction * launchSpeed * Math.Cos(angle);
         // Dampen the vertical component deliberately to keep off-center rallies playable.
@@ -246,16 +231,16 @@ internal sealed class GameEngine
     /// <summary>Apply a network state to the guest's display replica.</summary>
     public void Restore(GameState state)
     {
-        LeftY = FiniteClamp(state.LeftY, PaddleHalfHeight, 1 - PaddleHalfHeight, 0.5);
-        RightY = FiniteClamp(state.RightY, PaddleHalfHeight, 1 - PaddleHalfHeight, 0.5);
-        BallX = FiniteClamp(state.BallX, -BallRadiusX, 1 + BallRadiusX, 0.5);
-        BallY = FiniteClamp(state.BallY, BallRadiusY, 1 - BallRadiusY, 0.5);
-        BallVx = FiniteClamp(state.BallVx, -1.5, 1.5, 0);
-        BallVy = FiniteClamp(state.BallVy, -1.5, 1.5, 0);
+        LeftY = FiniteClamp(state.LeftY, MinPaddleY, MaxPaddleY, ArenaCenter);
+        RightY = FiniteClamp(state.RightY, MinPaddleY, MaxPaddleY, ArenaCenter);
+        BallX = FiniteClamp(state.BallX, -BallRadiusX, 1 + BallRadiusX, ArenaCenter);
+        BallY = FiniteClamp(state.BallY, TopContactY, BottomContactY, ArenaCenter);
+        BallVx = FiniteClamp(state.BallVx, -MaximumReplicaBallSpeed, MaximumReplicaBallSpeed, 0);
+        BallVy = FiniteClamp(state.BallVy, -MaximumReplicaBallSpeed, MaximumReplicaBallSpeed, 0);
         LeftScore = Math.Max(0, state.LeftScore);
         RightScore = Math.Max(0, state.RightScore);
         _phase = state.Phase is >= GamePhase.Waiting and <= GamePhase.GameOver ? state.Phase : GamePhase.Waiting;
-        Countdown = FiniteClamp(state.Countdown, 0, 5, 0);
+        Countdown = FiniteClamp(state.Countdown, 0, MaximumReplicaCountdown, 0);
         TickNumber = Math.Max(0, state.TickNumber);
         RoundId = Math.Max(0, state.RoundId);
     }

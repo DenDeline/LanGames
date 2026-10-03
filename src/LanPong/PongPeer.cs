@@ -244,7 +244,7 @@ internal sealed class PongPeer : IAsyncDisposable
 
     private async Task ClockAsync(CancellationToken cancellationToken)
     {
-        const double fixedStep = 1.0 / 60;
+        const double fixedStep = GameConstants.FixedStepSeconds;
         const int maxCatchUpSteps = 4;
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(fixedStep));
         var previousTimestamp = Stopwatch.GetTimestamp();
