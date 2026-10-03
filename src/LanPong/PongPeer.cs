@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Diagnostics;
 using System.Net;
 using System.Net.NetworkInformation;
@@ -247,6 +248,8 @@ internal sealed class PongPeer : IAsyncDisposable
         const double fixedStep = GameConstants.FixedStepSeconds;
         const int maxCatchUpSteps = NetworkConstants.MaximumSimulationCatchUpSteps;
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(fixedStep));
+        // Only this loop uses the buffer; each send completes before it is cleared and reused.
+        var sendBuffer = new ArrayBufferWriter<byte>();
         var previousTimestamp = Stopwatch.GetTimestamp();
         var accumulatedTime = 0.0;
         try
@@ -351,9 +354,9 @@ internal sealed class PongPeer : IAsyncDisposable
                         _pingMs = null;
                 }
                 if (socket is not null && destination is not null && packet is not null)
-                    await SendQuietlyAsync(socket, destination, packet, cancellationToken);
+                    await SendQuietlyAsync(socket, destination, packet, cancellationToken, sendBuffer);
                 if (socket is not null && destination is not null && pingPacket is not null)
-                    await SendQuietlyAsync(socket, destination, pingPacket, cancellationToken);
+                    await SendQuietlyAsync(socket, destination, pingPacket, cancellationToken, sendBuffer);
             }
         }
         catch (OperationCanceledException) { }
@@ -558,16 +561,27 @@ internal sealed class PongPeer : IAsyncDisposable
         if (reply is not null) await SendQuietlyAsync(socket, remote, reply, cancellationToken);
     }
 
-    private async Task SendQuietlyAsync(UdpClient socket, IPEndPoint destination, WirePacket packet, CancellationToken cancellationToken)
+    private async Task SendQuietlyAsync(
+        UdpClient socket, IPEndPoint destination, WirePacket packet, CancellationToken cancellationToken,
+        ArrayBufferWriter<byte>? sendBuffer = null)
     {
         try
         {
-            var bytes = WirePacketCodec.Serialize(packet);
-            await socket.SendAsync(bytes, destination, cancellationToken);
+            if (sendBuffer is null)
+            {
+                var bytes = WirePacketCodec.Serialize(packet);
+                await socket.SendAsync(bytes, destination, cancellationToken);
+            }
+            else
+            {
+                WirePacketCodec.Serialize(packet, sendBuffer);
+                await socket.SendAsync(sendBuffer.WrittenMemory, destination, cancellationToken);
+            }
         }
         catch (OperationCanceledException) { }
         catch (ObjectDisposedException) { }
         catch (SocketException ex) { _logger.LogDebug(ex, "UDP send failed to {Destination}", destination); }
+        finally { sendBuffer?.Clear(); }
     }
 
     private static void ValidatePort(int port)

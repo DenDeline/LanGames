@@ -1,3 +1,4 @@
+using System.Buffers;
 using MessagePack;
 
 namespace LanPong;
@@ -136,6 +137,9 @@ internal static class WirePacketCodec
         .WithSecurity(MessagePackSecurity.UntrustedData);
 
     internal static byte[] Serialize(WirePacket packet) => MessagePackSerializer.Serialize(packet, Options);
+
+    internal static void Serialize(WirePacket packet, IBufferWriter<byte> writer) =>
+        MessagePackSerializer.Serialize(writer, packet, Options);
 
     internal static bool TryDeserialize(ReadOnlyMemory<byte> data, out WirePacket? packet)
     {

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 using LanPong;
 using TUnit.Assertions;
@@ -11,26 +12,7 @@ public sealed class WirePacketCodecTests
     [Test]
     public async Task EveryPacketType_RoundTripsWithItsStableUnionTag()
     {
-        WirePacket[] packets =
-        [
-            new DiscoverPacket(),
-            new OfferPacket { Port = 28080 },
-            new HelloPacket(),
-            new WelcomePacket { SessionId = "session" },
-            new InputPacket { SessionId = "session", Sequence = 42, Axis = -1 },
-            new StatePacket
-            {
-                SessionId = "session", Sequence = 123456,
-                LeftY = 0.14, RightY = 0.86,
-                BallX = 0.35, BallY = 0.64, BallVx = -0.72, BallVy = 0.31,
-                LeftScore = 2, RightScore = 3, Phase = GamePhase.Playing,
-                Countdown = 1.25, RoundId = 7
-            },
-            new RestartPacket { SessionId = "session", RequestId = "restart" },
-            new PingPacket { SessionId = "session", Sequence = 43 },
-            new PongPacket { SessionId = "session", Sequence = 43 },
-            new ByePacket { SessionId = "session" }
-        ];
+        var packets = CreatePackets();
 
         for (var tag = 0; tag < packets.Length; tag++)
         {
@@ -44,6 +26,24 @@ public sealed class WirePacketCodecTests
             await Assert.That(decoded).IsTrue();
             await Assert.That(packet?.GetType()).IsEqualTo(original.GetType());
             await Assert.That(packet).IsEqualTo(original);
+        }
+    }
+
+    [Test]
+    public async Task SerializeToReusableWriter_MatchesArraySerializationForEveryPacketType()
+    {
+        var writer = new ArrayBufferWriter<byte>();
+
+        foreach (var original in CreatePackets())
+        {
+            var expected = WirePacketCodec.Serialize(original);
+            writer.Clear();
+            WirePacketCodec.Serialize(original, writer);
+
+            await Assert.That(writer.WrittenCount).IsEqualTo(expected.Length);
+            await Assert.That(writer.WrittenMemory.Span.SequenceEqual(expected)).IsTrue();
+            await Assert.That(WirePacketCodec.TryDeserialize(writer.WrittenMemory, out var decoded)).IsTrue();
+            await Assert.That(decoded).IsEqualTo(original);
         }
     }
 
@@ -87,4 +87,25 @@ public sealed class WirePacketCodecTests
             WirePacketCodec.TryDeserialize(damaged, out _);
         }
     }
+
+    private static WirePacket[] CreatePackets() =>
+    [
+        new DiscoverPacket(),
+        new OfferPacket { Port = 28080 },
+        new HelloPacket(),
+        new WelcomePacket { SessionId = "session" },
+        new InputPacket { SessionId = "session", Sequence = 42, Axis = -1 },
+        new StatePacket
+        {
+            SessionId = "session", Sequence = 123456,
+            LeftY = 0.14, RightY = 0.86,
+            BallX = 0.35, BallY = 0.64, BallVx = -0.72, BallVy = 0.31,
+            LeftScore = 2, RightScore = 3, Phase = GamePhase.Playing,
+            Countdown = 1.25, RoundId = 7
+        },
+        new RestartPacket { SessionId = "session", RequestId = "restart" },
+        new PingPacket { SessionId = "session", Sequence = 43 },
+        new PongPacket { SessionId = "session", Sequence = 43 },
+        new ByePacket { SessionId = "session" }
+    ];
 }
