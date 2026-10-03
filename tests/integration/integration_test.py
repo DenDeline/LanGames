@@ -50,17 +50,71 @@ def websocket(port):
     ).encode())
     response = b""
     while b"\r\n\r\n" not in response:
-        response += conn.recv(1024)
+        # Do not consume bytes from the first snapshot after the HTTP headers.
+        chunk = conn.recv(1)
+        assert chunk, response
+        response += chunk
     assert b"101 Switching Protocols" in response, response
     return conn
 
 
-def send_text(conn, text):
-    data = text.encode()
+def send_frame(conn, opcode, data, final=True):
     assert len(data) < 126
     mask = os.urandom(4)
     masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(data))
-    conn.sendall(bytes([0x81, 0x80 | len(data)]) + mask + masked)
+    conn.sendall(bytes([(0x80 if final else 0) | opcode, 0x80 | len(data)]) + mask + masked)
+
+
+def send_text(conn, text):
+    send_frame(conn, 0x1, text.encode())
+
+
+def send_fragmented_text(conn, text):
+    data = text.encode()
+    middle = len(data) // 2
+    send_frame(conn, 0x1, data[:middle], final=False)
+    send_frame(conn, 0x0, data[middle:])
+
+
+def recv_exact(conn, count):
+    data = bytearray()
+    while len(data) < count:
+        chunk = conn.recv(count - len(data))
+        if not chunk:
+            raise EOFError("WebSocket closed")
+        data.extend(chunk)
+    return bytes(data)
+
+
+def recv_frame(conn):
+    try:
+        first, second = recv_exact(conn, 2)
+        assert first & 0x80, "Unexpected fragmented server frame"
+        assert not second & 0x80, "Server frame must not be masked"
+        length = second & 0x7f
+        if length == 126:
+            length = int.from_bytes(recv_exact(conn, 2), "big")
+        elif length == 127:
+            length = int.from_bytes(recv_exact(conn, 8), "big")
+        assert length < 1_000_000, length
+        return first & 0x0f, recv_exact(conn, length)
+    except EOFError:
+        return None
+
+
+def expect_prompt_close(conn, seconds=2):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        conn.settimeout(max(0.01, deadline - time.monotonic()))
+        try:
+            frame = recv_frame(conn)
+        except ConnectionResetError:
+            return
+        except socket.timeout:
+            break
+        if frame is None or frame[0] == 0x8:
+            return
+    raise AssertionError("WebSocket did not close after the client close frame")
 
 
 subprocess.run(["dotnet", "build", str(PROJECT / "LanPong.csproj"), "-c", "Release"],
@@ -98,6 +152,27 @@ try:
     assert 0 <= before["pingMs"] < 2000, before
     assert abs(before["ballVx"]) > 0 and before["roundId"] >= 1, before
     with websocket(5180) as host_ws, websocket(5180) as passive_ws, websocket(5181) as guest_ws:
+        frame = recv_frame(host_ws)
+        assert frame is not None and frame[0] == 0x1, frame
+        snapshot = json.loads(frame[1])
+        assert snapshot["role"] == "host" and snapshot["connection"] == "connected", snapshot
+        assert "tick" in snapshot and "leftY" in snapshot and "rightY" in snapshot, snapshot
+
+        send_text(host_ws, '[]')
+        send_text(host_ws, '{"axis":"down"}')
+        send_text(host_ws, '{"axis":')
+        for _ in range(8):
+            send_text(host_ws, '{"axis":-1}')
+            time.sleep(0.04)
+        after_malformed = request(5180, "/api/status")
+        assert after_malformed["leftY"] < before["leftY"], (before, after_malformed)
+
+        for _ in range(8):
+            send_fragmented_text(host_ws, '{"axis":1}')
+            time.sleep(0.04)
+        after_fragmented = request(5180, "/api/status")
+        assert after_fragmented["leftY"] > after_malformed["leftY"], (after_malformed, after_fragmented)
+
         for _ in range(25):
             send_text(host_ws, '{"axis":-1}')
             send_text(passive_ws, '{"axis":0}')
@@ -109,12 +184,16 @@ try:
         synced = request(5181, "/api/status")
         assert abs(synced["leftY"] - moved["leftY"]) < 0.1, (moved, synced)
 
+    with websocket(5180) as closing_ws:
+        send_frame(closing_ws, 0x8, (1000).to_bytes(2, "big"))
+        expect_prompt_close(closing_ws)
+
     request(5181, "/api/restart", {})
     wait_until("guest restart request", lambda: request(5180, "/api/status")["phase"] == "countdown")
     request(5181, "/api/leave", {})
     wait_until("host observes guest leave", lambda: request(5180, "/api/status")["connection"] == "waiting")
     assert request(5180, "/api/status").get("pingMs") is None
-    print("PASS: static UI, discovery, UDP handshake, ping RTT, gameplay, both inputs, passive second tab, state sync, restart, leave")
+    print("PASS: static UI, discovery, UDP handshake, ping RTT, gameplay, WebSocket snapshots, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, leave")
 finally:
     for process in processes:
         process.terminate()
