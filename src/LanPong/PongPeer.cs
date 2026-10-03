@@ -2,14 +2,12 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
-using System.Text.Json;
 
 namespace LanPong;
 
 /// <summary>One local player and one remote player, connected directly over UDP.</summary>
 internal sealed class PongPeer : IAsyncDisposable
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly ILogger<PongPeer> _logger;
     private readonly Lock _gate = new();
     private readonly SemaphoreSlim _transition = new(1, 1);
@@ -159,7 +157,7 @@ internal sealed class PongPeer : IAsyncDisposable
             {
                 socket = _socket;
                 peer = _peerEndpoint ?? _targetEndpoint;
-                bye = _sessionId is null ? null : new WirePacket { Type = "bye", SessionId = _sessionId };
+                bye = _sessionId is null ? null : new ByePacket { SessionId = _sessionId };
             }
             if (socket is not null && peer is not null && bye is not null)
                 await SendQuietlyAsync(socket, peer, bye, CancellationToken.None);
@@ -175,7 +173,7 @@ internal sealed class PongPeer : IAsyncDisposable
         probe.EnableBroadcast = true;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromMilliseconds(1300));
-        var query = JsonSerializer.SerializeToUtf8Bytes(new WirePacket { Type = "discover" }, JsonOptions);
+        var query = WirePacketCodec.Serialize(new DiscoverPacket());
         var destinations = new[] { IPAddress.Broadcast, IPAddress.Loopback };
         foreach (var destination in destinations)
         {
@@ -189,14 +187,12 @@ internal sealed class PongPeer : IAsyncDisposable
             try
             {
                 var received = await probe.ReceiveAsync(timeout.Token);
-                if (received.Buffer.Length > 1200) continue;
-                var packet = JsonSerializer.Deserialize<WirePacket>(received.Buffer, JsonOptions);
-                if (packet is not { Version: 1, Type: "offer", Port: >= 1 and <= 65535 }) continue;
-                var host = new DiscoveredHost(received.RemoteEndPoint.Address.ToString(), packet.Port);
+                if (!WirePacketCodec.TryDeserialize(received.Buffer, out var packet)) continue;
+                if (packet is not OfferPacket { Port: >= 1 and <= 65535 } offer) continue;
+                var host = new DiscoveredHost(received.RemoteEndPoint.Address.ToString(), offer.Port);
                 found[$"{host.Address}:{host.Port}"] = host;
             }
             catch (OperationCanceledException) { break; }
-            catch (JsonException) { /* Ignore unrelated UDP traffic. */ }
             catch (SocketException ex)
             {
                 // Some systems report ICMP "port unreachable" for the loopback probe here.
@@ -303,7 +299,7 @@ internal sealed class PongPeer : IAsyncDisposable
                             }
                             if (_game.TickNumber - _lastStateSentTick >= 2)
                             {
-                                packet = StatePacket();
+                                packet = CreateStatePacket();
                                 _lastStateSentTick = _game.TickNumber;
                             }
                         }
@@ -326,7 +322,7 @@ internal sealed class PongPeer : IAsyncDisposable
                         if (_connection == "connecting" && now - _lastHelloSent >= TimeSpan.FromMilliseconds(500))
                         {
                             _lastHelloSent = now;
-                            packet = new WirePacket { Type = "hello" };
+                            packet = new HelloPacket();
                         }
                         else if (_connection == "connected" && _sessionId is not null)
                         {
@@ -334,12 +330,12 @@ internal sealed class PongPeer : IAsyncDisposable
                                 now - _lastRestartSent >= TimeSpan.FromMilliseconds(250))
                             {
                                 _lastRestartSent = now;
-                                packet = new WirePacket { Type = "restart", SessionId = _sessionId, RequestId = _pendingRestartRequestId };
+                                packet = new RestartPacket { SessionId = _sessionId, RequestId = _pendingRestartRequestId };
                             }
                             else if (now - _lastInputSent >= TimeSpan.FromMilliseconds(33))
                             {
                                 _lastInputSent = now;
-                                packet = new WirePacket { Type = "input", SessionId = _sessionId, Sequence = ++_outSequence, Axis = LocalAxis(now) };
+                                packet = new InputPacket { SessionId = _sessionId, Sequence = ++_outSequence, Axis = LocalAxis(now) };
                             }
                         }
                     }
@@ -349,7 +345,7 @@ internal sealed class PongPeer : IAsyncDisposable
                         _lastPingSent = now;
                         _pendingPingSequence = ++_pingSequence;
                         _pingSentTimestamp = Stopwatch.GetTimestamp();
-                        pingPacket = new WirePacket { Type = "ping", SessionId = _sessionId, Sequence = _pendingPingSequence };
+                        pingPacket = new PingPacket { SessionId = _sessionId, Sequence = _pendingPingSequence };
                     }
                     if (_pingMs is not null && now - _lastPongSeen > TimeSpan.FromSeconds(4))
                         _pingMs = null;
@@ -363,12 +359,12 @@ internal sealed class PongPeer : IAsyncDisposable
         catch (OperationCanceledException) { }
     }
 
-    private WirePacket StatePacket()
+    private StatePacket CreateStatePacket()
     {
         var state = _game.Capture();
-        return new WirePacket
+        return new StatePacket
         {
-            Type = "state", SessionId = _sessionId, Sequence = state.TickNumber,
+            SessionId = _sessionId, Sequence = state.TickNumber,
             LeftY = state.LeftY, RightY = state.RightY,
             BallX = state.BallX, BallY = state.BallY,
             BallVx = state.BallVx, BallVy = state.BallVy,
@@ -378,7 +374,7 @@ internal sealed class PongPeer : IAsyncDisposable
     }
 
     // Called while holding _gate. Ping and pong use the same authenticated UDP path as gameplay.
-    private void ObservePong(WirePacket packet)
+    private void ObservePong(PongPacket packet)
     {
         if (_pendingPingSequence == 0 || packet.Sequence != _pendingPingSequence) return;
         var sample = Stopwatch.GetElapsedTime(_pingSentTimestamp).TotalMilliseconds;
@@ -420,11 +416,8 @@ internal sealed class PongPeer : IAsyncDisposable
             try
             {
                 var received = await socket.ReceiveAsync(cancellationToken);
-                if (received.Buffer.Length > 1200) continue;
-                WirePacket? packet;
-                try { packet = JsonSerializer.Deserialize<WirePacket>(received.Buffer, JsonOptions); }
-                catch (JsonException) { continue; }
-                if (packet is not { Version: 1 }) continue;
+                if (!WirePacketCodec.TryDeserialize(received.Buffer, out var packet)) continue;
+                if (packet is null) continue;
                 await HandlePacketAsync(socket, received.RemoteEndPoint, packet, cancellationToken);
             }
             catch (OperationCanceledException) { break; }
@@ -447,11 +440,11 @@ internal sealed class PongPeer : IAsyncDisposable
             if (_socket != socket) return;
             if (_role == "host")
             {
-                if (packet.Type == "discover")
+                if (packet is DiscoverPacket)
                 {
-                    if (_peerEndpoint is null) reply = new WirePacket { Type = "offer", Port = _udpPort };
+                    if (_peerEndpoint is null) reply = new OfferPacket { Port = _udpPort };
                 }
-                else if (packet.Type == "hello")
+                else if (packet is HelloPacket)
                 {
                     if (_peerEndpoint is null)
                     {
@@ -468,95 +461,95 @@ internal sealed class PongPeer : IAsyncDisposable
                     if (_peerEndpoint.Equals(remote))
                     {
                         _lastPeerSeen = now;
-                        reply = new WirePacket { Type = "welcome", SessionId = _sessionId };
+                        reply = new WelcomePacket { SessionId = _sessionId };
                     }
                 }
-                else if (_peerEndpoint?.Equals(remote) == true && packet.SessionId == _sessionId)
+                else if (_peerEndpoint?.Equals(remote) == true && _sessionId is not null)
                 {
-                    if (packet.Type == "ping")
+                    switch (packet)
                     {
-                        _lastPeerSeen = now;
-                        reply = new WirePacket { Type = "pong", SessionId = _sessionId, Sequence = packet.Sequence };
-                    }
-                    else if (packet.Type == "pong")
-                    {
-                        _lastPeerSeen = now;
-                        ObservePong(packet);
-                    }
-                    else if (packet.Type == "input" && packet.Sequence > _lastInputSequence && packet.Axis is >= -1 and <= 1)
-                    {
-                        _lastInputSequence = packet.Sequence;
-                        _remoteAxis = packet.Axis;
-                        _lastInputSeen = _lastPeerSeen = now;
-                    }
-                    else if (packet.Type == "restart" && !string.IsNullOrEmpty(packet.RequestId))
-                    {
-                        _lastPeerSeen = now;
-                        if (packet.RequestId != _lastRestartRequestId)
-                        {
-                            _lastRestartRequestId = packet.RequestId;
-                            _game.StartMatch();
-                        }
-                    }
-                    else if (packet.Type == "bye")
-                    {
-                        _peerEndpoint = null;
-                        _sessionId = null;
-                        _connection = "waiting";
-                        _message = "Соперник вышел. Ожидание нового игрока…";
-                        _remoteAxis = 0;
-                        _lastStateSentTick = 0;
-                        ResetPing();
-                        _game.ResetWaiting();
+                        case PingPacket ping when ping.SessionId == _sessionId:
+                            _lastPeerSeen = now;
+                            reply = new PongPacket { SessionId = _sessionId, Sequence = ping.Sequence };
+                            break;
+                        case PongPacket pong when pong.SessionId == _sessionId:
+                            _lastPeerSeen = now;
+                            ObservePong(pong);
+                            break;
+                        case InputPacket input when input.SessionId == _sessionId &&
+                                                    input.Sequence > _lastInputSequence &&
+                                                    input.Axis is >= -1 and <= 1:
+                            _lastInputSequence = input.Sequence;
+                            _remoteAxis = input.Axis;
+                            _lastInputSeen = _lastPeerSeen = now;
+                            break;
+                        case RestartPacket restart when restart.SessionId == _sessionId &&
+                                                        !string.IsNullOrEmpty(restart.RequestId):
+                            _lastPeerSeen = now;
+                            if (restart.RequestId != _lastRestartRequestId)
+                            {
+                                _lastRestartRequestId = restart.RequestId;
+                                _game.StartMatch();
+                            }
+                            break;
+                        case ByePacket bye when bye.SessionId == _sessionId:
+                            _peerEndpoint = null;
+                            _sessionId = null;
+                            _connection = "waiting";
+                            _message = "Соперник вышел. Ожидание нового игрока…";
+                            _remoteAxis = 0;
+                            _lastStateSentTick = 0;
+                            ResetPing();
+                            _game.ResetWaiting();
+                            break;
                     }
                 }
             }
             else if (_role == "guest" && _targetEndpoint?.Equals(remote) == true)
             {
-                if (packet.Type == "welcome" && !string.IsNullOrEmpty(packet.SessionId))
+                switch (packet)
                 {
-                    // A delayed welcome from an old match must not replace an active session.
-                    if (_connection == "connected" && _sessionId != packet.SessionId) return;
-                    if (_sessionId != packet.SessionId)
-                    {
-                        _sessionId = packet.SessionId;
-                        _lastStateSequence = -1;
+                    case WelcomePacket welcome when !string.IsNullOrEmpty(welcome.SessionId):
+                        // A delayed welcome from an old match must not replace an active session.
+                        if (_connection == "connected" && _sessionId != welcome.SessionId) return;
+                        if (_sessionId != welcome.SessionId)
+                        {
+                            _sessionId = welcome.SessionId;
+                            _lastStateSequence = -1;
+                            _pendingRestartRequestId = null;
+                            _restartAfterRound = 0;
+                            ResetPing();
+                            _game.ResetWaiting();
+                        }
+                        _connection = "connected";
+                        _message = "Вы подключились. Игра началась!";
+                        _lastPeerSeen = now;
+                        break;
+                    case PingPacket ping when _sessionId is not null && ping.SessionId == _sessionId:
+                        _lastPeerSeen = now;
+                        reply = new PongPacket { SessionId = _sessionId, Sequence = ping.Sequence };
+                        break;
+                    case PongPacket pong when _sessionId is not null && pong.SessionId == _sessionId:
+                        _lastPeerSeen = now;
+                        ObservePong(pong);
+                        break;
+                    case StatePacket state when _sessionId is not null && state.SessionId == _sessionId &&
+                                                state.Sequence > _lastStateSequence:
+                        _lastStateSequence = state.Sequence;
+                        _lastPeerSeen = now;
+                        _game.Restore(state.ToGameState());
+                        if (_pendingRestartRequestId is not null && state.RoundId > _restartAfterRound)
+                            _pendingRestartRequestId = null;
+                        break;
+                    case ByePacket bye when _sessionId is not null && bye.SessionId == _sessionId:
+                        _connection = "connecting";
+                        _message = "Соперник вышел. Повторное подключение…";
+                        _sessionId = null;
                         _pendingRestartRequestId = null;
                         _restartAfterRound = 0;
                         ResetPing();
                         _game.ResetWaiting();
-                    }
-                    _connection = "connected";
-                    _message = "Вы подключились. Игра началась!";
-                    _lastPeerSeen = now;
-                }
-                else if (packet.Type == "ping" && packet.SessionId == _sessionId)
-                {
-                    _lastPeerSeen = now;
-                    reply = new WirePacket { Type = "pong", SessionId = _sessionId, Sequence = packet.Sequence };
-                }
-                else if (packet.Type == "pong" && packet.SessionId == _sessionId)
-                {
-                    _lastPeerSeen = now;
-                    ObservePong(packet);
-                }
-                else if (packet.Type == "state" && packet.SessionId == _sessionId && packet.Sequence > _lastStateSequence)
-                {
-                    _lastStateSequence = packet.Sequence;
-                    _lastPeerSeen = now;
-                    _game.Restore(packet.ToGameState());
-                    if (_pendingRestartRequestId is not null && packet.RoundId > _restartAfterRound)
-                        _pendingRestartRequestId = null;
-                }
-                else if (packet.Type == "bye" && packet.SessionId == _sessionId)
-                {
-                    _connection = "connecting";
-                    _message = "Соперник вышел. Повторное подключение…";
-                    _sessionId = null;
-                    _pendingRestartRequestId = null;
-                    _restartAfterRound = 0;
-                    ResetPing();
-                    _game.ResetWaiting();
+                        break;
                 }
             }
         }
@@ -567,7 +560,7 @@ internal sealed class PongPeer : IAsyncDisposable
     {
         try
         {
-            var bytes = JsonSerializer.SerializeToUtf8Bytes(packet, JsonOptions);
+            var bytes = WirePacketCodec.Serialize(packet);
             await socket.SendAsync(bytes, destination, cancellationToken);
         }
         catch (OperationCanceledException) { }
