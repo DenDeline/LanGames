@@ -1,25 +1,29 @@
 namespace LanPong;
 
-/// <summary>The host owns this simulation; guests only display its snapshots.</summary>
+/// <summary>A deterministic host simulation. The guest only applies observable states.</summary>
 internal sealed class GameEngine
 {
     private const double PaddleHalfHeight = 0.09;
     private const double PaddleSpeed = 0.85;
-    // The arena is 16:9; the ball is circular in pixels, not in normalized coordinates.
+    // The arena is 16:9, so a circular ball has different normalized X and Y radii.
     private const double BallRadiusX = 0.012 * 9.0 / 16.0;
     private const double BallRadiusY = 0.012;
-    private const double LeftPaddleX = 0.045;
-    private const double RightPaddleX = 0.955;
-    private const double PaddleHalfWidth = 0.009;
-    private const double LeftContactX = LeftPaddleX + PaddleHalfWidth + BallRadiusX;
-    private const double RightContactX = RightPaddleX - PaddleHalfWidth - BallRadiusX;
+    private const double LeftContactX = 0.045 + 0.009 + BallRadiusX;
+    private const double RightContactX = 0.955 - 0.009 - BallRadiusX;
     private const double ContactTolerance = 1e-10;
+    private const double MissSeparation = 1e-7;
+    private const double ServeSpeedX = 0.55;
+    private const double ServeSpeedY = 0.19;
+    private const double MaximumBounceAngle = 0.8;
+    private const double VerticalBounceScale = 0.8;
+    // Production steps are 1/60 s; this also bounds headless/replay callers.
+    private const double MaximumAdvanceSeconds = 10;
     private const int WinningScore = 7;
 
+    private GamePhase _phase = GamePhase.Waiting;
     private int _serveDirection = 1;
     private int _hits;
 
-    // C# 14 field-backed properties keep paddle centres inside the arena.
     public double LeftY { get; private set => field = Math.Clamp(value, PaddleHalfHeight, 1 - PaddleHalfHeight); } = 0.5;
     public double RightY { get; private set => field = Math.Clamp(value, PaddleHalfHeight, 1 - PaddleHalfHeight); } = 0.5;
     public double BallX { get; private set; } = 0.5;
@@ -28,10 +32,20 @@ internal sealed class GameEngine
     public double BallVy { get; private set; }
     public int LeftScore { get; private set; }
     public int RightScore { get; private set; }
-    public string Phase { get; private set; } = "waiting";
+    public string Phase => GamePhaseWire.Format(_phase);
     public double Countdown { get; private set; }
     public long TickNumber { get; private set; }
     public int RoundId { get; private set; }
+
+    public GameState Capture() => new()
+    {
+        LeftY = LeftY, RightY = RightY,
+        BallX = BallX, BallY = BallY,
+        BallVx = BallVx, BallVy = BallVy,
+        LeftScore = LeftScore, RightScore = RightScore,
+        Phase = _phase, Countdown = Countdown,
+        TickNumber = TickNumber, RoundId = RoundId
+    };
 
     public void ResetWaiting()
     {
@@ -40,7 +54,8 @@ internal sealed class GameEngine
         LeftScore = RightScore = 0;
         Countdown = 0;
         TickNumber = 0;
-        Phase = "waiting";
+        _phase = GamePhase.Waiting;
+        _serveDirection = 1;
         _hits = 0;
     }
 
@@ -59,95 +74,76 @@ internal sealed class GameEngine
         BallX = BallY = 0.5;
         BallVx = BallVy = 0;
         Countdown = 1.6;
-        Phase = "countdown";
+        _phase = GamePhase.Countdown;
     }
 
     public void Advance(double dt, int leftAxis, int rightAxis)
     {
+        if (!double.IsFinite(dt) || dt < 0 || dt > MaximumAdvanceSeconds)
+            throw new ArgumentOutOfRangeException(nameof(dt), "Step duration must be between zero and ten seconds.");
+
+        // Ticks continue in terminal states so a lost final UDP snapshot can be resent.
         TickNumber++;
-        if (Phase is "waiting" or "gameover") return;
+        if (_phase is GamePhase.Waiting or GamePhase.GameOver || dt == 0) return;
 
         leftAxis = Math.Clamp(leftAxis, -1, 1);
         rightAxis = Math.Clamp(rightAxis, -1, 1);
         var startLeftY = LeftY;
         var startRightY = RightY;
-        LeftY += leftAxis * PaddleSpeed * dt;
-        RightY += rightAxis * PaddleSpeed * dt;
 
-        if (Phase == "countdown")
+        var elapsed = 0.0;
+        while (elapsed < dt)
         {
-            Countdown = Math.Max(0, Countdown - dt);
-            if (Countdown <= 0)
+            if (_phase == GamePhase.Countdown)
             {
-                Phase = "playing";
-                BallVx = 0.55 * _serveDirection;
-                BallVy = (_serveDirection > 0 ? 0.19 : -0.19);
+                var countTime = Math.Min(Countdown, dt - elapsed);
+                Countdown -= countTime;
+                elapsed += countTime;
+                if (Countdown > 0) break;
+
+                Countdown = 0;
+                _phase = GamePhase.Playing;
+                BallVx = ServeSpeedX * _serveDirection;
+                BallVy = ServeSpeedY * _serveDirection;
+                continue;
             }
-            return;
+
+            if (_phase != GamePhase.Playing) break;
+            var result = AdvanceBall(dt - elapsed, elapsed, startLeftY, startRightY, leftAxis, rightAxis);
+            elapsed += result.TimeUsed;
+            if (result.Goal == Goal.None) break;
+
+            if (result.Goal == Goal.Left) RightScore++;
+            else LeftScore++;
+            AfterPoint(result.Goal == Goal.Left ? -1 : 1);
+            if (_phase == GamePhase.GameOver) break;
         }
 
-        // Resolve the first contact inside this fixed step, then spend the remaining
-        // time with the reflected velocity. This avoids tunnelling and early bounces.
-        var remaining = dt;
-        var elapsed = 0.0;
-        var leftPaddleChecked = false;
-        var rightPaddleChecked = false;
-        for (var contacts = 0; contacts < 4 && remaining > 0; contacts++)
+        // A winning goal ends paddle movement at the goal time, even inside a step.
+        LeftY = PaddleAt(startLeftY, leftAxis, elapsed);
+        RightY = PaddleAt(startRightY, rightAxis, elapsed);
+    }
+
+    private BallStep AdvanceBall(
+        double duration, double stepOffset, double startLeftY, double startRightY,
+        int leftAxis, int rightAxis)
+    {
+        var remaining = duration;
+        var elapsed = stepOffset;
+
+        while (remaining > 0)
         {
-            var firstTime = remaining + 1;
-            var first = Contact.None;
-
-            if (BallVy < 0)
+            var contact = FindFirstContact(remaining);
+            if (contact.Kind == Contact.None)
             {
-                var time = (BallRadiusY - BallY) / BallVy;
-                if (time >= -ContactTolerance && time <= remaining)
-                {
-                    firstTime = Math.Max(0, time);
-                    first = Contact.Top;
-                }
-            }
-            else if (BallVy > 0)
-            {
-                var time = (1 - BallRadiusY - BallY) / BallVy;
-                if (time >= -ContactTolerance && time <= remaining)
-                {
-                    firstTime = Math.Max(0, time);
-                    first = Contact.Bottom;
-                }
+                MoveBall(remaining);
+                return new BallStep(duration, Goal.None);
             }
 
-            if (BallVx < 0 && !leftPaddleChecked && BallX >= LeftContactX - ContactTolerance)
-            {
-                var time = (LeftContactX - BallX) / BallVx;
-                if (time >= -ContactTolerance && time <= remaining && Math.Max(0, time) < firstTime)
-                {
-                    firstTime = Math.Max(0, time);
-                    first = Contact.LeftPaddle;
-                }
-            }
-            else if (BallVx > 0 && !rightPaddleChecked && BallX <= RightContactX + ContactTolerance)
-            {
-                var time = (RightContactX - BallX) / BallVx;
-                if (time >= -ContactTolerance && time <= remaining && Math.Max(0, time) < firstTime)
-                {
-                    firstTime = Math.Max(0, time);
-                    first = Contact.RightPaddle;
-                }
-            }
-
-            if (first == Contact.None)
-            {
-                BallX += BallVx * remaining;
-                BallY += BallVy * remaining;
-                remaining = 0;
-                break;
-            }
-
-            BallX += BallVx * firstTime;
-            BallY += BallVy * firstTime;
-            elapsed += firstTime;
-            remaining -= firstTime;
-            switch (first)
+            MoveBall(contact.Time);
+            elapsed += contact.Time;
+            remaining -= contact.Time;
+            switch (contact.Kind)
             {
                 case Contact.Top:
                     BallY = BallRadiusY;
@@ -158,86 +154,117 @@ internal sealed class GameEngine
                     BallVy = -BallVy;
                     break;
                 case Contact.LeftPaddle:
-                    leftPaddleChecked = true;
-                    var leftAtContact = Math.Clamp(startLeftY + leftAxis * PaddleSpeed * elapsed,
-                        PaddleHalfHeight, 1 - PaddleHalfHeight);
+                    var leftAtContact = PaddleAt(startLeftY, leftAxis, elapsed);
                     if (Math.Abs(BallY - leftAtContact) <= PaddleHalfHeight + BallRadiusY)
                     {
                         BallX = LeftContactX;
                         Bounce(leftAtContact, 1);
                     }
-                    else BallX = LeftContactX - 1e-7;
+                    else BallX = LeftContactX - MissSeparation;
                     break;
                 case Contact.RightPaddle:
-                    rightPaddleChecked = true;
-                    var rightAtContact = Math.Clamp(startRightY + rightAxis * PaddleSpeed * elapsed,
-                        PaddleHalfHeight, 1 - PaddleHalfHeight);
+                    var rightAtContact = PaddleAt(startRightY, rightAxis, elapsed);
                     if (Math.Abs(BallY - rightAtContact) <= PaddleHalfHeight + BallRadiusY)
                     {
                         BallX = RightContactX;
                         Bounce(rightAtContact, -1);
                     }
-                    else BallX = RightContactX + 1e-7;
+                    else BallX = RightContactX + MissSeparation;
                     break;
+                case Contact.LeftGoal:
+                    BallX = -BallRadiusX;
+                    return new BallStep(duration - remaining, Goal.Left);
+                case Contact.RightGoal:
+                    BallX = 1 + BallRadiusX;
+                    return new BallStep(duration - remaining, Goal.Right);
             }
         }
 
-        if (remaining > 0)
-        {
-            BallX += BallVx * remaining;
-            BallY += BallVy * remaining;
-        }
-
-        if (BallX < -BallRadiusX)
-        {
-            RightScore++;
-            AfterPoint(-1);
-        }
-        else if (BallX > 1 + BallRadiusX)
-        {
-            LeftScore++;
-            AfterPoint(1);
-        }
+        return new BallStep(duration, Goal.None);
     }
 
-    private enum Contact { None, Top, Bottom, LeftPaddle, RightPaddle }
+    private Collision FindFirstContact(double remaining)
+    {
+        var first = new Collision(Contact.None, remaining + 1);
+        if (BallVy < 0)
+            first = Earlier(first, Contact.Top, (BallRadiusY - BallY) / BallVy, remaining);
+        else if (BallVy > 0)
+            first = Earlier(first, Contact.Bottom, (1 - BallRadiusY - BallY) / BallVy, remaining);
+
+        if (BallVx < 0)
+        {
+            if (BallX >= LeftContactX - ContactTolerance)
+                first = Earlier(first, Contact.LeftPaddle, (LeftContactX - BallX) / BallVx, remaining);
+            first = Earlier(first, Contact.LeftGoal, (-BallRadiusX - BallX) / BallVx, remaining);
+        }
+        else if (BallVx > 0)
+        {
+            if (BallX <= RightContactX + ContactTolerance)
+                first = Earlier(first, Contact.RightPaddle, (RightContactX - BallX) / BallVx, remaining);
+            first = Earlier(first, Contact.RightGoal, (1 + BallRadiusX - BallX) / BallVx, remaining);
+        }
+        return first;
+    }
+
+    private static Collision Earlier(Collision first, Contact kind, double time, double remaining)
+    {
+        if (time < -ContactTolerance || time > remaining + ContactTolerance) return first;
+        time = Math.Clamp(time, 0, remaining);
+        return time < first.Time ? new Collision(kind, time) : first;
+    }
+
+    private void MoveBall(double time)
+    {
+        BallX += BallVx * time;
+        BallY += BallVy * time;
+    }
+
+    private static double PaddleAt(double startY, int axis, double elapsed) =>
+        Math.Clamp(startY + axis * PaddleSpeed * elapsed, PaddleHalfHeight, 1 - PaddleHalfHeight);
 
     private void Bounce(double paddleY, int direction)
     {
         _hits++;
-        var speed = Math.Min(0.55 + _hits * 0.035, 0.9);
-        var angle = Math.Clamp((BallY - paddleY) / PaddleHalfHeight, -1, 1) * 0.8;
-        BallVx = direction * speed * Math.Cos(angle);
-        BallVy = speed * Math.Sin(angle) * 0.8;
+        var launchSpeed = Math.Min(ServeSpeedX + _hits * 0.035, 0.9);
+        var angle = Math.Clamp((BallY - paddleY) / PaddleHalfHeight, -1, 1) * MaximumBounceAngle;
+        BallVx = direction * launchSpeed * Math.Cos(angle);
+        // Dampen the vertical component deliberately to keep off-center rallies playable.
+        BallVy = launchSpeed * Math.Sin(angle) * VerticalBounceScale;
     }
 
     private void AfterPoint(int direction)
     {
         if (LeftScore >= WinningScore || RightScore >= WinningScore)
         {
-            Phase = "gameover";
+            _phase = GamePhase.GameOver;
             BallVx = BallVy = 0;
             Countdown = 0;
         }
-        else
-        {
-            StartRound(direction);
-        }
+        else StartRound(direction);
     }
 
-    public void Load(WirePacket packet)
+    /// <summary>Apply a network state to the guest's display replica.</summary>
+    public void Restore(GameState state)
     {
-        LeftY = packet.LeftY;
-        RightY = packet.RightY;
-        BallX = Math.Clamp(packet.BallX, -BallRadiusX, 1 + BallRadiusX);
-        BallY = Math.Clamp(packet.BallY, 0, 1);
-        BallVx = Math.Clamp(packet.BallVx, -1.5, 1.5);
-        BallVy = Math.Clamp(packet.BallVy, -1.5, 1.5);
-        LeftScore = Math.Max(0, packet.LeftScore);
-        RightScore = Math.Max(0, packet.RightScore);
-        Phase = packet.Phase is "waiting" or "countdown" or "playing" or "gameover" ? packet.Phase : "waiting";
-        Countdown = Math.Clamp(packet.Countdown, 0, 5);
-        TickNumber = packet.Sequence;
-        RoundId = Math.Max(0, packet.RoundId);
+        LeftY = FiniteClamp(state.LeftY, PaddleHalfHeight, 1 - PaddleHalfHeight, 0.5);
+        RightY = FiniteClamp(state.RightY, PaddleHalfHeight, 1 - PaddleHalfHeight, 0.5);
+        BallX = FiniteClamp(state.BallX, -BallRadiusX, 1 + BallRadiusX, 0.5);
+        BallY = FiniteClamp(state.BallY, BallRadiusY, 1 - BallRadiusY, 0.5);
+        BallVx = FiniteClamp(state.BallVx, -1.5, 1.5, 0);
+        BallVy = FiniteClamp(state.BallVy, -1.5, 1.5, 0);
+        LeftScore = Math.Max(0, state.LeftScore);
+        RightScore = Math.Max(0, state.RightScore);
+        _phase = state.Phase is >= GamePhase.Waiting and <= GamePhase.GameOver ? state.Phase : GamePhase.Waiting;
+        Countdown = FiniteClamp(state.Countdown, 0, 5, 0);
+        TickNumber = Math.Max(0, state.TickNumber);
+        RoundId = Math.Max(0, state.RoundId);
     }
+
+    private static double FiniteClamp(double value, double min, double max, double fallback) =>
+        double.IsFinite(value) ? Math.Clamp(value, min, max) : fallback;
+
+    private enum Contact { None, Top, Bottom, LeftPaddle, RightPaddle, LeftGoal, RightGoal }
+    private enum Goal { None, Left, Right }
+    private readonly record struct Collision(Contact Kind, double Time);
+    private readonly record struct BallStep(double TimeUsed, Goal Goal);
 }

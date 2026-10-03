@@ -64,6 +64,6 @@ node tests/frontend/frontend-check.cjs
 python3 tests/integration/integration_test.py
 ```
 
-Первая команда запускает семь TUnit тестов столкновений и начисления очков через `Microsoft.Testing.Platform`, выбранную в `global.json`. Имена C# тестов следуют [формату](https://learn.microsoft.com/dotnet/core/testing/unit-testing-best-practices#follow-test-naming-standards) `Метод_WhenУсловие_ОжидаемыйРезультат`. Для второй команды нужен Node.js; она проверяет интерполяцию, локальный прогноз ракетки и кэш Canvas без браузера. Для третьей нужен Python 3; она сама собирает приложение и запускает две локальные копии для проверки UDP, WebSocket, пинга, синхронизации и повторного матча. Проверка сети открывает локальные TCP и UDP порты 5180, 5181 и 47888.
+Первая команда запускает TUnit тесты столкновений, переходов между раундами, начисления очков и повторяемости симуляции через `Microsoft.Testing.Platform`, выбранную в `global.json`. Имена C# тестов следуют [формату](https://learn.microsoft.com/dotnet/core/testing/unit-testing-best-practices#follow-test-naming-standards) `Метод_WhenУсловие_ОжидаемыйРезультат`. Для второй команды нужен Node.js; она проверяет интерполяцию, локальный прогноз ракетки и кэш Canvas без браузера. Для третьей нужен Python 3; она сама собирает приложение и запускает две локальные копии для проверки UDP, WebSocket, пинга, синхронизации и повторного матча. Проверка сети открывает локальные TCP и UDP порты 5180, 5181 и 47888.
 
 Обоснование оптимизаций, источники и ограничения описаны в [RESEARCH.md](RESEARCH.md).

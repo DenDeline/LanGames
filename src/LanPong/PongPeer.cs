@@ -59,13 +59,14 @@ internal sealed class PongPeer : IAsyncDisposable
     {
         lock (_gate)
         {
+            var state = _game.Capture();
             return new PongSnapshot(
                 _role, _connection, _message, _udpPort, _localAddresses,
                 (_peerEndpoint ?? _targetEndpoint)?.ToString(),
-                _game.LeftY, _game.RightY, _game.BallX, _game.BallY,
-                _game.BallVx, _game.BallVy,
-                _game.LeftScore, _game.RightScore, _game.Phase,
-                _game.Countdown, _game.TickNumber, _game.RoundId, _pingMs);
+                state.LeftY, state.RightY, state.BallX, state.BallY,
+                state.BallVx, state.BallVy,
+                state.LeftScore, state.RightScore, GamePhaseWire.Format(state.Phase),
+                state.Countdown, state.TickNumber, state.RoundId, _pingMs);
         }
     }
 
@@ -362,15 +363,19 @@ internal sealed class PongPeer : IAsyncDisposable
         catch (OperationCanceledException) { }
     }
 
-    private WirePacket StatePacket() => new()
+    private WirePacket StatePacket()
     {
-        Type = "state", SessionId = _sessionId, Sequence = _game.TickNumber,
-        LeftY = _game.LeftY, RightY = _game.RightY,
-        BallX = _game.BallX, BallY = _game.BallY,
-        BallVx = _game.BallVx, BallVy = _game.BallVy,
-        LeftScore = _game.LeftScore, RightScore = _game.RightScore,
-        Phase = _game.Phase, Countdown = _game.Countdown, RoundId = _game.RoundId
-    };
+        var state = _game.Capture();
+        return new WirePacket
+        {
+            Type = "state", SessionId = _sessionId, Sequence = state.TickNumber,
+            LeftY = state.LeftY, RightY = state.RightY,
+            BallX = state.BallX, BallY = state.BallY,
+            BallVx = state.BallVx, BallVy = state.BallVy,
+            LeftScore = state.LeftScore, RightScore = state.RightScore,
+            Phase = GamePhaseWire.Format(state.Phase), Countdown = state.Countdown, RoundId = state.RoundId
+        };
+    }
 
     // Called while holding _gate. Ping and pong use the same authenticated UDP path as gameplay.
     private void ObservePong(WirePacket packet)
@@ -539,7 +544,7 @@ internal sealed class PongPeer : IAsyncDisposable
                 {
                     _lastStateSequence = packet.Sequence;
                     _lastPeerSeen = now;
-                    _game.Load(packet);
+                    _game.Restore(packet.ToGameState());
                     if (_pendingRestartRequestId is not null && packet.RoundId > _restartAfterRound)
                         _pendingRestartRequestId = null;
                 }

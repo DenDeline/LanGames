@@ -20,6 +20,16 @@ internal sealed record WirePacket
     public string Phase { get; init; } = "waiting";
     public double Countdown { get; init; }
     public int RoundId { get; init; }
+
+    public GameState ToGameState() => new()
+    {
+        LeftY = LeftY, RightY = RightY,
+        BallX = BallX, BallY = BallY,
+        BallVx = BallVx, BallVy = BallVy,
+        LeftScore = LeftScore, RightScore = RightScore,
+        Phase = GamePhaseWire.Parse(Phase), Countdown = Countdown,
+        TickNumber = Sequence, RoundId = RoundId
+    };
 }
 
 public sealed record PongSnapshot(

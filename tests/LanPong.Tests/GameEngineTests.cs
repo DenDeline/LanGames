@@ -105,15 +105,28 @@ public sealed class GameEngineTests
         await Assert.That(game.BallX < LeftContactX).IsTrue();
     }
 
+    [Test]
+    public async Task Advance_WhenOneStepContainsRepeatedPaddleContacts_ResolvesEachContact()
+    {
+        var game = Playing(0.5, 0.5, 1.5, 0);
+
+        game.Advance(4, 0, 0);
+
+        await Assert.That(game.Phase).IsEqualTo("playing");
+        await Assert.That(game.LeftScore).IsEqualTo(0);
+        await Assert.That(game.RightScore).IsEqualTo(0);
+        await Assert.That(game.BallVx).IsEqualTo(-0.655).Within(1e-10);
+        await Assert.That(game.BallY).IsEqualTo(0.5).Within(1e-10);
+    }
+
     private static GameEngine Playing(
         double ballX, double ballY, double vx, double vy,
         double leftY = 0.5, double rightY = 0.5)
     {
         var game = new GameEngine();
-        game.Load(new WirePacket
+        game.Restore(new GameState
         {
-            Type = "state",
-            Phase = "playing",
+            Phase = GamePhase.Playing,
             BallX = ballX,
             BallY = ballY,
             BallVx = vx,
