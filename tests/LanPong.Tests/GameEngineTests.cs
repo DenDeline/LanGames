@@ -1,8 +1,3 @@
-using LanPong;
-using TUnit.Assertions;
-using TUnit.Assertions.Extensions;
-using TUnit.Core;
-
 namespace LanPong.Tests;
 
 public sealed class GameEngineTests

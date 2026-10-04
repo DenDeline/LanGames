@@ -1,9 +1,5 @@
 using System.Buffers;
 using System.Text;
-using LanPong;
-using TUnit.Assertions;
-using TUnit.Assertions.Extensions;
-using TUnit.Core;
 
 namespace LanPong.Tests;
 
@@ -51,7 +47,7 @@ public sealed class WirePacketCodecTests
     public async Task TryDeserialize_RejectsPreviousProtocolAndJson()
     {
         var oldBinary = WirePacketCodec.Serialize(new OfferPacket { Version = WirePacket.CurrentVersion - 1, Port = 28080 });
-        var oldJson = Encoding.UTF8.GetBytes("{\"version\":1,\"type\":\"offer\",\"port\":28080}");
+        var oldJson = "{\"version\":1,\"type\":\"offer\",\"port\":28080}"u8.ToArray();
         var oldFlatMessagePack = new byte[] { 0x92, 0x02, 0xa5, (byte)'h', (byte)'e', (byte)'l', (byte)'l', (byte)'o' };
 
         await Assert.That(WirePacketCodec.TryDeserialize(oldBinary, out _)).IsFalse();
