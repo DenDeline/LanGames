@@ -117,6 +117,58 @@ def expect_prompt_close(conn, seconds=2):
     raise AssertionError("WebSocket did not close after the client close frame")
 
 
+def expect_shutdown_close(conn, seconds=2):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        conn.settimeout(max(0.01, deadline - time.monotonic()))
+        try:
+            frame = recv_frame(conn)
+        except socket.timeout as exc:
+            raise AssertionError("Timed out waiting for the server WebSocket close frame") from exc
+        if frame is None:
+            raise AssertionError("WebSocket closed without a server close frame")
+        if frame[0] == 0x8:
+            assert len(frame[1]) >= 2, "Server close frame has no status code"
+            code = int.from_bytes(frame[1][:2], "big")
+            assert code == 1001, f"Expected Going Away (1001), got {code}"
+            return
+    raise AssertionError("Server WebSocket close frame was not received")
+
+
+def launch(port, log):
+    return subprocess.Popen(
+        ["dotnet", str(DLL)],
+        cwd=PROJECT, stdout=log, stderr=subprocess.STDOUT,
+        env={**os.environ, "ASPNETCORE_URLS": f"http://127.0.0.1:{port}"},
+    )
+
+
+def terminate_connected_process(process, port, remote_port, remote_connection, role):
+    with websocket(port) as conn:
+        first = recv_frame(conn)
+        assert first is not None and first[0] == 0x1, first
+        assert json.loads(first[1])["connection"] == "connected"
+
+        started = time.monotonic()
+        process.terminate()
+        expect_shutdown_close(conn)
+        try:
+            send_frame(conn, 0x8, (1001).to_bytes(2, "big"))
+        except (BrokenPipeError, ConnectionResetError):
+            # The close frame is the contract; the process may already have exited.
+            pass
+        wait_until(f"{role} shutdown Bye reaches remote peer", lambda:
+                   request(remote_port, "/api/status")["connection"] == remote_connection,
+                   seconds=max(0, 2 - (time.monotonic() - started)))
+        remaining = 4 - (time.monotonic() - started)
+        assert remaining > 0, f"{role} shutdown exceeded four seconds"
+        try:
+            exit_code = process.wait(timeout=remaining)
+        except subprocess.TimeoutExpired as exc:
+            raise AssertionError(f"{role} did not exit within four seconds") from exc
+        assert exit_code == 0, f"{role} exited with code {exit_code}"
+
+
 def send_oversized_udp_datagrams(*ports):
     # 0xc1 is reserved by MessagePack. The first size is exactly one byte over
     # the protocol limit; the second exceeds the new receive buffer by far.
@@ -135,11 +187,7 @@ logs = [open(log_dir / f"pong-{port}.log", "w") for port in (5180, 5181)]
 processes = []
 try:
     for port, log in zip((5180, 5181), logs):
-        processes.append(subprocess.Popen(
-            ["dotnet", str(DLL)],
-            cwd=PROJECT, stdout=log, stderr=subprocess.STDOUT,
-            env={**os.environ, "ASPNETCORE_URLS": f"http://127.0.0.1:{port}"},
-        ))
+        processes.append(launch(port, log))
 
     wait_until("web servers", lambda: request(5180, "/api/status") and request(5181, "/api/status"))
     assert b"game-canvas" in urllib.request.urlopen("http://127.0.0.1:5180/").read()
@@ -236,14 +284,32 @@ try:
     left_host = request(5180, "/api/leave", {})
     assert left_host["role"] == "none" and left_host["connection"] == "idle", left_host
     assert left_host["phase"] == "waiting", left_host
-    print("PASS: static UI, discovery, UDP handshake, ping RTT, oversized UDP datagrams, gameplay, WebSocket snapshots, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, leave and reconnect")
+    request(5181, "/api/leave", {})
+    request(5180, "/api/host", {"port": 47888})
+    request(5181, "/api/join", {"address": "127.0.0.1", "port": 47888})
+    wait_until("connected before guest SIGTERM", lambda:
+               request(5180, "/api/status")["connection"] == "connected"
+               and request(5181, "/api/status")["connection"] == "connected")
+    terminate_connected_process(processes[1], 5181, 5180, "waiting", "guest")
+
+    processes[1] = launch(5181, logs[1])
+    wait_until("restarted guest web server", lambda: request(5181, "/api/status"))
+    request(5181, "/api/join", {"address": "127.0.0.1", "port": 47888})
+    wait_until("connected before host SIGTERM", lambda:
+               request(5180, "/api/status")["connection"] == "connected"
+               and request(5181, "/api/status")["connection"] == "connected")
+    terminate_connected_process(processes[0], 5180, 5181, "connecting", "host")
+
+    print("PASS: static UI, discovery, UDP handshake, ping RTT, oversized UDP datagrams, gameplay, WebSocket snapshots, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, leave, reconnect, and graceful host/guest shutdown")
 finally:
     for process in processes:
-        process.terminate()
+        if process.poll() is None:
+            process.terminate()
     for process in processes:
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
+            process.wait(timeout=5)
     for log in logs:
         log.close()

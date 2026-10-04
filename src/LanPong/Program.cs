@@ -3,6 +3,7 @@ using LanPong;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton<PongPeer>();
+builder.Services.AddHostedService(services => services.GetRequiredService<PongPeer>());
 var app = builder.Build();
 var peer = app.Services.GetRequiredService<PongPeer>();
 
@@ -25,12 +26,18 @@ app.MapPost("/api/host", async (HostRequest request) =>
     }
 });
 
-app.MapPost("/api/join", async (JoinRequest request) =>
+app.MapPost("/api/join", async (JoinRequest request, CancellationToken cancellationToken) =>
 {
+    using var stop = CancellationTokenSource.CreateLinkedTokenSource(
+        cancellationToken, app.Lifetime.ApplicationStopping);
     try
     {
-        await peer.JoinAsync(request.Address, request.Port);
+        await peer.JoinAsync(request.Address, request.Port, stop.Token);
         return Results.Ok(peer.Snapshot());
+    }
+    catch (OperationCanceledException) when (app.Lifetime.ApplicationStopping.IsCancellationRequested)
+    {
+        return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
     }
     catch (Exception ex) when (ex is ArgumentException or SocketException or InvalidOperationException)
     {
@@ -70,7 +77,7 @@ app.MapGet("/api/discover", async (int? port, CancellationToken cancellationToke
     }
 });
 
-app.Map("/ws", context => PongWebSocketEndpoint.HandleAsync(context, peer));
+app.Map("/ws", context => PongWebSocketEndpoint.HandleAsync(context, peer, app.Lifetime.ApplicationStopping));
 
 app.Run();
 

@@ -7,16 +7,20 @@ using System.Net.Sockets;
 namespace LanPong;
 
 /// <summary>One local player and one remote player, connected directly over UDP.</summary>
-internal sealed class PongPeer : IAsyncDisposable
+internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
 {
     private readonly ILogger<PongPeer> _logger;
     private readonly Lock _gate = new();
+    private readonly Lock _shutdownGate = new();
     private readonly SemaphoreSlim _transition = new(1, 1);
     private readonly CancellationTokenSource _lifetime = new();
     private readonly GameEngine _game = new();
     private readonly Dictionary<Guid, (int Axis, DateTime Updated)> _controllers = [];
     private readonly string[] _localAddresses = GetLocalAddresses();
     private readonly Task _clockTask;
+    private Task? _shutdownTask;
+    private bool _stopping;
+    private int _disposed;
 
     private UdpClient? _socket;
     private CancellationTokenSource? _socketStop;
@@ -71,7 +75,8 @@ internal sealed class PongPeer : IAsyncDisposable
 
     public void SetInput(Guid controllerId, int axis)
     {
-        lock (_gate) _controllers[controllerId] = (Math.Clamp(axis, -1, 1), DateTime.UtcNow);
+        lock (_gate)
+            if (!_stopping) _controllers[controllerId] = (Math.Clamp(axis, -1, 1), DateTime.UtcNow);
     }
 
     public void RemoveController(Guid controllerId)
@@ -85,11 +90,18 @@ internal sealed class PongPeer : IAsyncDisposable
         await _transition.WaitAsync();
         try
         {
+            ThrowIfStopping();
             await StopSocketAsync();
             var socket = new UdpClient(new IPEndPoint(IPAddress.Any, port));
             var stop = new CancellationTokenSource();
             lock (_gate)
             {
+                if (_stopping)
+                {
+                    socket.Dispose();
+                    stop.Dispose();
+                    throw new InvalidOperationException("Приложение завершает работу.");
+                }
                 _socket = socket;
                 _socketStop = stop;
                 _role = PeerRole.Host;
@@ -102,22 +114,34 @@ internal sealed class PongPeer : IAsyncDisposable
         finally { _transition.Release(); }
     }
 
-    public async Task JoinAsync(string address, int port)
+    public async Task JoinAsync(string address, int port, CancellationToken cancellationToken = default)
     {
         ValidatePort(port);
         if (string.IsNullOrWhiteSpace(address)) throw new ArgumentException("Введите IP-адрес создателя игры.");
-        var addresses = await Dns.GetHostAddressesAsync(address.Trim());
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfStopping();
+        var addresses = await Dns.GetHostAddressesAsync(address.Trim(), cancellationToken);
         var ip = addresses.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork)
             ?? throw new ArgumentException("Нужен IPv4-адрес компьютера в локальной сети.");
 
-        await _transition.WaitAsync();
+        await _transition.WaitAsync(cancellationToken);
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            ThrowIfStopping();
             await StopSocketAsync();
+            cancellationToken.ThrowIfCancellationRequested();
             var socket = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
             var stop = new CancellationTokenSource();
             lock (_gate)
             {
+                if (_stopping || cancellationToken.IsCancellationRequested)
+                {
+                    socket.Dispose();
+                    stop.Dispose();
+                    cancellationToken.ThrowIfCancellationRequested();
+                    throw new InvalidOperationException("Приложение завершает работу.");
+                }
                 _socket = socket;
                 _socketStop = stop;
                 _targetEndpoint = new IPEndPoint(ip, port);
@@ -135,6 +159,7 @@ internal sealed class PongPeer : IAsyncDisposable
     {
         lock (_gate)
         {
+            if (_stopping) throw new InvalidOperationException("Приложение завершает работу.");
             if (_connection != ConnectionState.Connected) throw new InvalidOperationException("Сначала подключитесь к игре.");
             if (_role == PeerRole.Host) _game.StartMatch();
             else if (_role == PeerRole.Guest)
@@ -146,7 +171,7 @@ internal sealed class PongPeer : IAsyncDisposable
         }
     }
 
-    public async Task LeaveAsync()
+    public async Task LeaveAsync(CancellationToken cancellationToken = default)
     {
         await _transition.WaitAsync();
         try
@@ -161,7 +186,11 @@ internal sealed class PongPeer : IAsyncDisposable
                 bye = _sessionId is null ? null : new ByePacket { SessionId = _sessionId };
             }
             if (socket is not null && peer is not null && bye is not null)
-                await SendQuietlyAsync(socket, peer, bye, CancellationToken.None);
+            {
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeout.CancelAfter(NetworkConstants.UdpByeTimeout);
+                await SendQuietlyAsync(socket, peer, bye, timeout.Token);
+            }
             await StopSocketAsync();
         }
         finally { _transition.Release(); }
@@ -601,6 +630,12 @@ internal sealed class PongPeer : IAsyncDisposable
         if (port is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(port), "Порт должен быть от 1 до 65535.");
     }
 
+    private void ThrowIfStopping()
+    {
+        lock (_gate)
+            if (_stopping) throw new InvalidOperationException("Приложение завершает работу.");
+    }
+
     private static string[] GetLocalAddresses()
     {
         try
@@ -618,15 +653,44 @@ internal sealed class PongPeer : IAsyncDisposable
         catch (NetworkInformationException) { return ["127.0.0.1"]; }
     }
 
+    public Task StartingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    public Task StartAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    public Task StartedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    // This runs before Kestrel's StopAsync, while the peer can still send a final UDP packet.
+    public Task StoppingAsync(CancellationToken cancellationToken) => StopAsync(cancellationToken);
+
+    public Task StopAsync(CancellationToken cancellationToken)
+    {
+        lock (_shutdownGate)
+        {
+            if (_shutdownTask is not null) return _shutdownTask;
+            lock (_gate) _stopping = true;
+            _lifetime.Cancel();
+            return _shutdownTask = ShutdownAsync(cancellationToken);
+        }
+    }
+
+    public Task StoppedAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    private async Task ShutdownAsync(CancellationToken cancellationToken)
+    {
+        try { await _clockTask; }
+        finally { await LeaveAsync(cancellationToken); }
+    }
+
     public async ValueTask DisposeAsync()
     {
-        _lifetime.Cancel();
-        await _transition.WaitAsync();
-        try { await StopSocketAsync(); }
-        finally { _transition.Release(); }
-        try { await _clockTask; }
-        catch (OperationCanceledException) { }
-        _transition.Dispose();
-        _lifetime.Dispose();
+        try { await StopAsync(CancellationToken.None); }
+        finally
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                _transition.Dispose();
+                _lifetime.Dispose();
+            }
+        }
     }
 }
