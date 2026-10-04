@@ -1,5 +1,3 @@
-"use strict";
-
 const $ = (id) => document.getElementById(id);
 const ui = {
   canvas: $("game-canvas"),
@@ -42,7 +40,7 @@ const ui = {
   leaveButton: $("leave-button"),
   moveUp: $("move-up"),
   moveDown: $("move-down"),
-  toast: $("toast")
+  toast: $("toast"),
 };
 
 const DEFAULT_UDP_PORT = 47777;
@@ -66,7 +64,7 @@ const defaultSnapshot = {
   countdown: 0,
   tick: 0,
   roundId: 0,
-  pingMs: null
+  pingMs: null,
 };
 
 let snapshot = { ...defaultSnapshot };
@@ -89,7 +87,7 @@ const PADDLE_HALF_WIDTH = 0.009;
 const PADDLE_HALF_HEIGHT = 0.09;
 const PADDLE_SPEED = 0.85;
 const BALL_RADIUS_Y = 0.012;
-const BALL_RADIUS_X = BALL_RADIUS_Y * 9 / 16;
+const BALL_RADIUS_X = (BALL_RADIUS_Y * 9) / 16;
 const MIN_PADDLE_Y = PADDLE_HALF_HEIGHT;
 const MAX_PADDLE_Y = 1 - PADDLE_HALF_HEIGHT;
 const LEFT_CONTACT_X = LEFT_PADDLE_CENTER_X + PADDLE_HALF_WIDTH + BALL_RADIUS_X;
@@ -164,7 +162,9 @@ function showToast(message) {
   ui.toast.textContent = message;
   ui.toast.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { ui.toast.hidden = true; }, TOAST_DURATION_MS);
+  toastTimer = setTimeout(() => {
+    ui.toast.hidden = true;
+  }, TOAST_DURATION_MS);
 }
 
 function writeText(element, value) {
@@ -187,30 +187,47 @@ function applySnapshot(data) {
   const next = { ...defaultSnapshot, ...data };
   if (!Array.isArray(next.localAddresses)) next.localAddresses = [];
 
-  const changedRound = next.role !== snapshot.role || next.connection !== snapshot.connection ||
-    next.phase !== snapshot.phase || next.roundId !== snapshot.roundId ||
-    next.leftScore !== snapshot.leftScore || next.rightScore !== snapshot.rightScore;
+  const changedRound =
+    next.role !== snapshot.role ||
+    next.connection !== snapshot.connection ||
+    next.phase !== snapshot.phase ||
+    next.roundId !== snapshot.roundId ||
+    next.leftScore !== snapshot.leftScore ||
+    next.rightScore !== snapshot.rightScore;
   const tick = Number(next.tick);
   const previousTick = Number(snapshot.tick);
-  if (!changedRound && Number.isFinite(tick) && Number.isFinite(previousTick) && tick < previousTick) return;
+  if (
+    !changedRound &&
+    Number.isFinite(tick) &&
+    Number.isFinite(previousTick) &&
+    tick < previousTick
+  )
+    return;
 
   if (changedRound) resetMotionHistory();
   snapshot = next;
 
-  if (next.connection === "connected" && (next.phase === "playing" || next.phase === "countdown") && Number.isFinite(tick)) {
+  if (
+    next.connection === "connected" &&
+    (next.phase === "playing" || next.phase === "countdown") &&
+    Number.isFinite(tick)
+  ) {
     const last = motionSamples.at(-1);
     if (!last || tick > last.tick) {
       const arrivedAt = performance.now();
       if (last) {
         const tickGap = tick - last.tick;
-        const expectedMs = tickGap * MILLISECONDS_PER_SECOND / TICKS_PER_SECOND;
+        const expectedMs = (tickGap * MILLISECONDS_PER_SECOND) / TICKS_PER_SECOND;
         const arrivalDeviation = Math.abs(arrivedAt - last.arrivedAt - expectedMs);
         const wantedDelay = clamp(
           MIN_INTERPOLATION_MS + arrivalDeviation * INTERPOLATION_JITTER_MULTIPLIER,
           MIN_INTERPOLATION_MS,
-          MAX_INTERPOLATION_MS
+          MAX_INTERPOLATION_MS,
         );
-        const adjustment = wantedDelay > interpolationDelayMs ? INTERPOLATION_RISE_FACTOR : INTERPOLATION_FALL_FACTOR;
+        const adjustment =
+          wantedDelay > interpolationDelayMs
+            ? INTERPOLATION_RISE_FACTOR
+            : INTERPOLATION_FALL_FACTOR;
         interpolationDelayMs = lerp(interpolationDelayMs, wantedDelay, adjustment);
         // A missing stretch can hide one or more collisions; never draw a chord across it.
         if (tickGap > MAX_CONTIGUOUS_TICK_GAP) {
@@ -227,7 +244,7 @@ function applySnapshot(data) {
         vx: Number.isFinite(Number(next.ballVx)) ? Number(next.ballVx) : 0,
         vy: Number.isFinite(Number(next.ballVy)) ? Number(next.ballVy) : 0,
         leftY: clamp(next.leftY, MIN_PADDLE_Y, MAX_PADDLE_Y),
-        rightY: clamp(next.rightY, MIN_PADDLE_Y, MAX_PADDLE_Y)
+        rightY: clamp(next.rightY, MIN_PADDLE_Y, MAX_PADDLE_Y),
       });
       if (motionSamples.length > MAX_MOTION_SAMPLES) motionSamples.shift();
     }
@@ -237,37 +254,56 @@ function applySnapshot(data) {
 
 function connectionText() {
   switch (snapshot.connection) {
-    case "waiting": return "Ожидаем соперника";
-    case "connecting": return "Подключаемся";
-    case "connected": return "Игроки на связи";
-    case "disconnected": return "Связь потеряна";
-    default: return "Готово к игре";
+    case "waiting":
+      return "Ожидаем соперника";
+    case "connecting":
+      return "Подключаемся";
+    case "connected":
+      return "Игроки на связи";
+    case "disconnected":
+      return "Связь потеряна";
+    default:
+      return "Готово к игре";
   }
 }
 
 function roleText() {
   switch (snapshot.role) {
-    case "host": return "Первый игрок";
-    case "guest": return "Второй игрок";
-    default: return "Не в игре";
+    case "host":
+      return "Первый игрок";
+    case "guest":
+      return "Второй игрок";
+    default:
+      return "Не в игре";
   }
 }
 
 function overlayContent() {
   if (snapshot.role === "none") {
-    return ["Локальный матч", "Создайте игру", "Создайте матч или присоединитесь к другу в вашей сети."];
+    return [
+      "Локальный матч",
+      "Создайте игру",
+      "Создайте матч или присоединитесь к другу в вашей сети.",
+    ];
   }
   if (snapshot.connection === "disconnected") {
     return ["Сеть", "Связь потеряна", "Проверьте сеть или покиньте игру, чтобы начать заново."];
   }
   if (snapshot.phase === "gameover") {
-    const winner = snapshot.leftScore === snapshot.rightScore
-      ? "Ничья"
-      : snapshot.leftScore > snapshot.rightScore ? "Игрок 1 победил" : "Игрок 2 победил";
+    const winner =
+      snapshot.leftScore === snapshot.rightScore
+        ? "Ничья"
+        : snapshot.leftScore > snapshot.rightScore
+          ? "Игрок 1 победил"
+          : "Игрок 2 победил";
     return ["Матч завершён", winner, "Нажмите «Новый матч», чтобы сыграть ещё раз."];
   }
   if (snapshot.phase === "countdown") {
-    return ["Приготовьтесь", String(Math.max(1, Math.ceil(Number(snapshot.countdown) || 0))), "Ракетка движется клавишами W / S или ↑ / ↓."];
+    return [
+      "Приготовьтесь",
+      String(Math.max(1, Math.ceil(Number(snapshot.countdown) || 0))),
+      "Ракетка движется клавишами W / S или ↑ / ↓.",
+    ];
   }
   if (snapshot.phase === "playing" && snapshot.connection === "connected") return null;
   if (snapshot.connection === "connecting") {
@@ -277,7 +313,9 @@ function overlayContent() {
 }
 
 function renderAddresses() {
-  const addresses = snapshot.localAddresses.filter((item) => typeof item === "string" && item.length > 0);
+  const addresses = snapshot.localAddresses.filter(
+    (item) => typeof item === "string" && item.length > 0,
+  );
   const addressKey = JSON.stringify(addresses);
   if (addressKey === lastAddressKey) return;
   lastAddressKey = addressKey;
@@ -299,12 +337,19 @@ function renderAddresses() {
 function render() {
   // Network snapshots arrive much more often than score, ping text, or controls change.
   const uiSignature = JSON.stringify([
-    snapshot.role, snapshot.connection, snapshot.message, snapshot.udpPort,
-    snapshot.role === "host" ? snapshot.localAddresses : null, snapshot.peerAddress,
-    snapshot.leftScore, snapshot.rightScore, snapshot.phase,
+    snapshot.role,
+    snapshot.connection,
+    snapshot.message,
+    snapshot.udpPort,
+    snapshot.role === "host" ? snapshot.localAddresses : null,
+    snapshot.peerAddress,
+    snapshot.leftScore,
+    snapshot.rightScore,
+    snapshot.phase,
     Math.max(1, Math.ceil(Number(snapshot.countdown) || 0)),
     snapshot.pingMs === null ? null : Math.round(Number(snapshot.pingMs)),
-    busy, discovering
+    busy,
+    discovering,
   ]);
   if (uiSignature === lastUiSignature) return;
   lastUiSignature = uiSignature;
@@ -322,12 +367,28 @@ function render() {
   writeText(ui.peerDetail, snapshot.peerAddress || (inGame ? "Ожидаем подключения" : "—"));
   ui.pingRow.hidden = !connected;
   const ping = snapshot.pingMs;
-  writeText(ui.pingValue, ping !== null && ping !== undefined && Number.isFinite(Number(ping)) && Number(ping) >= 0
-    ? `${Math.round(Number(ping))} мс` : "— мс");
-  writeText(ui.sessionMessage, snapshot.message || (inGame ? status + "." : "Создайте игру или присоединитесь к сопернику."));
+  writeText(
+    ui.pingValue,
+    ping !== null && ping !== undefined && Number.isFinite(Number(ping)) && Number(ping) >= 0
+      ? `${Math.round(Number(ping))} мс`
+      : "— мс",
+  );
+  writeText(
+    ui.sessionMessage,
+    snapshot.message || (inGame ? status + "." : "Создайте игру или присоединитесь к сопернику."),
+  );
   writeText(ui.leftScore, Math.max(0, Math.trunc(Number(snapshot.leftScore) || 0)));
   writeText(ui.rightScore, Math.max(0, Math.trunc(Number(snapshot.rightScore) || 0)));
-  writeText(ui.arenaTitle, snapshot.phase === "playing" && connected ? "Матч идёт" : snapshot.phase === "gameover" ? "Матч окончен" : inGame ? "Ожидание игры" : "Пора сыграть");
+  writeText(
+    ui.arenaTitle,
+    snapshot.phase === "playing" && connected
+      ? "Матч идёт"
+      : snapshot.phase === "gameover"
+        ? "Матч окончен"
+        : inGame
+          ? "Ожидание игры"
+          : "Пора сыграть",
+  );
 
   const overlay = overlayContent();
   ui.overlay.hidden = overlay === null;
@@ -348,7 +409,6 @@ function render() {
   ui.shareBox.hidden = snapshot.role !== "host";
   writeText(ui.sharePort, snapshot.udpPort || Number(ui.hostPort.value) || DEFAULT_UDP_PORT);
   if (snapshot.role === "host") renderAddresses();
-
 }
 
 function lerp(a, b, amount) {
@@ -368,10 +428,12 @@ function interpolateBall(a, b, tick) {
   const durationSeconds = duration / TICKS_PER_SECOND;
   const bounceX = xBounce ? (a.vx > 0 ? RIGHT_CONTACT_X : LEFT_CONTACT_X) : null;
   const bounceY = yBounce && !xBounce ? (a.vy > 0 ? BOTTOM_CONTACT_Y : TOP_CONTACT_Y) : null;
-  const bounceTime = xBounce
-    ? (bounceX - a.x) / a.vx
-    : (bounceY - a.y) / a.vy;
-  const bounceProgress = clamp(bounceTime / durationSeconds, MIN_BOUNCE_PROGRESS, MAX_BOUNCE_PROGRESS);
+  const bounceTime = xBounce ? (bounceX - a.x) / a.vx : (bounceY - a.y) / a.vy;
+  const bounceProgress = clamp(
+    bounceTime / durationSeconds,
+    MIN_BOUNCE_PROGRESS,
+    MAX_BOUNCE_PROGRESS,
+  );
   const corner = xBounce
     ? { x: bounceX, y: clamp(a.y + a.vy * bounceTime, TOP_CONTACT_Y, BOTTOM_CONTACT_Y) }
     : { x: clamp(a.x + a.vx * bounceTime, 0, 1), y: bounceY };
@@ -386,19 +448,32 @@ function interpolateBall(a, b, tick) {
 
 function displayedMotion(now) {
   if (motionSamples.length === 0) {
-    return { ballX: snapshot.ballX, ballY: snapshot.ballY, leftY: snapshot.leftY, rightY: snapshot.rightY };
+    return {
+      ballX: snapshot.ballX,
+      ballY: snapshot.ballY,
+      leftY: snapshot.leftY,
+      rightY: snapshot.rightY,
+    };
   }
   const latest = motionSamples.at(-1);
-  const elapsedTicks = Math.max(0, now - latest.arrivedAt) * TICKS_PER_SECOND / MILLISECONDS_PER_SECOND;
-  const targetTick = latest.tick - interpolationDelayMs * TICKS_PER_SECOND / MILLISECONDS_PER_SECOND + elapsedTicks;
+  const elapsedTicks =
+    (Math.max(0, now - latest.arrivedAt) * TICKS_PER_SECOND) / MILLISECONDS_PER_SECOND;
+  const targetTick =
+    latest.tick -
+    (interpolationDelayMs * TICKS_PER_SECOND) / MILLISECONDS_PER_SECOND +
+    elapsedTicks;
   if (renderTick === null || lastFrameTime === null) {
     renderTick = targetTick;
   } else {
-    const frameTicks = clamp((now - lastFrameTime) * TICKS_PER_SECOND / MILLISECONDS_PER_SECOND, 0, MAX_RENDER_FRAME_TICKS);
+    const frameTicks = clamp(
+      ((now - lastFrameTime) * TICKS_PER_SECOND) / MILLISECONDS_PER_SECOND,
+      0,
+      MAX_RENDER_FRAME_TICKS,
+    );
     const correction = clamp(
       (targetTick - renderTick) * RENDER_CORRECTION_FACTOR,
       -frameTicks,
-      frameTicks * MAX_RENDER_SPEEDUP_FRACTION
+      frameTicks * MAX_RENDER_SPEEDUP_FRACTION,
     );
     renderTick += Math.max(0, frameTicks + correction);
     if (targetTick - renderTick > RENDER_RESYNC_TICKS) renderTick = targetTick;
@@ -420,7 +495,7 @@ function displayedMotion(now) {
         ballX: ball.x,
         ballY: ball.y,
         leftY: lerp(previous.leftY, next.leftY, amount),
-        rightY: lerp(previous.rightY, next.rightY, amount)
+        rightY: lerp(previous.rightY, next.rightY, amount),
       };
     }
   }
@@ -438,18 +513,23 @@ function displayedMotion(now) {
   }
   const previous = motionSamples.length > 1 ? motionSamples.at(-2) : null;
   const paddleTicks = Math.min(renderTick - latest.tick, MAX_EXTRAPOLATION_TICKS);
-  const leftVelocity = previous ? (latest.leftY - previous.leftY) / (latest.tick - previous.tick) : 0;
-  const rightVelocity = previous ? (latest.rightY - previous.rightY) / (latest.tick - previous.tick) : 0;
+  const leftVelocity = previous
+    ? (latest.leftY - previous.leftY) / (latest.tick - previous.tick)
+    : 0;
+  const rightVelocity = previous
+    ? (latest.rightY - previous.rightY) / (latest.tick - previous.tick)
+    : 0;
   return {
     ballX: clamp(latest.x + latest.vx * seconds, 0, 1),
     ballY: clamp(latest.y + latest.vy * seconds, TOP_CONTACT_Y, BOTTOM_CONTACT_Y),
     leftY: clamp(latest.leftY + leftVelocity * paddleTicks, MIN_PADDLE_Y, MAX_PADDLE_Y),
-    rightY: clamp(latest.rightY + rightVelocity * paddleTicks, MIN_PADDLE_Y, MAX_PADDLE_Y)
+    rightY: clamp(latest.rightY + rightVelocity * paddleTicks, MIN_PADDLE_Y, MAX_PADDLE_Y),
   };
 }
 
 function displayedLocalPaddle(now) {
-  const isActive = snapshot.connection === "connected" &&
+  const isActive =
+    snapshot.connection === "connected" &&
     (snapshot.phase === "countdown" || snapshot.phase === "playing") &&
     (snapshot.role === "host" || snapshot.role === "guest");
   if (!isActive) {
@@ -457,33 +537,49 @@ function displayedLocalPaddle(now) {
     return null;
   }
 
-  const authoritativeY = clamp(snapshot.role === "host" ? snapshot.leftY : snapshot.rightY, MIN_PADDLE_Y, MAX_PADDLE_Y);
+  const authoritativeY = clamp(
+    snapshot.role === "host" ? snapshot.leftY : snapshot.rightY,
+    MIN_PADDLE_Y,
+    MAX_PADDLE_Y,
+  );
   const axis = currentAxis();
   if (!localPaddle) {
     localPaddle = { y: authoritativeY, lastFrameTime: now, lastAxis: axis, releaseUntil: 0 };
     return localPaddle.y;
   }
 
-  const seconds = clamp((now - localPaddle.lastFrameTime) / MILLISECONDS_PER_SECOND, 0, MAX_LOCAL_FRAME_SECONDS);
+  const seconds = clamp(
+    (now - localPaddle.lastFrameTime) / MILLISECONDS_PER_SECOND,
+    0,
+    MAX_LOCAL_FRAME_SECONDS,
+  );
   const ping = Number(snapshot.pingMs);
   if (localPaddle.lastAxis !== 0 && axis === 0) {
-    localPaddle.releaseUntil = now + clamp(
-      Number.isFinite(ping) ? ping + RELEASE_RTT_PADDING_MS : RELEASE_FALLBACK_MS,
-      MIN_RELEASE_GRACE_MS,
-      MAX_RELEASE_GRACE_MS
-    );
+    localPaddle.releaseUntil =
+      now +
+      clamp(
+        Number.isFinite(ping) ? ping + RELEASE_RTT_PADDING_MS : RELEASE_FALLBACK_MS,
+        MIN_RELEASE_GRACE_MS,
+        MAX_RELEASE_GRACE_MS,
+      );
   }
-  const predictedY = clamp(localPaddle.y + axis * PADDLE_SPEED * seconds, MIN_PADDLE_Y, MAX_PADDLE_Y);
-  const maxLead = clamp(
-    PADDLE_SPEED * (
-      (Number.isFinite(ping) && ping >= 0 ? ping : FALLBACK_PREDICTION_RTT_MS) / MILLISECONDS_PER_SECOND +
-      PREDICTION_RTT_PADDING_SECONDS
-    ),
-    MIN_PREDICTION_LEAD_Y,
-    MAX_PREDICTION_LEAD_Y
+  const predictedY = clamp(
+    localPaddle.y + axis * PADDLE_SPEED * seconds,
+    MIN_PADDLE_Y,
+    MAX_PADDLE_Y,
   );
-  if (axis > 0) localPaddle.y = Math.max(localPaddle.y, Math.min(predictedY, authoritativeY + maxLead));
-  else if (axis < 0) localPaddle.y = Math.min(localPaddle.y, Math.max(predictedY, authoritativeY - maxLead));
+  const maxLead = clamp(
+    PADDLE_SPEED *
+      ((Number.isFinite(ping) && ping >= 0 ? ping : FALLBACK_PREDICTION_RTT_MS) /
+        MILLISECONDS_PER_SECOND +
+        PREDICTION_RTT_PADDING_SECONDS),
+    MIN_PREDICTION_LEAD_Y,
+    MAX_PREDICTION_LEAD_Y,
+  );
+  if (axis > 0)
+    localPaddle.y = Math.max(localPaddle.y, Math.min(predictedY, authoritativeY + maxLead));
+  else if (axis < 0)
+    localPaddle.y = Math.min(localPaddle.y, Math.max(predictedY, authoritativeY - maxLead));
 
   // The latest snapshot is older than local input. Never pull the paddle backward while a key is held.
   const difference = authoritativeY - localPaddle.y;
@@ -496,11 +592,21 @@ function displayedLocalPaddle(now) {
   return localPaddle.y;
 }
 
-function resizeArenaCache(width, height, dpr = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR)) {
+function resizeArenaCache(
+  width,
+  height,
+  dpr = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR),
+) {
   if (!ctx || width <= 0 || height <= 0) return;
   const pixelWidth = Math.round(width * dpr);
   const pixelHeight = Math.round(height * dpr);
-  if (arenaCache && arenaCache.width === width && arenaCache.height === height && arenaCache.dpr === dpr) return;
+  if (
+    arenaCache &&
+    arenaCache.width === width &&
+    arenaCache.height === height &&
+    arenaCache.dpr === dpr
+  )
+    return;
   ui.canvas.width = pixelWidth;
   ui.canvas.height = pixelHeight;
 
@@ -526,8 +632,14 @@ function resizeArenaCache(width, height, dpr = Math.min(window.devicePixelRatio 
   backgroundCtx.lineWidth = 1;
   const step = Math.max(24, width / 28);
   backgroundCtx.beginPath();
-  for (let x = step; x < width; x += step) { backgroundCtx.moveTo(x, 0); backgroundCtx.lineTo(x, height); }
-  for (let y = step; y < height; y += step) { backgroundCtx.moveTo(0, y); backgroundCtx.lineTo(width, y); }
+  for (let x = step; x < width; x += step) {
+    backgroundCtx.moveTo(x, 0);
+    backgroundCtx.lineTo(x, height);
+  }
+  for (let y = step; y < height; y += step) {
+    backgroundCtx.moveTo(0, y);
+    backgroundCtx.lineTo(width, y);
+  }
   backgroundCtx.stroke();
 
   backgroundCtx.strokeStyle = "rgba(189, 225, 232, 0.26)";
@@ -543,7 +655,14 @@ function resizeArenaCache(width, height, dpr = Math.min(window.devicePixelRatio 
   backgroundCtx.stroke();
 
   vignetteCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const vignette = vignetteCtx.createRadialGradient(width / 2, height / 2, height * 0.2, width / 2, height / 2, width * 0.75);
+  const vignette = vignetteCtx.createRadialGradient(
+    width / 2,
+    height / 2,
+    height * 0.2,
+    width / 2,
+    height / 2,
+    width * 0.75,
+  );
   vignette.addColorStop(0, "rgba(0, 0, 0, 0)");
   vignette.addColorStop(1, "rgba(2, 7, 15, 0.34)");
   vignetteCtx.fillStyle = vignette;
@@ -554,7 +673,8 @@ function resizeArenaCache(width, height, dpr = Math.min(window.devicePixelRatio 
 function drawArena(now = performance.now()) {
   if (!ctx) return;
   const dpr = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR);
-  if (arenaCache && dpr !== arenaCache.dpr) resizeArenaCache(ui.canvas.clientWidth, ui.canvas.clientHeight, dpr);
+  if (arenaCache && dpr !== arenaCache.dpr)
+    resizeArenaCache(ui.canvas.clientWidth, ui.canvas.clientHeight, dpr);
   if (!arenaCache) return;
   const { width, height, pixelWidth, pixelHeight, backgroundCanvas, vignetteCanvas } = arenaCache;
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -567,8 +687,20 @@ function drawArena(now = performance.now()) {
   const localY = displayedLocalPaddle(now);
   const leftY = snapshot.role === "host" && localY !== null ? localY : motion.leftY;
   const rightY = snapshot.role === "guest" && localY !== null ? localY : motion.rightY;
-  drawPaddle(width * LEFT_PADDLE_CENTER_X - paddleWidth / 2, clamp(leftY, MIN_PADDLE_Y, MAX_PADDLE_Y) * height - paddleHeight / 2, paddleWidth, paddleHeight, "#66e8df");
-  drawPaddle(width * RIGHT_PADDLE_CENTER_X - paddleWidth / 2, clamp(rightY, MIN_PADDLE_Y, MAX_PADDLE_Y) * height - paddleHeight / 2, paddleWidth, paddleHeight, "#ff9f91");
+  drawPaddle(
+    width * LEFT_PADDLE_CENTER_X - paddleWidth / 2,
+    clamp(leftY, MIN_PADDLE_Y, MAX_PADDLE_Y) * height - paddleHeight / 2,
+    paddleWidth,
+    paddleHeight,
+    "#66e8df",
+  );
+  drawPaddle(
+    width * RIGHT_PADDLE_CENTER_X - paddleWidth / 2,
+    clamp(rightY, MIN_PADDLE_Y, MAX_PADDLE_Y) * height - paddleHeight / 2,
+    paddleWidth,
+    paddleHeight,
+    "#ff9f91",
+  );
 
   const ballX = clamp(motion.ballX, 0, 1) * width;
   const ballY = clamp(motion.ballY, 0, 1) * height;
@@ -606,8 +738,11 @@ async function readJson(response) {
   const text = await response.text();
   let data = {};
   if (text) {
-    try { data = JSON.parse(text); }
-    catch { throw new Error("Приложение вернуло некорректный ответ."); }
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error("Приложение вернуло некорректный ответ.");
+    }
   }
   if (!response.ok) throw new Error(data.error || `Ошибка ${response.status}.`);
   return data;
@@ -633,7 +768,7 @@ async function postAction(path, body = undefined) {
     const response = await fetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: body === undefined ? "{}" : JSON.stringify(body)
+      body: body === undefined ? "{}" : JSON.stringify(body),
     });
     const data = await readJson(response);
     if (data.role) {
@@ -662,7 +797,9 @@ async function discoverHosts() {
   ui.discoveryResults.append(searching);
   render();
   try {
-    const response = await fetch(`/api/discover?port=${encodeURIComponent(port)}`, { cache: "no-store" });
+    const response = await fetch(`/api/discover?port=${encodeURIComponent(port)}`, {
+      cache: "no-store",
+    });
     const data = await readJson(response);
     const hosts = Array.isArray(data.hosts)
       ? data.hosts.filter((host) => host && typeof host.address === "string" && host.address.trim())
@@ -718,10 +855,18 @@ function clearControls() {
 }
 
 function connectSocket() {
-  if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
+  if (
+    socket &&
+    (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)
+  )
+    return;
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   socket = new WebSocket(`${scheme}//${location.host}/ws`);
-  socket.addEventListener("open", () => { clearTimeout(reconnectTimer); sendAxis(); refreshStatus(); });
+  socket.addEventListener("open", () => {
+    clearTimeout(reconnectTimer);
+    sendAxis();
+    refreshStatus();
+  });
   socket.addEventListener("message", (event) => {
     try {
       const data = JSON.parse(event.data);
@@ -729,8 +874,9 @@ function connectSocket() {
         webSocketSnapshotVersion++;
         applySnapshot(data);
       }
+    } catch {
+      /* Пропускаем повреждённый кадр. */
     }
-    catch { /* Пропускаем повреждённый кадр. */ }
   });
   socket.addEventListener("close", () => {
     clearTimeout(reconnectTimer);
@@ -739,72 +885,91 @@ function connectSocket() {
   socket.addEventListener("error", () => socket.close());
 }
 
-ui.hostTab.addEventListener("click", () => setTab("host"));
-ui.joinTab.addEventListener("click", () => setTab("join"));
-ui.hostForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  const port = getPort(ui.hostPort);
-  if (port !== null) postAction("/api/host", { port });
-});
-ui.joinForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  const port = getPort(ui.joinPort);
-  const address = ui.peerAddress.value.trim();
-  if (port !== null && address) postAction("/api/join", { address, port });
-});
-ui.discoverButton.addEventListener("click", discoverHosts);
-ui.restartButton.addEventListener("click", () => postAction("/api/restart"));
-ui.leaveButton.addEventListener("click", () => { clearControls(); postAction("/api/leave"); });
-
-window.addEventListener("keydown", (event) => {
-  const key = event.key.toLowerCase();
-  if (!["w", "s", "arrowup", "arrowdown"].includes(key)) return;
-  if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable]")) return;
-  event.preventDefault();
-  pressedKeys.add(key);
-  sendAxis();
-});
-window.addEventListener("keyup", (event) => {
-  const key = event.key.toLowerCase();
-  if (!pressedKeys.has(key)) return;
-  pressedKeys.delete(key);
-  sendAxis();
-});
-window.addEventListener("blur", clearControls);
-document.addEventListener("visibilitychange", () => { if (document.hidden) clearControls(); });
-document.addEventListener("focusin", (event) => {
-  if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable]")) clearControls();
-});
-
-function bindTouch(button, direction) {
-  button.addEventListener("pointerdown", (event) => {
+export function startGame() {
+  ui.hostTab.addEventListener("click", () => setTab("host"));
+  ui.joinTab.addEventListener("click", () => setTab("join"));
+  ui.hostForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    button.setPointerCapture(event.pointerId);
-    pressedTouch.add(direction);
+    const port = getPort(ui.hostPort);
+    if (port !== null) postAction("/api/host", { port });
+  });
+  ui.joinForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const port = getPort(ui.joinPort);
+    const address = ui.peerAddress.value.trim();
+    if (port !== null && address) postAction("/api/join", { address, port });
+  });
+  ui.discoverButton.addEventListener("click", discoverHosts);
+  ui.restartButton.addEventListener("click", () => postAction("/api/restart"));
+  ui.leaveButton.addEventListener("click", () => {
+    clearControls();
+    postAction("/api/leave");
+  });
+
+  window.addEventListener("keydown", (event) => {
+    const key = event.key.toLowerCase();
+    if (!["w", "s", "arrowup", "arrowdown"].includes(key)) return;
+    if (
+      event.target instanceof Element &&
+      event.target.closest("input, textarea, select, [contenteditable]")
+    )
+      return;
+    event.preventDefault();
+    pressedKeys.add(key);
     sendAxis();
   });
-  const release = (event) => {
-    event.preventDefault();
-    pressedTouch.delete(direction);
+  window.addEventListener("keyup", (event) => {
+    const key = event.key.toLowerCase();
+    if (!pressedKeys.has(key)) return;
+    pressedKeys.delete(key);
     sendAxis();
-  };
-  button.addEventListener("pointerup", release);
-  button.addEventListener("pointercancel", release);
-  button.addEventListener("lostpointercapture", release);
-}
-bindTouch(ui.moveUp, "up");
-bindTouch(ui.moveDown, "down");
+  });
+  window.addEventListener("blur", clearControls);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) clearControls();
+  });
+  document.addEventListener("focusin", (event) => {
+    if (
+      event.target instanceof Element &&
+      event.target.closest("input, textarea, select, [contenteditable]")
+    )
+      clearControls();
+  });
 
-if (typeof ResizeObserver !== "undefined") {
-  new ResizeObserver(([entry]) => {
-    if (entry) resizeArenaCache(entry.contentRect.width, entry.contentRect.height);
-  }).observe(ui.canvas);
+  function bindTouch(button, direction) {
+    button.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      button.setPointerCapture(event.pointerId);
+      pressedTouch.add(direction);
+      sendAxis();
+    });
+    const release = (event) => {
+      event.preventDefault();
+      pressedTouch.delete(direction);
+      sendAxis();
+    };
+    button.addEventListener("pointerup", release);
+    button.addEventListener("pointercancel", release);
+    button.addEventListener("lostpointercapture", release);
+  }
+  bindTouch(ui.moveUp, "up");
+  bindTouch(ui.moveDown, "down");
+
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(([entry]) => {
+      if (entry) resizeArenaCache(entry.contentRect.width, entry.contentRect.height);
+    }).observe(ui.canvas);
+  }
+  window.addEventListener("resize", () =>
+    resizeArenaCache(ui.canvas.clientWidth, ui.canvas.clientHeight),
+  );
+  resizeArenaCache(ui.canvas.clientWidth, ui.canvas.clientHeight);
+  setInterval(sendAxis, CONTROL_SEND_INTERVAL_MS);
+  setInterval(() => {
+    if (socket?.readyState !== WebSocket.OPEN) refreshStatus();
+  }, STATUS_POLL_INTERVAL_MS);
+  render();
+  requestAnimationFrame(animate);
+  refreshStatus();
+  connectSocket();
 }
-window.addEventListener("resize", () => resizeArenaCache(ui.canvas.clientWidth, ui.canvas.clientHeight));
-resizeArenaCache(ui.canvas.clientWidth, ui.canvas.clientHeight);
-setInterval(sendAxis, CONTROL_SEND_INTERVAL_MS);
-setInterval(() => { if (socket?.readyState !== WebSocket.OPEN) refreshStatus(); }, STATUS_POLL_INTERVAL_MS);
-render();
-requestAnimationFrame(animate);
-refreshStatus();
-connectSocket();

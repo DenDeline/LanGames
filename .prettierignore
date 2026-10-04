@@ -1,0 +1,7 @@
+node_modules/
+src/LanPong/wwwroot/
+pnpm-lock.yaml
+**/bin/
+**/obj/
+.artifacts/
+TestResults/

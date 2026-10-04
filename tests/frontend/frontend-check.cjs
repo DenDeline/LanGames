@@ -3,40 +3,84 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
-const source = fs.readFileSync(path.resolve(__dirname, "../../src/LanPong/wwwroot/app.js"), "utf8");
-const core = source.slice(0, source.indexOf('ui.hostTab.addEventListener("click"'));
+const source = fs.readFileSync(path.resolve(__dirname, "../../frontend/src/game.js"), "utf8");
+const startup = source.indexOf("export function startGame()");
+assert.ok(startup > 0, "startGame must mark the browser-only initialization");
+const core = source.slice(0, startup);
 let now = 1000;
 let gradients = 0;
 let imageDraws = 0;
 const drawingContext = () => ({
-  setTransform() {}, clearRect() {}, fillRect() {}, beginPath() {}, moveTo() {}, lineTo() {},
-  stroke() {}, setLineDash() {}, arc() {}, save() {}, restore() {}, roundRect() {}, fill() {},
-  createLinearGradient() { gradients++; return { addColorStop() {} }; },
-  createRadialGradient() { gradients++; return { addColorStop() {} }; },
-  drawImage() { imageDraws++; }
+  setTransform() {},
+  clearRect() {},
+  fillRect() {},
+  beginPath() {},
+  moveTo() {},
+  lineTo() {},
+  stroke() {},
+  setLineDash() {},
+  arc() {},
+  save() {},
+  restore() {},
+  roundRect() {},
+  fill() {},
+  createLinearGradient() {
+    gradients++;
+    return { addColorStop() {} };
+  },
+  createRadialGradient() {
+    gradients++;
+    return { addColorStop() {} };
+  },
+  drawImage() {
+    imageDraws++;
+  },
 });
 const elements = new Map();
 function element(id = "") {
   if (elements.has(id)) return elements.get(id);
   const item = {
-    dataset: {}, classList: { toggle() {} }, textContent: "", hidden: false, value: "47777",
-    clientWidth: 960, clientHeight: 540, width: 960, height: 540,
-    setAttribute() {}, replaceChildren() {}, append() {}, addEventListener() {},
-    getContext() { return drawingContext(); }
+    dataset: {},
+    classList: { toggle() {} },
+    textContent: "",
+    hidden: false,
+    value: "47777",
+    clientWidth: 960,
+    clientHeight: 540,
+    width: 960,
+    height: 540,
+    setAttribute() {},
+    replaceChildren() {},
+    append() {},
+    addEventListener() {},
+    getContext() {
+      return drawingContext();
+    },
   };
   elements.set(id, item);
   return item;
 }
 const context = vm.createContext({
-  document: { getElementById: element, createElement: () => ({ ...element(`new-${Math.random()}`) }) },
+  document: {
+    getElementById: element,
+    createElement: () => ({ ...element(`new-${Math.random()}`) }),
+  },
   window: { devicePixelRatio: 2 },
   performance: { now: () => now },
-  setTimeout() {}, clearTimeout() {},
-  console, Math, Number, String, Set, JSON, Array
+  setTimeout() {},
+  clearTimeout() {},
+  console,
+  Math,
+  Number,
+  String,
+  Set,
+  JSON,
+  Array,
 });
 vm.runInContext(core, context);
 const run = (expression) => vm.runInContext(expression, context);
-const close = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-6, `${actual} != ${expected}`);
+const close = (actual, expected) =>
+  assert.ok(Math.abs(actual - expected) < 1e-6, `${actual} != ${expected}`);
 
 run(`applySnapshot({ role: "host", connection: "connected", phase: "playing", roundId: 1,
   tick: 100, ballX: 0.2, ballY: 0.5, ballVx: 0.6, rightY: 0.4, leftY: 0.5 })`);
@@ -92,4 +136,6 @@ assert.equal(imageDraws, 4);
 run("resizeArenaCache(1200, 675, 2)");
 assert.equal(gradients, initialGradients + 2);
 
-console.log("Frontend behavior checks passed: adaptive delay, duplicate handling, interpolation, prediction, gap reset, canvas caching.");
+console.log(
+  "Frontend behavior checks passed: adaptive delay, duplicate handling, interpolation, prediction, gap reset, canvas caching.",
+);

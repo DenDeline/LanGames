@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0b1020" />
+    <meta name="description" content="Pong для двух игроков в локальной сети по UDP." />
+    <title>LAN Pong — игра по локальной сети</title>
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <div class="page-glow" aria-hidden="true"></div>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"><span></span><span></span><i></i></span>
+          <div>
+            <p class="eyebrow">Игра для двоих · локальная сеть</p>
+            <h1>LAN <span>PONG</span></h1>
+          </div>
+        </div>
+        <div class="connection-pill" id="connection-pill" role="status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="connection-label">Подключаем интерфейс…</span>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="arena-panel" aria-label="Игровое поле">
+          <div class="arena-heading">
+            <div>
+              <p class="eyebrow">Сетевая партия</p>
+              <h2 id="arena-title">Пора сыграть</h2>
+            </div>
+            <span class="role-badge" id="role-badge">Вы не в игре</span>
+          </div>
+
+          <div class="scoreboard" aria-live="polite" aria-label="Счёт матча">
+            <div class="score-side score-side-left">
+              <span class="score-player" id="left-player">Игрок 1</span>
+              <strong id="left-score">0</strong>
+            </div>
+            <div class="score-divider" aria-hidden="true"><span></span></div>
+            <div class="score-side score-side-right">
+              <strong id="right-score">0</strong>
+              <span class="score-player" id="right-player">Игрок 2</span>
+            </div>
+          </div>
+
+          <div class="game-frame">
+            <canvas
+              id="game-canvas"
+              width="1280"
+              height="720"
+              role="img"
+              aria-label="Поле Pong: левая и правая ракетки и мяч"
+            ></canvas>
+            <div class="game-overlay" id="game-overlay" aria-live="polite">
+              <span class="overlay-kicker" id="overlay-kicker">Локальный матч</span>
+              <strong id="overlay-title">Создайте игру</strong>
+              <span id="overlay-description">Передайте сопернику IP и порт этого компьютера.</span>
+            </div>
+            <span class="canvas-corner canvas-corner-tl" aria-hidden="true"></span>
+            <span class="canvas-corner canvas-corner-tr" aria-hidden="true"></span>
+            <span class="canvas-corner canvas-corner-bl" aria-hidden="true"></span>
+            <span class="canvas-corner canvas-corner-br" aria-hidden="true"></span>
+          </div>
+
+          <div class="arena-footer">
+            <div class="keyboard-hint">
+              <span class="hint-icon" aria-hidden="true">⌨</span>
+              <span>Управление: <kbd>W</kbd><kbd>S</kbd> или <kbd>↑</kbd><kbd>↓</kbd></span>
+            </div>
+            <span class="network-hint">Прямое соединение · UDP</span>
+          </div>
+          <div class="touch-controls" aria-label="Сенсорное управление">
+            <button type="button" id="move-up" aria-label="Двигать ракетку вверх">
+              ↑ <span>Вверх</span>
+            </button>
+            <button type="button" id="move-down" aria-label="Двигать ракетку вниз">
+              ↓ <span>Вниз</span>
+            </button>
+          </div>
+        </section>
+
+        <aside class="sidebar" aria-label="Подключение и управление матчем">
+          <section class="panel connect-panel">
+            <div class="panel-header">
+              <span class="section-number">01 / ПОДКЛЮЧЕНИЕ</span>
+              <h2>Играйте вместе</h2>
+              <p>Запустите приложение на двух устройствах в одной сети.</p>
+            </div>
+
+            <div class="tab-list" role="tablist" aria-label="Способ подключения">
+              <button
+                class="tab is-active"
+                type="button"
+                role="tab"
+                id="tab-host"
+                aria-selected="true"
+                aria-controls="host-panel"
+              >
+                Создать игру
+              </button>
+              <button
+                class="tab"
+                type="button"
+                role="tab"
+                id="tab-join"
+                aria-selected="false"
+                aria-controls="join-panel"
+              >
+                Присоединиться
+              </button>
+            </div>
+
+            <div class="tab-panel" id="host-panel" role="tabpanel" aria-labelledby="tab-host">
+              <form id="host-form">
+                <label for="host-port">UDP-порт</label>
+                <div class="input-row">
+                  <input
+                    id="host-port"
+                    name="port"
+                    type="number"
+                    min="1"
+                    max="65535"
+                    value="47777"
+                    required
+                    inputmode="numeric"
+                  />
+                  <button class="primary-button" id="host-button" type="submit">Создать</button>
+                </div>
+              </form>
+              <div class="share-box" id="share-box" hidden>
+                <span class="share-label">Сообщите второму игроку</span>
+                <div id="share-addresses" class="address-list"></div>
+                <small>Порт: <strong id="share-port">47777</strong></small>
+              </div>
+              <p class="form-note">Первый игрок создаёт матч и ждёт подключения.</p>
+            </div>
+
+            <div
+              class="tab-panel"
+              id="join-panel"
+              role="tabpanel"
+              aria-labelledby="tab-join"
+              hidden
+            >
+              <form id="join-form">
+                <label for="peer-address">IP первого игрока</label>
+                <div class="discover-row">
+                  <input
+                    id="peer-address"
+                    name="address"
+                    type="text"
+                    placeholder="Например, 192.168.1.42"
+                    required
+                    autocomplete="off"
+                    spellcheck="false"
+                  />
+                  <button
+                    class="secondary-button discover-button"
+                    id="discover-button"
+                    type="button"
+                    aria-label="Найти игру в сети"
+                  >
+                    Найти в сети
+                  </button>
+                </div>
+                <div id="discovery-results" class="discovery-results" hidden></div>
+                <label for="join-port">UDP-порт</label>
+                <div class="input-row">
+                  <input
+                    id="join-port"
+                    name="port"
+                    type="number"
+                    min="1"
+                    max="65535"
+                    value="47777"
+                    required
+                    inputmode="numeric"
+                  />
+                  <button class="primary-button" id="join-button" type="submit">Войти</button>
+                </div>
+              </form>
+              <p class="form-note">Попросите первого игрока назвать его IP и порт.</p>
+            </div>
+          </section>
+
+          <section class="panel session-panel">
+            <div class="session-heading">
+              <span class="section-number">02 / ТЕКУЩИЙ МАТЧ</span>
+              <span class="live-indicator" id="live-indicator"
+                ><i aria-hidden="true"></i><span id="live-label">Ожидание</span></span
+              >
+            </div>
+            <p class="session-message" id="session-message" role="status" aria-live="polite">
+              Создайте игру или присоединитесь к сопернику.
+            </p>
+            <dl class="session-details">
+              <div>
+                <dt>Ваш статус</dt>
+                <dd id="role-detail">Не в игре</dd>
+              </div>
+              <div>
+                <dt>Соперник</dt>
+                <dd id="peer-detail">—</dd>
+              </div>
+              <div id="ping-row" hidden>
+                <dt>Пинг</dt>
+                <dd id="ping-value">— мс</dd>
+              </div>
+            </dl>
+            <div class="session-actions">
+              <button class="secondary-button" type="button" id="restart-button" disabled>
+                Новый матч
+              </button>
+              <button class="text-button" type="button" id="leave-button" disabled>
+                Покинуть игру
+              </button>
+            </div>
+          </section>
+
+          <p class="sidebar-tip">
+            <span aria-hidden="true">✦</span> Оба устройства должны находиться в одной локальной
+            сети. Если поиск не нашёл игру, введите IP вручную.
+          </p>
+        </aside>
+      </main>
+      <footer class="footer">LAN PONG <span>●</span> Два игрока. Одна сеть.</footer>
+    </div>
+    <div class="toast" id="toast" role="alert" hidden></div>
+  </body>
+</html>

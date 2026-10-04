@@ -3,3 +3,6 @@ obj/
 .idea/
 .artifacts/
 TestResults/
+node_modules/
+.pnpm-store/
+src/LanPong/wwwroot/

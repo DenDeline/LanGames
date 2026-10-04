@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import re
 import socket
 import subprocess
 import time
@@ -179,6 +180,7 @@ def send_oversized_udp_datagrams(*ports):
                 assert sender.sendto(payload, ("127.0.0.1", port)) == length
 
 
+subprocess.run(["pnpm", "build"], cwd=ROOT, check=True)
 subprocess.run(["dotnet", "build", str(PROJECT / "LanPong.csproj"), "-c", "Release"],
                cwd=ROOT, check=True)
 log_dir = ROOT / ".artifacts" / "test-logs"
@@ -190,7 +192,13 @@ try:
         processes.append(launch(port, log))
 
     wait_until("web servers", lambda: request(5180, "/api/status") and request(5181, "/api/status"))
-    assert b"game-canvas" in urllib.request.urlopen("http://127.0.0.1:5180/").read()
+    page = urllib.request.urlopen("http://127.0.0.1:5180/").read()
+    assert b"game-canvas" in page
+    assets = re.findall(rb'(?:src|href)="(/assets/[^"]+)"', page)
+    assert len(assets) >= 2, assets
+    for asset in assets:
+        with urllib.request.urlopen(f"http://127.0.0.1:5180{asset.decode()}") as response:
+            assert response.status == 200 and response.read(), asset
 
     for port in (5180, 5181):
         idle = request(port, "/api/status")

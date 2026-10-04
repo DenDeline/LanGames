@@ -1,0 +1,20 @@
+{
+  "name": "lan-pong-frontend",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.15.1",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "format": "prettier --write frontend vite.config.js package.json tests/frontend/frontend-check.cjs",
+    "format:check": "prettier --check frontend vite.config.js package.json tests/frontend/frontend-check.cjs",
+    "test:frontend": "node tests/frontend/frontend-check.cjs"
+  },
+  "devDependencies": {
+    "prettier": "3.9.9",
+    "vite": "8.3.2"
+  }
+}

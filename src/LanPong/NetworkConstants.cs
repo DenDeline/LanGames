@@ -8,7 +8,7 @@ internal static class NetworkConstants
 {
     public static readonly IPEndPoint AnyIpv4Endpoint = new(IPAddress.Any, 0);
 
-    // Also shown in the static browser form and mirrored in app.js.
+    // Also shown in the browser form and mirrored in frontend/src/game.js.
     public const int DefaultUdpPort = 47777;
 
     // Bound scheduler catch-up; two 60 Hz simulation ticks yield a 30 Hz state stream.
