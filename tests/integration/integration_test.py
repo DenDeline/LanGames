@@ -215,6 +215,17 @@ try:
     wait_until("UDP handshake", lambda:
                request(5180, "/api/status")["connection"] == "connected"
                and request(5181, "/api/status")["connection"] == "connected")
+    # Once connected, a datagram from a third socket must not be treated as the peer.
+    # The host offers discovery only while waiting for a player.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as stranger:
+        stranger.bind(("127.0.0.1", 0))
+        stranger.settimeout(0.2)
+        stranger.sendto(bytes([0x92, 0x00, 0x91, 0x03]), ("127.0.0.1", 47888))
+        try:
+            stranger.recvfrom(1201)
+            raise AssertionError("connected host replied to an unknown UDP sender")
+        except socket.timeout:
+            pass
     wait_until("gameplay", lambda: request(5180, "/api/status")["phase"] == "playing")
     wait_until("UDP RTT", lambda:
                request(5180, "/api/status").get("pingMs") is not None

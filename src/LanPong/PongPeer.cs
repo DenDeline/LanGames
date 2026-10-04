@@ -27,6 +27,8 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
     private Task? _receiveTask;
     private IPEndPoint? _peerEndpoint;
     private IPEndPoint? _targetEndpoint;
+    private SocketAddress? _peerSocketAddress;
+    private SocketAddress? _targetSocketAddress;
     private string? _sessionId;
     private string? _lastRestartRequestId;
     private string? _pendingRestartRequestId;
@@ -37,6 +39,8 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
     private int _udpPort;
     private int _remoteAxis;
     private long _outSequence;
+    private long _nextInputSendTimestamp;
+    private int _lastSentAxis;
     private long _lastInputSequence = -1;
     private long _lastStateSequence = -1;
     private long _lastStateSentTick;
@@ -47,7 +51,6 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
     private DateTime _lastPeerSeen = DateTime.MinValue;
     private DateTime _lastInputSeen = DateTime.MinValue;
     private DateTime _lastHelloSent = DateTime.MinValue;
-    private DateTime _lastInputSent = DateTime.MinValue;
     private DateTime _lastRestartSent = DateTime.MinValue;
     private DateTime _lastPingSent = DateTime.MinValue;
     private DateTime _lastPongSeen = DateTime.MinValue;
@@ -145,6 +148,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                 _socket = socket;
                 _socketStop = stop;
                 _targetEndpoint = new IPEndPoint(ip, port);
+                _targetSocketAddress = _targetEndpoint.Serialize();
                 _role = PeerRole.Guest;
                 _connection = ConnectionState.Connecting;
                 _message = "Подключаемся к игроку…";
@@ -248,6 +252,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
             _socketStop = null;
             _receiveTask = null;
             _peerEndpoint = _targetEndpoint = null;
+            _peerSocketAddress = _targetSocketAddress = null;
             _sessionId = _lastRestartRequestId = _pendingRestartRequestId = null;
             _restartAfterRound = 0;
             _role = PeerRole.None;
@@ -256,9 +261,11 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
             _udpPort = _remoteAxis = 0;
             _controllers.Clear();
             _outSequence = 0;
+            _nextInputSendTimestamp = 0;
+            _lastSentAxis = 0;
             _lastInputSequence = _lastStateSequence = -1;
             _lastStateSentTick = 0;
-            _lastPeerSeen = _lastInputSeen = _lastHelloSent = _lastInputSent = _lastRestartSent = DateTime.MinValue;
+            _lastPeerSeen = _lastInputSeen = _lastHelloSent = _lastRestartSent = DateTime.MinValue;
             ResetPing();
             _game.ResetWaiting();
         }
@@ -307,6 +314,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                         if (_peerEndpoint is not null && now - _lastPeerSeen > NetworkConstants.PeerIdleTimeout)
                         {
                             _peerEndpoint = null;
+                            _peerSocketAddress = null;
                             _sessionId = null;
                             _connection = ConnectionState.Waiting;
                             _message = "Связь потеряна. Ожидание второго игрока…";
@@ -364,10 +372,21 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                                 _lastRestartSent = now;
                                 packet = new RestartPacket { SessionId = _sessionId, RequestId = _pendingRestartRequestId };
                             }
-                            else if (now - _lastInputSent >= NetworkConstants.GuestInputSendInterval)
+                            else
                             {
-                                _lastInputSent = now;
-                                packet = new InputPacket { SessionId = _sessionId, Sequence = ++_outSequence, Axis = LocalAxis(now) };
+                                var axis = LocalAxis(now);
+                                var axisChanged = axis != _lastSentAxis;
+                                if (axisChanged || timestamp >= _nextInputSendTimestamp)
+                                {
+                                    // Keep the periodic deadline anchored to its schedule. Reset it
+                                    // after an input edge or a long pause so we never send a burst.
+                                    _nextInputSendTimestamp = axisChanged || _nextInputSendTimestamp == 0 ||
+                                        timestamp - _nextInputSendTimestamp >= NetworkConstants.GuestInputSendIntervalTicks
+                                            ? timestamp + NetworkConstants.GuestInputSendIntervalTicks
+                                            : _nextInputSendTimestamp + NetworkConstants.GuestInputSendIntervalTicks;
+                                    _lastSentAxis = axis;
+                                    packet = new InputPacket { SessionId = _sessionId, Sequence = ++_outSequence, Axis = axis };
+                                }
                             }
                         }
                     }
@@ -445,21 +464,21 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
 
     private async Task ReceiveAsync(UdpClient socket, CancellationToken cancellationToken)
     {
-        // One receive is outstanding at a time, so the datagram can be decoded
-        // and handled before the next receive overwrites this buffer.
+        // One receive is outstanding at a time, so the datagram and remote address
+        // can be handled before the next receive overwrites either buffer.
         var receiveBuffer = new byte[WirePacketCodec.MaxPacketBytes + 1];
-        EndPoint receiveFrom = new IPEndPoint(IPAddress.Any, 0);
+        var receiveFrom = NetworkConstants.AnyIpv4Endpoint.Serialize();
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                var received = await socket.Client.ReceiveFromAsync(
-                    receiveBuffer.AsMemory(), receiveFrom, cancellationToken);
-                if (received.ReceivedBytes > WirePacketCodec.MaxPacketBytes) continue;
-                if (!WirePacketCodec.TryDeserialize(receiveBuffer.AsMemory(0, received.ReceivedBytes), out var packet))
+                var receivedBytes = await socket.Client.ReceiveFromAsync(
+                    receiveBuffer.AsMemory(), SocketFlags.None, receiveFrom, cancellationToken);
+                if (receivedBytes > WirePacketCodec.MaxPacketBytes || !MayReceiveFrom(socket, receiveFrom)) continue;
+                if (!WirePacketCodec.TryDeserialize(receiveBuffer.AsMemory(0, receivedBytes), out var packet))
                     continue;
                 if (packet is null) continue;
-                await HandlePacketAsync(socket, (IPEndPoint)received.RemoteEndPoint, packet, cancellationToken);
+                await HandlePacketAsync(socket, receiveFrom, packet, cancellationToken);
             }
             catch (OperationCanceledException) { break; }
             catch (ObjectDisposedException) { break; }
@@ -477,9 +496,24 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
         }
     }
 
-    private async Task HandlePacketAsync(UdpClient socket, IPEndPoint remote, WirePacket packet, CancellationToken cancellationToken)
+    private bool MayReceiveFrom(UdpClient socket, SocketAddress remote)
+    {
+        lock (_gate)
+        {
+            if (_socket != socket) return false;
+            return _role switch
+            {
+                PeerRole.Host => _peerSocketAddress is null || _peerSocketAddress.Equals(remote),
+                PeerRole.Guest => _targetSocketAddress?.Equals(remote) == true,
+                _ => false
+            };
+        }
+    }
+
+    private async Task HandlePacketAsync(UdpClient socket, SocketAddress remote, WirePacket packet, CancellationToken cancellationToken)
     {
         WirePacket? reply = null;
+        IPEndPoint? replyDestination = null;
         var now = DateTime.UtcNow;
         lock (_gate)
         {
@@ -488,13 +522,18 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
             {
                 if (packet is DiscoverPacket)
                 {
-                    if (_peerEndpoint is null) reply = new OfferPacket { Port = _udpPort };
+                    if (_peerEndpoint is null)
+                    {
+                        reply = new OfferPacket { Port = _udpPort };
+                        replyDestination = (IPEndPoint)NetworkConstants.AnyIpv4Endpoint.Create(remote);
+                    }
                 }
                 else if (packet is HelloPacket)
                 {
                     if (_peerEndpoint is null)
                     {
-                        _peerEndpoint = remote;
+                        _peerEndpoint = (IPEndPoint)NetworkConstants.AnyIpv4Endpoint.Create(remote);
+                        _peerSocketAddress = _peerEndpoint.Serialize();
                         _sessionId = Guid.NewGuid().ToString("N");
                         _connection = ConnectionState.Connected;
                         _message = "Соперник подключился. Игра началась!";
@@ -504,13 +543,13 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                         ResetPing();
                         _game.StartMatch();
                     }
-                    if (_peerEndpoint.Equals(remote))
+                    if (_peerSocketAddress?.Equals(remote) == true)
                     {
                         _lastPeerSeen = now;
                         reply = new WelcomePacket { SessionId = _sessionId };
                     }
                 }
-                else if (_peerEndpoint?.Equals(remote) == true && _sessionId is not null)
+                else if (_peerSocketAddress?.Equals(remote) == true && _sessionId is not null)
                 {
                     switch (packet)
                     {
@@ -540,6 +579,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                             break;
                         case ByePacket bye when bye.SessionId == _sessionId:
                             _peerEndpoint = null;
+                            _peerSocketAddress = null;
                             _sessionId = null;
                             _connection = ConnectionState.Waiting;
                             _message = "Соперник вышел. Ожидание нового игрока…";
@@ -551,7 +591,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                     }
                 }
             }
-            else if (_role == PeerRole.Guest && _targetEndpoint?.Equals(remote) == true)
+            else if (_role == PeerRole.Guest && _targetSocketAddress?.Equals(remote) == true)
             {
                 switch (packet)
                 {
@@ -598,8 +638,11 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                         break;
                 }
             }
+            if (reply is not null && replyDestination is null)
+                replyDestination = _role == PeerRole.Host ? _peerEndpoint : _targetEndpoint;
         }
-        if (reply is not null) await SendQuietlyAsync(socket, remote, reply, cancellationToken);
+        if (reply is not null && replyDestination is not null)
+            await SendQuietlyAsync(socket, replyDestination, reply, cancellationToken);
     }
 
     private async Task SendQuietlyAsync(

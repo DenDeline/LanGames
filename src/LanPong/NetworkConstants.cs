@@ -1,15 +1,23 @@
+using System.Diagnostics;
+using System.Net;
+
 namespace LanPong;
 
 /// <summary>Transport cadence, liveness, and retry thresholds.</summary>
 internal static class NetworkConstants
 {
+    public static readonly IPEndPoint AnyIpv4Endpoint = new(IPAddress.Any, 0);
+
     // Also shown in the static browser form and mirrored in app.js.
     public const int DefaultUdpPort = 47777;
 
     // Bound scheduler catch-up; two 60 Hz simulation ticks yield a 30 Hz state stream.
     public const int MaximumSimulationCatchUpSteps = 4;
     public const int StateSendIntervalTicks = 2;
-    public static readonly TimeSpan GuestInputSendInterval = TimeSpan.FromMilliseconds(33);
+    public const int GuestInputRefreshesPerSecond = 30;
+    public static readonly TimeSpan GuestInputSendInterval = TimeSpan.FromSeconds(1.0 / GuestInputRefreshesPerSecond);
+    public static readonly long GuestInputSendIntervalTicks =
+        (long)Math.Round(Stopwatch.Frequency * GuestInputSendInterval.TotalSeconds);
     public const int BrowserSnapshotsPerSecond = 30;
     public static readonly TimeSpan BrowserSnapshotInterval = TimeSpan.FromSeconds(1.0 / BrowserSnapshotsPerSecond);
 
