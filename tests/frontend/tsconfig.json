@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "../../frontend/src",
+    "outDir": "../../.artifacts/frontend-test"
+  },
+  "files": ["../../frontend/src/game.ts"],
+  "include": []
+}

@@ -1,51 +1,115 @@
-const $ = (id) => document.getElementById(id);
+type PeerRole = "none" | "host" | "guest";
+type ConnectionState = "idle" | "waiting" | "connecting" | "connected" | "disconnected";
+type GamePhase = "waiting" | "countdown" | "playing" | "gameover";
+
+interface PongSnapshot {
+  role: PeerRole;
+  connection: ConnectionState;
+  message: string;
+  udpPort: number;
+  localAddresses: string[];
+  peerAddress: string | null;
+  leftY: number;
+  rightY: number;
+  ballX: number;
+  ballY: number;
+  ballVx: number;
+  ballVy: number;
+  leftScore: number;
+  rightScore: number;
+  phase: GamePhase;
+  countdown: number;
+  tick: number;
+  roundId: number;
+  pingMs: number | null;
+}
+
+interface MotionSample {
+  tick: number;
+  arrivedAt: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  leftY: number;
+  rightY: number;
+}
+
+interface LocalPaddle {
+  y: number;
+  lastFrameTime: number;
+  lastAxis: number;
+  releaseUntil: number;
+}
+
+interface ArenaCache {
+  width: number;
+  height: number;
+  dpr: number;
+  pixelWidth: number;
+  pixelHeight: number;
+  backgroundCanvas: HTMLCanvasElement;
+  vignetteCanvas: HTMLCanvasElement;
+}
+
+interface DiscoveredHost {
+  address: string;
+  port?: number | string | null;
+}
+
+function element<T extends HTMLElement>(id: string): T {
+  const found = document.getElementById(id);
+  if (!found) throw new Error(`Missing required element: #${id}`);
+  return found as T;
+}
+
 const ui = {
-  canvas: $("game-canvas"),
-  overlay: $("game-overlay"),
-  overlayKicker: $("overlay-kicker"),
-  overlayTitle: $("overlay-title"),
-  overlayDescription: $("overlay-description"),
-  arenaTitle: $("arena-title"),
-  leftScore: $("left-score"),
-  rightScore: $("right-score"),
-  leftPlayer: $("left-player"),
-  rightPlayer: $("right-player"),
-  roleBadge: $("role-badge"),
-  connectionPill: $("connection-pill"),
-  connectionLabel: $("connection-label"),
-  roleDetail: $("role-detail"),
-  peerDetail: $("peer-detail"),
-  pingRow: $("ping-row"),
-  pingValue: $("ping-value"),
-  sessionMessage: $("session-message"),
-  liveIndicator: $("live-indicator"),
-  liveLabel: $("live-label"),
-  hostTab: $("tab-host"),
-  joinTab: $("tab-join"),
-  hostPanel: $("host-panel"),
-  joinPanel: $("join-panel"),
-  hostForm: $("host-form"),
-  joinForm: $("join-form"),
-  hostPort: $("host-port"),
-  joinPort: $("join-port"),
-  peerAddress: $("peer-address"),
-  hostButton: $("host-button"),
-  joinButton: $("join-button"),
-  discoverButton: $("discover-button"),
-  discoveryResults: $("discovery-results"),
-  shareBox: $("share-box"),
-  shareAddresses: $("share-addresses"),
-  sharePort: $("share-port"),
-  restartButton: $("restart-button"),
-  leaveButton: $("leave-button"),
-  moveUp: $("move-up"),
-  moveDown: $("move-down"),
-  toast: $("toast"),
+  canvas: element<HTMLCanvasElement>("game-canvas"),
+  overlay: element("game-overlay"),
+  overlayKicker: element("overlay-kicker"),
+  overlayTitle: element("overlay-title"),
+  overlayDescription: element("overlay-description"),
+  arenaTitle: element("arena-title"),
+  leftScore: element("left-score"),
+  rightScore: element("right-score"),
+  leftPlayer: element("left-player"),
+  rightPlayer: element("right-player"),
+  roleBadge: element("role-badge"),
+  connectionPill: element("connection-pill"),
+  connectionLabel: element("connection-label"),
+  roleDetail: element("role-detail"),
+  peerDetail: element("peer-detail"),
+  pingRow: element("ping-row"),
+  pingValue: element("ping-value"),
+  sessionMessage: element("session-message"),
+  liveIndicator: element("live-indicator"),
+  liveLabel: element("live-label"),
+  hostTab: element<HTMLButtonElement>("tab-host"),
+  joinTab: element<HTMLButtonElement>("tab-join"),
+  hostPanel: element("host-panel"),
+  joinPanel: element("join-panel"),
+  hostForm: element<HTMLFormElement>("host-form"),
+  joinForm: element<HTMLFormElement>("join-form"),
+  hostPort: element<HTMLInputElement>("host-port"),
+  joinPort: element<HTMLInputElement>("join-port"),
+  peerAddress: element<HTMLInputElement>("peer-address"),
+  hostButton: element<HTMLButtonElement>("host-button"),
+  joinButton: element<HTMLButtonElement>("join-button"),
+  discoverButton: element<HTMLButtonElement>("discover-button"),
+  discoveryResults: element("discovery-results"),
+  shareBox: element("share-box"),
+  shareAddresses: element("share-addresses"),
+  sharePort: element("share-port"),
+  restartButton: element<HTMLButtonElement>("restart-button"),
+  leaveButton: element<HTMLButtonElement>("leave-button"),
+  moveUp: element<HTMLButtonElement>("move-up"),
+  moveDown: element<HTMLButtonElement>("move-down"),
+  toast: element("toast"),
 };
 
 const DEFAULT_UDP_PORT = 47777;
 const TOAST_DURATION_MS = 5000;
-const defaultSnapshot = {
+const defaultSnapshot: PongSnapshot = {
   role: "none",
   connection: "idle",
   message: "",
@@ -68,15 +132,15 @@ const defaultSnapshot = {
 };
 
 let snapshot = { ...defaultSnapshot };
-let socket = null;
-let reconnectTimer = null;
-let toastTimer = null;
+let socket: WebSocket | null = null;
+let reconnectTimer: number | undefined;
+let toastTimer: number | undefined;
 let busy = false;
 let discovering = false;
-let lastAddressKey = null;
-let lastUiSignature = null;
-const pressedKeys = new Set();
-const pressedTouch = new Set();
+let lastAddressKey: string | null = null;
+let lastUiSignature: string | null = null;
+const pressedKeys = new Set<string>();
+const pressedTouch = new Set<"up" | "down">();
 const ctx = ui.canvas.getContext("2d");
 const MILLISECONDS_PER_SECOND = 1000;
 // Mirror the normalized gameplay geometry in GameConstants.cs for prediction and drawing.
@@ -126,15 +190,15 @@ const MAX_CANVAS_DPR = 3;
 const SOCKET_RECONNECT_MS = 1500;
 const CONTROL_SEND_INTERVAL_MS = 33;
 const STATUS_POLL_INTERVAL_MS = 4000;
-const motionSamples = [];
-let renderTick = null;
-let lastFrameTime = null;
+const motionSamples: MotionSample[] = [];
+let renderTick: number | null = null;
+let lastFrameTime: number | null = null;
 let interpolationDelayMs = INITIAL_INTERPOLATION_MS;
-let localPaddle = null;
-let arenaCache = null;
+let localPaddle: LocalPaddle | null = null;
+let arenaCache: ArenaCache | null = null;
 let webSocketSnapshotVersion = 0;
 
-function resetMotionHistory() {
+function resetMotionHistory(): void {
   motionSamples.length = 0;
   renderTick = null;
   lastFrameTime = null;
@@ -142,12 +206,12 @@ function resetMotionHistory() {
   localPaddle = null;
 }
 
-function clamp(value, min, max) {
+function clamp(value: unknown, min: number, max: number): number {
   const number = Number(value);
   return Number.isFinite(number) ? Math.min(max, Math.max(min, number)) : min;
 }
 
-function getPort(input) {
+function getPort(input: HTMLInputElement): number | null {
   const port = Number(input.value);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     input.setCustomValidity("Введите порт от 1 до 65535.");
@@ -158,7 +222,7 @@ function getPort(input) {
   return port;
 }
 
-function showToast(message) {
+function showToast(message: string): void {
   ui.toast.textContent = message;
   ui.toast.hidden = false;
   clearTimeout(toastTimer);
@@ -167,12 +231,12 @@ function showToast(message) {
   }, TOAST_DURATION_MS);
 }
 
-function writeText(element, value) {
+function writeText(element: HTMLElement, value: string | number): void {
   const text = String(value);
   if (element.textContent !== text) element.textContent = text;
 }
 
-function setTab(tab) {
+function setTab(tab: "host" | "join"): void {
   const isHost = tab === "host";
   ui.hostTab.classList.toggle("is-active", isHost);
   ui.joinTab.classList.toggle("is-active", !isHost);
@@ -182,10 +246,59 @@ function setTab(tab) {
   ui.joinPanel.hidden = isHost;
 }
 
-function applySnapshot(data) {
-  if (!data || typeof data !== "object") return;
-  const next = { ...defaultSnapshot, ...data };
-  if (!Array.isArray(next.localAddresses)) next.localAddresses = [];
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isOneOf<T extends string>(value: unknown, choices: readonly T[]): value is T {
+  return typeof value === "string" && choices.some((choice) => choice === value);
+}
+
+function snapshotNumber(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function parseSnapshot(data: Record<string, unknown>): PongSnapshot {
+  return {
+    role: isOneOf(data.role, ["none", "host", "guest"]) ? data.role : defaultSnapshot.role,
+    connection: isOneOf(data.connection, [
+      "idle",
+      "waiting",
+      "connecting",
+      "connected",
+      "disconnected",
+    ])
+      ? data.connection
+      : defaultSnapshot.connection,
+    message: typeof data.message === "string" ? data.message : defaultSnapshot.message,
+    udpPort: snapshotNumber(data.udpPort, defaultSnapshot.udpPort),
+    localAddresses: Array.isArray(data.localAddresses)
+      ? (data.localAddresses as unknown[]).filter(
+          (item): item is string => typeof item === "string",
+        )
+      : [],
+    peerAddress: typeof data.peerAddress === "string" ? data.peerAddress : null,
+    leftY: snapshotNumber(data.leftY, defaultSnapshot.leftY),
+    rightY: snapshotNumber(data.rightY, defaultSnapshot.rightY),
+    ballX: snapshotNumber(data.ballX, defaultSnapshot.ballX),
+    ballY: snapshotNumber(data.ballY, defaultSnapshot.ballY),
+    ballVx: snapshotNumber(data.ballVx, defaultSnapshot.ballVx),
+    ballVy: snapshotNumber(data.ballVy, defaultSnapshot.ballVy),
+    leftScore: snapshotNumber(data.leftScore, defaultSnapshot.leftScore),
+    rightScore: snapshotNumber(data.rightScore, defaultSnapshot.rightScore),
+    phase: isOneOf(data.phase, ["waiting", "countdown", "playing", "gameover"])
+      ? data.phase
+      : defaultSnapshot.phase,
+    countdown: snapshotNumber(data.countdown, defaultSnapshot.countdown),
+    tick: snapshotNumber(data.tick, defaultSnapshot.tick),
+    roundId: snapshotNumber(data.roundId, defaultSnapshot.roundId),
+    pingMs: typeof data.pingMs === "number" && Number.isFinite(data.pingMs) ? data.pingMs : null,
+  };
+}
+
+function applySnapshot(data: unknown): void {
+  if (!isRecord(data)) return;
+  const next = parseSnapshot(data);
 
   const changedRound =
     next.role !== snapshot.role ||
@@ -252,7 +365,7 @@ function applySnapshot(data) {
   render();
 }
 
-function connectionText() {
+function connectionText(): string {
   switch (snapshot.connection) {
     case "waiting":
       return "Ожидаем соперника";
@@ -267,7 +380,7 @@ function connectionText() {
   }
 }
 
-function roleText() {
+function roleText(): string {
   switch (snapshot.role) {
     case "host":
       return "Первый игрок";
@@ -278,7 +391,7 @@ function roleText() {
   }
 }
 
-function overlayContent() {
+function overlayContent(): [string, string, string] | null {
   if (snapshot.role === "none") {
     return [
       "Локальный матч",
@@ -312,7 +425,7 @@ function overlayContent() {
   return ["Ожидание", "Ждём соперника", "Передайте второму игроку ваш IP и UDP-порт."];
 }
 
-function renderAddresses() {
+function renderAddresses(): void {
   const addresses = snapshot.localAddresses.filter(
     (item) => typeof item === "string" && item.length > 0,
   );
@@ -334,7 +447,7 @@ function renderAddresses() {
   }
 }
 
-function render() {
+function render(): void {
   // Network snapshots arrive much more often than score, ping text, or controls change.
   const uiSignature = JSON.stringify([
     snapshot.role,
@@ -411,11 +524,11 @@ function render() {
   if (snapshot.role === "host") renderAddresses();
 }
 
-function lerp(a, b, amount) {
+function lerp(a: number, b: number, amount: number): number {
   return a + (b - a) * amount;
 }
 
-function interpolateBall(a, b, tick) {
+function interpolateBall(a: MotionSample, b: MotionSample, tick: number): { x: number; y: number } {
   const duration = b.tick - a.tick;
   const progress = clamp((tick - a.tick) / duration, 0, 1);
   const xBounce = a.vx * b.vx < 0;
@@ -426,18 +539,25 @@ function interpolateBall(a, b, tick) {
 
   // Проходим через точку отскока: прямая между снимками срезала бы угол у ракетки или стены.
   const durationSeconds = duration / TICKS_PER_SECOND;
-  const bounceX = xBounce ? (a.vx > 0 ? RIGHT_CONTACT_X : LEFT_CONTACT_X) : null;
-  const bounceY = yBounce && !xBounce ? (a.vy > 0 ? BOTTOM_CONTACT_Y : TOP_CONTACT_Y) : null;
-  const bounceTime = xBounce ? (bounceX - a.x) / a.vx : (bounceY - a.y) / a.vy;
+  let bounceTime: number;
+  let corner: { x: number; y: number };
+  if (xBounce) {
+    const bounceX = a.vx > 0 ? RIGHT_CONTACT_X : LEFT_CONTACT_X;
+    bounceTime = (bounceX - a.x) / a.vx;
+    corner = {
+      x: bounceX,
+      y: clamp(a.y + a.vy * bounceTime, TOP_CONTACT_Y, BOTTOM_CONTACT_Y),
+    };
+  } else {
+    const bounceY = a.vy > 0 ? BOTTOM_CONTACT_Y : TOP_CONTACT_Y;
+    bounceTime = (bounceY - a.y) / a.vy;
+    corner = { x: clamp(a.x + a.vx * bounceTime, 0, 1), y: bounceY };
+  }
   const bounceProgress = clamp(
     bounceTime / durationSeconds,
     MIN_BOUNCE_PROGRESS,
     MAX_BOUNCE_PROGRESS,
   );
-  const corner = xBounce
-    ? { x: bounceX, y: clamp(a.y + a.vy * bounceTime, TOP_CONTACT_Y, BOTTOM_CONTACT_Y) }
-    : { x: clamp(a.x + a.vx * bounceTime, 0, 1), y: bounceY };
-
   if (progress <= bounceProgress) {
     const portion = progress / bounceProgress;
     return { x: lerp(a.x, corner.x, portion), y: lerp(a.y, corner.y, portion) };
@@ -446,7 +566,7 @@ function interpolateBall(a, b, tick) {
   return { x: lerp(corner.x, b.x, portion), y: lerp(corner.y, b.y, portion) };
 }
 
-function displayedMotion(now) {
+function displayedMotion(now: number): Pick<PongSnapshot, "ballX" | "ballY" | "leftY" | "rightY"> {
   if (motionSamples.length === 0) {
     return {
       ballX: snapshot.ballX,
@@ -455,7 +575,7 @@ function displayedMotion(now) {
       rightY: snapshot.rightY,
     };
   }
-  const latest = motionSamples.at(-1);
+  const latest = motionSamples.at(-1)!;
   const elapsedTicks =
     (Math.max(0, now - latest.arrivedAt) * TICKS_PER_SECOND) / MILLISECONDS_PER_SECOND;
   const targetTick =
@@ -527,7 +647,7 @@ function displayedMotion(now) {
   };
 }
 
-function displayedLocalPaddle(now) {
+function displayedLocalPaddle(now: number): number | null {
   const isActive =
     snapshot.connection === "connected" &&
     (snapshot.phase === "countdown" || snapshot.phase === "playing") &&
@@ -593,10 +713,10 @@ function displayedLocalPaddle(now) {
 }
 
 function resizeArenaCache(
-  width,
-  height,
-  dpr = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR),
-) {
+  width: number,
+  height: number,
+  dpr: number = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR),
+): void {
   if (!ctx || width <= 0 || height <= 0) return;
   const pixelWidth = Math.round(width * dpr);
   const pixelHeight = Math.round(height * dpr);
@@ -670,7 +790,7 @@ function resizeArenaCache(
   arenaCache = { width, height, dpr, pixelWidth, pixelHeight, backgroundCanvas, vignetteCanvas };
 }
 
-function drawArena(now = performance.now()) {
+function drawArena(now: number = performance.now()): void {
   if (!ctx) return;
   const dpr = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR);
   if (arenaCache && dpr !== arenaCache.dpr)
@@ -688,6 +808,7 @@ function drawArena(now = performance.now()) {
   const leftY = snapshot.role === "host" && localY !== null ? localY : motion.leftY;
   const rightY = snapshot.role === "guest" && localY !== null ? localY : motion.rightY;
   drawPaddle(
+    ctx,
     width * LEFT_PADDLE_CENTER_X - paddleWidth / 2,
     clamp(leftY, MIN_PADDLE_Y, MAX_PADDLE_Y) * height - paddleHeight / 2,
     paddleWidth,
@@ -695,6 +816,7 @@ function drawArena(now = performance.now()) {
     "#66e8df",
   );
   drawPaddle(
+    ctx,
     width * RIGHT_PADDLE_CENTER_X - paddleWidth / 2,
     clamp(rightY, MIN_PADDLE_Y, MAX_PADDLE_Y) * height - paddleHeight / 2,
     paddleWidth,
@@ -718,37 +840,49 @@ function drawArena(now = performance.now()) {
   ctx.drawImage(vignetteCanvas, 0, 0, pixelWidth, pixelHeight);
 }
 
-function animate(now) {
+function animate(now: number): void {
   drawArena(now);
   requestAnimationFrame(animate);
 }
 
-function drawPaddle(x, y, width, height, color) {
-  ctx.save();
-  ctx.shadowColor = color;
-  ctx.shadowBlur = Math.max(10, width * 1.4);
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.roundRect(x, y, width, height, Math.min(width / 2, 7));
-  ctx.fill();
-  ctx.restore();
+function drawPaddle(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  color: string,
+): void {
+  context.save();
+  context.shadowColor = color;
+  context.shadowBlur = Math.max(10, width * 1.4);
+  context.fillStyle = color;
+  context.beginPath();
+  context.roundRect(x, y, width, height, Math.min(width / 2, 7));
+  context.fill();
+  context.restore();
 }
 
-async function readJson(response) {
+async function readJson(response: Response): Promise<Record<string, unknown>> {
   const text = await response.text();
-  let data = {};
+  let data: Record<string, unknown> = {};
   if (text) {
     try {
-      data = JSON.parse(text);
+      const parsed: unknown = JSON.parse(text);
+      if (!isRecord(parsed)) throw new Error();
+      data = parsed;
     } catch {
       throw new Error("Приложение вернуло некорректный ответ.");
     }
   }
-  if (!response.ok) throw new Error(data.error || `Ошибка ${response.status}.`);
+  if (!response.ok)
+    throw new Error(
+      typeof data.error === "string" && data.error ? data.error : `Ошибка ${response.status}.`,
+    );
   return data;
 }
 
-async function refreshStatus() {
+async function refreshStatus(): Promise<void> {
   const requestVersion = webSocketSnapshotVersion;
   try {
     const response = await fetch("/api/status", { cache: "no-store" });
@@ -759,7 +893,7 @@ async function refreshStatus() {
   }
 }
 
-async function postAction(path, body = undefined) {
+async function postAction(path: string, body?: { port?: number; address?: string }): Promise<void> {
   if (busy) return;
   busy = true;
   render();
@@ -784,7 +918,16 @@ async function postAction(path, body = undefined) {
   }
 }
 
-async function discoverHosts() {
+function isDiscoveredHost(value: unknown): value is DiscoveredHost {
+  return (
+    isRecord(value) &&
+    typeof value.address === "string" &&
+    value.address.trim().length > 0 &&
+    (value.port == null || typeof value.port === "number" || typeof value.port === "string")
+  );
+}
+
+async function discoverHosts(): Promise<void> {
   if (busy || discovering) return;
   const port = getPort(ui.joinPort);
   if (port === null) return;
@@ -802,7 +945,7 @@ async function discoverHosts() {
     });
     const data = await readJson(response);
     const hosts = Array.isArray(data.hosts)
-      ? data.hosts.filter((host) => host && typeof host.address === "string" && host.address.trim())
+      ? (data.hosts as unknown[]).filter(isDiscoveredHost)
       : [];
     ui.discoveryResults.replaceChildren();
     if (hosts.length === 0) {
@@ -838,39 +981,42 @@ async function discoverHosts() {
   }
 }
 
-function currentAxis() {
+function currentAxis(): number {
   const up = pressedKeys.has("w") || pressedKeys.has("arrowup") || pressedTouch.has("up");
   const down = pressedKeys.has("s") || pressedKeys.has("arrowdown") || pressedTouch.has("down");
   return Number(down) - Number(up);
 }
 
-function sendAxis() {
+function sendAxis(): void {
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ axis: currentAxis() }));
 }
 
-function clearControls() {
+function clearControls(): void {
   pressedKeys.clear();
   pressedTouch.clear();
   sendAxis();
 }
 
-function connectSocket() {
+function connectSocket(): void {
   if (
     socket &&
     (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)
   )
     return;
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-  socket = new WebSocket(`${scheme}//${location.host}/ws`);
-  socket.addEventListener("open", () => {
+  const currentSocket = new WebSocket(`${scheme}//${location.host}/ws`);
+  socket = currentSocket;
+  currentSocket.addEventListener("open", () => {
     clearTimeout(reconnectTimer);
     sendAxis();
     refreshStatus();
   });
-  socket.addEventListener("message", (event) => {
+  currentSocket.addEventListener("message", (event) => {
     try {
-      const data = JSON.parse(event.data);
-      if (data && typeof data === "object" && !Array.isArray(data)) {
+      const payload: unknown = event.data;
+      if (typeof payload !== "string") return;
+      const data: unknown = JSON.parse(payload);
+      if (isRecord(data)) {
         webSocketSnapshotVersion++;
         applySnapshot(data);
       }
@@ -878,14 +1024,14 @@ function connectSocket() {
       /* Пропускаем повреждённый кадр. */
     }
   });
-  socket.addEventListener("close", () => {
+  currentSocket.addEventListener("close", () => {
     clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(connectSocket, SOCKET_RECONNECT_MS);
   });
-  socket.addEventListener("error", () => socket.close());
+  currentSocket.addEventListener("error", () => currentSocket.close());
 }
 
-export function startGame() {
+export function startGame(): void {
   ui.hostTab.addEventListener("click", () => setTab("host"));
   ui.joinTab.addEventListener("click", () => setTab("join"));
   ui.hostForm.addEventListener("submit", (event) => {
@@ -936,14 +1082,14 @@ export function startGame() {
       clearControls();
   });
 
-  function bindTouch(button, direction) {
+  function bindTouch(button: HTMLButtonElement, direction: "up" | "down"): void {
     button.addEventListener("pointerdown", (event) => {
       event.preventDefault();
       button.setPointerCapture(event.pointerId);
       pressedTouch.add(direction);
       sendAxis();
     });
-    const release = (event) => {
+    const release = (event: PointerEvent) => {
       event.preventDefault();
       pressedTouch.delete(direction);
       sendAxis();

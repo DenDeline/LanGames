@@ -3,7 +3,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 
-const source = fs.readFileSync(path.resolve(__dirname, "../../frontend/src/game.js"), "utf8");
+// pnpm test:frontend emits this JavaScript with the TypeScript 7 compiler first.
+const source = fs.readFileSync(
+  path.resolve(__dirname, "../../.artifacts/frontend-test/game.js"),
+  "utf8",
+);
 const startup = source.indexOf("export function startGame()");
 assert.ok(startup > 0, "startGame must mark the browser-only initialization");
 const core = source.slice(0, startup);

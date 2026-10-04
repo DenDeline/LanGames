@@ -8,13 +8,15 @@
   },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "vite build",
-    "format": "prettier --write frontend vite.config.js package.json tests/frontend/frontend-check.cjs",
-    "format:check": "prettier --check frontend vite.config.js package.json tests/frontend/frontend-check.cjs",
-    "test:frontend": "node tests/frontend/frontend-check.cjs"
+    "typecheck": "tsc --noEmit",
+    "build": "pnpm typecheck && vite build",
+    "format": "prettier --write frontend vite.config.js tsconfig.json package.json tests/frontend",
+    "format:check": "prettier --check frontend vite.config.js tsconfig.json package.json tests/frontend",
+    "test:frontend": "tsc --project tests/frontend/tsconfig.json && node tests/frontend/frontend-check.cjs"
   },
   "devDependencies": {
     "prettier": "3.9.9",
+    "typescript": "7.0.2",
     "vite": "8.3.2"
   }
 }
