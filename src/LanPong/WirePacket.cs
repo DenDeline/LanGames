@@ -16,8 +16,8 @@ namespace LanPong;
 [MessagePackObject]
 public abstract record WirePacket
 {
-    // Version 3 encodes StatePacket.Phase as a MessagePack enum integer.
-    public const int CurrentVersion = 3;
+    // Version 4 assigns simulation ticks to inputs and sends complete replay state.
+    public const int CurrentVersion = 4;
 
     [Key(0)]
     public int Version { get; set; } = CurrentVersion;
@@ -51,7 +51,12 @@ public sealed record InputPacket : WirePacket
     [Key(2)]
     public long Sequence { get; init; }
     [Key(3)]
-    public int Axis { get; init; }
+    public long Tick { get; init; }
+    [Key(4)]
+    public int RoundId { get; init; }
+    // Newest input first: Axes[0] is Tick, Axes[1] is Tick - 1, etc.
+    [Key(5)]
+    public int[]? Axes { get; init; }
 }
 
 [MessagePackObject]
@@ -83,6 +88,12 @@ public sealed record StatePacket : WirePacket
     public double Countdown { get; init; }
     [Key(13)]
     public int RoundId { get; init; }
+    [Key(14)]
+    public int ServeDirection { get; init; }
+    [Key(15)]
+    public int Hits { get; init; }
+    [Key(16)]
+    public int HostAxis { get; init; }
 
     internal GameState ToGameState() => new()
     {
@@ -91,7 +102,8 @@ public sealed record StatePacket : WirePacket
         BallVx = BallVx, BallVy = BallVy,
         LeftScore = LeftScore, RightScore = RightScore,
         Phase = Phase, Countdown = Countdown,
-        TickNumber = Sequence, RoundId = RoundId
+        TickNumber = Sequence, RoundId = RoundId,
+        ServeDirection = ServeDirection, Hits = Hits
     };
 }
 
@@ -150,7 +162,14 @@ internal static class WirePacketCodec
         {
             var decoded = MessagePackSerializer.Deserialize<WirePacket>(data, Options);
             if (decoded is not { Version: WirePacket.CurrentVersion } ||
-                decoded is StatePacket state && !Enum.IsDefined(state.Phase))
+                decoded is InputPacket input &&
+                (input.Sequence < 0 || input.Tick <= 0 || input.RoundId < 0 ||
+                 input.Axes is not { Length: >= 1 and <= NetworkConstants.InputRedundancyTicks } ||
+                 input.Axes.Any(axis => axis is < -1 or > 1)) ||
+                decoded is StatePacket state &&
+                (!Enum.IsDefined(state.Phase) || state.Sequence < 0 || state.RoundId < 0 ||
+                 state.ServeDirection is not (-1 or 1) || state.Hits < 0 ||
+                 state.HostAxis is < -1 or > 1))
                 return false;
 
             packet = decoded;

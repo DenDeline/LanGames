@@ -5,7 +5,7 @@ namespace LanPong;
 [JsonConverter(typeof(JsonStringEnumConverter<GamePhase>))]
 public enum GamePhase
 {
-    // These ordinals are carried by MessagePack StatePacket.Phase (UDP v3)
+    // These ordinals are carried by MessagePack StatePacket.Phase (UDP v4)
     // and browser WebSocket snapshots (v1). Update both versions if they change.
     [JsonStringEnumMemberName("waiting")]
     Waiting = 0,
@@ -17,7 +17,7 @@ public enum GamePhase
     GameOver = 3
 }
 
-/// <summary>An observable simulation state, independent of the UDP packet format.</summary>
+/// <summary>A complete simulation state, independent of the UDP packet format.</summary>
 internal readonly record struct GameState
 {
     public double LeftY { get; init; }
@@ -32,4 +32,6 @@ internal readonly record struct GameState
     public double Countdown { get; init; }
     public long TickNumber { get; init; }
     public int RoundId { get; init; }
+    public int ServeDirection { get; init; }
+    public int Hits { get; init; }
 }

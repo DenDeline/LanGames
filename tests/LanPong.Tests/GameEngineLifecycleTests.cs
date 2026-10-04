@@ -126,6 +126,54 @@ public sealed class GameEngineLifecycleTests
         await Assert.That(replay.RoundId).IsEqualTo(first.RoundId);
     }
 
+    [Test]
+    public async Task RestoreCheckpoint_AfterPaddleBounce_ReplaysNextBounceAtSameSpeed()
+    {
+        var first = Playing(0.045 + 0.009 + BallRadiusX + 0.55 * 0.01, 0.5, -0.55, 0);
+        first.Advance(1.0 / 60, 0, 0);
+        var checkpoint = first.CaptureCheckpoint();
+        await Assert.That(checkpoint.Hits).IsEqualTo(1);
+
+        var replay = new GameEngine();
+        replay.RestoreCheckpoint(checkpoint);
+        var networkReplica = new GameEngine();
+        networkReplica.Restore(checkpoint);
+
+        for (var tick = 0; tick < 100; tick++)
+        {
+            first.Advance(1.0 / 60, 0, 0);
+            replay.Advance(1.0 / 60, 0, 0);
+            networkReplica.Advance(1.0 / 60, 0, 0);
+        }
+
+        await Assert.That(first.BallVx).IsEqualTo(-0.62).Within(1e-10);
+        await Assert.That(first.CaptureCheckpoint()).IsEqualTo(replay.CaptureCheckpoint());
+        await Assert.That(first.Capture()).IsEqualTo(networkReplica.Capture());
+    }
+
+    [Test]
+    public async Task RestoreCheckpoint_AfterRightPlayerScores_ReplaysServeTowardLeft()
+    {
+        var first = Playing(0.01, 0.9, -1, 0);
+        first.Advance(0.02, 0, 0);
+        var checkpoint = first.CaptureCheckpoint();
+        await Assert.That(checkpoint.Phase).IsEqualTo(GamePhase.Countdown);
+        await Assert.That(checkpoint.ServeDirection).IsEqualTo(-1);
+
+        var replay = new GameEngine();
+        replay.RestoreCheckpoint(checkpoint);
+        var networkReplica = new GameEngine();
+        networkReplica.Restore(checkpoint);
+
+        first.Advance(1.6, 0, 0);
+        replay.Advance(1.6, 0, 0);
+        networkReplica.Advance(1.6, 0, 0);
+
+        await Assert.That(first.BallVx < 0).IsTrue();
+        await Assert.That(first.CaptureCheckpoint()).IsEqualTo(replay.CaptureCheckpoint());
+        await Assert.That(first.Capture()).IsEqualTo(networkReplica.Capture());
+    }
+
     private static GameEngine Playing(
         double ballX, double ballY, double vx, double vy,
         int leftScore = 0, int rightScore = 0, int roundId = 0, long sequence = 0)

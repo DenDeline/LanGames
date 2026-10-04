@@ -18,6 +18,12 @@ interface LocalPaddle {
   releaseUntil: number;
 }
 
+interface MotionCorrection {
+  x: number;
+  y: number;
+  startedAt: number;
+}
+
 interface ArenaCache {
   width: number;
   height: number;
@@ -134,51 +140,32 @@ const LEFT_CONTACT_X = LEFT_PADDLE_CENTER_X + PADDLE_HALF_WIDTH + BALL_RADIUS_X;
 const RIGHT_CONTACT_X = RIGHT_PADDLE_CENTER_X - PADDLE_HALF_WIDTH - BALL_RADIUS_X;
 const TOP_CONTACT_Y = BALL_RADIUS_Y;
 const BOTTOM_CONTACT_Y = 1 - BALL_RADIUS_Y;
-// WebSocket snapshots run at 30 Hz and simulation at 60 Hz; their timers are independent.
-const INITIAL_INTERPOLATION_MS = 60;
-const MIN_INTERPOLATION_MS = 50;
-const MAX_INTERPOLATION_MS = 110;
-const INTERPOLATION_JITTER_MULTIPLIER = 2;
-const INTERPOLATION_RISE_FACTOR = 0.65;
-const INTERPOLATION_FALL_FACTOR = 0.035;
-const MAX_EXTRAPOLATION_SECONDS = 0.035;
-const MAX_EXTRAPOLATION_TICKS = TICKS_PER_SECOND * MAX_EXTRAPOLATION_SECONDS;
-const MAX_MOTION_SAMPLES = 16;
-const MAX_CONTIGUOUS_TICK_GAP = 6;
-const MIN_BOUNCE_PROGRESS = 0.01;
-const MAX_BOUNCE_PROGRESS = 1 - MIN_BOUNCE_PROGRESS;
-const MAX_RENDER_FRAME_TICKS = 3;
-const RENDER_CORRECTION_FACTOR = 0.18;
-const MAX_RENDER_SPEEDUP_FRACTION = 0.5;
-const RENDER_RESYNC_TICKS = 8;
-// Local paddle prediction and reconciliation use seconds, except the RTT grace period.
+// The peer publishes its current simulated tick at 60 Hz. The browser only bridges
+// the time until the next tick, stopping at any collision it cannot simulate.
+const MAX_EXTRAPOLATION_SECONDS = 2 / TICKS_PER_SECOND;
+const MAX_CONTIGUOUS_TICK_GAP = 2;
+const MOTION_CORRECTION_MS = 30;
+const MAX_SMOOTH_CORRECTION = 0.015;
+const MOTION_ERROR_EPSILON = 0.0001;
+const VELOCITY_ERROR_EPSILON = 0.000001;
+// The local paddle only predicts the short browser-to-peer input delivery time.
 const MAX_LOCAL_FRAME_SECONDS = 0.05;
-const RELEASE_RTT_PADDING_MS = 50;
-const RELEASE_FALLBACK_MS = 100;
-const MIN_RELEASE_GRACE_MS = 100;
-const MAX_RELEASE_GRACE_MS = 250;
-const FALLBACK_PREDICTION_RTT_MS = 90;
-const PREDICTION_RTT_PADDING_SECONDS = 0.05;
-const MIN_PREDICTION_LEAD_Y = 0.09;
-const MAX_PREDICTION_LEAD_Y = 0.25;
-const PADDLE_RECONCILIATION_SECONDS = 0.12;
+const LOCAL_PREDICTION_LEAD_Y = (2 * PADDLE_SPEED) / TICKS_PER_SECOND;
+const LOCAL_RELEASE_GRACE_MS = (2 * MILLISECONDS_PER_SECOND) / TICKS_PER_SECOND;
+const PADDLE_RECONCILIATION_SECONDS = 0.05;
 const MAX_CANVAS_DPR = 3;
 const SOCKET_RECONNECT_MS = 1500;
 const CONTROL_SEND_INTERVAL_MS = 33;
 const STATUS_POLL_INTERVAL_MS = 4000;
 const motionSamples: MotionSample[] = [];
-let renderTick: number | null = null;
-let lastFrameTime: number | null = null;
-let interpolationDelayMs = INITIAL_INTERPOLATION_MS;
+let motionCorrection: MotionCorrection | null = null;
 let localPaddle: LocalPaddle | null = null;
 let arenaCache: ArenaCache | null = null;
 let webSocketSnapshotVersion = 0;
 
 function resetMotionHistory(): void {
   motionSamples.length = 0;
-  renderTick = null;
-  lastFrameTime = null;
-  interpolationDelayMs = INITIAL_INTERPOLATION_MS;
+  motionCorrection = null;
   localPaddle = null;
 }
 
@@ -272,7 +259,7 @@ function parseSnapshot(data: Record<string, unknown>): PongSnapshot {
   };
 }
 
-function applySnapshot(data: unknown): void {
+function applySnapshot(data: unknown, source: "websocket" | "http" = "http"): void {
   if (!isRecord(data)) return;
   const next = parseSnapshot(data);
 
@@ -285,15 +272,13 @@ function applySnapshot(data: unknown): void {
     next.rightScore !== snapshot.rightScore;
   const tick = Number(next.tick);
   const previousTick = Number(snapshot.tick);
-  if (
-    !changedRound &&
-    Number.isFinite(tick) &&
-    Number.isFinite(previousTick) &&
-    tick < previousTick
-  )
-    return;
+  const backwardsTick =
+    !changedRound && Number.isFinite(tick) && Number.isFinite(previousTick) && tick < previousTick;
+  // WebSocket frames are ordered. A lower tick there is a legitimate guest
+  // clock rebase; an older HTTP response must not replace a newer state.
+  if (backwardsTick && source !== "websocket") return;
 
-  if (changedRound) resetMotionHistory();
+  if (changedRound || backwardsTick) resetMotionHistory();
   snapshot = next;
 
   if (
@@ -302,40 +287,57 @@ function applySnapshot(data: unknown): void {
     Number.isFinite(tick)
   ) {
     const last = motionSamples.at(-1);
-    if (!last || tick > last.tick) {
-      const arrivedAt = performance.now();
-      if (last) {
-        const tickGap = tick - last.tick;
-        const expectedMs = (tickGap * MILLISECONDS_PER_SECOND) / TICKS_PER_SECOND;
-        const arrivalDeviation = Math.abs(arrivedAt - last.arrivedAt - expectedMs);
-        const wantedDelay = clamp(
-          MIN_INTERPOLATION_MS + arrivalDeviation * INTERPOLATION_JITTER_MULTIPLIER,
-          MIN_INTERPOLATION_MS,
-          MAX_INTERPOLATION_MS,
-        );
-        const adjustment =
-          wantedDelay > interpolationDelayMs
-            ? INTERPOLATION_RISE_FACTOR
-            : INTERPOLATION_FALL_FACTOR;
-        interpolationDelayMs = lerp(interpolationDelayMs, wantedDelay, adjustment);
-        // A missing stretch can hide one or more collisions; never draw a chord across it.
-        if (tickGap > MAX_CONTIGUOUS_TICK_GAP) {
-          motionSamples.length = 0;
-          renderTick = null;
-          lastFrameTime = null;
-        }
+    const arrivedAt = performance.now();
+    const sample: MotionSample = {
+      tick,
+      arrivedAt,
+      x: clamp(next.ballX, 0, 1),
+      y: clamp(next.ballY, 0, 1),
+      vx: next.ballVx,
+      vy: next.ballVy,
+      leftY: clamp(next.leftY, MIN_PADDLE_Y, MAX_PADDLE_Y),
+      rightY: clamp(next.rightY, MIN_PADDLE_Y, MAX_PADDLE_Y),
+    };
+    const duplicate =
+      last &&
+      tick === last.tick &&
+      sample.x === last.x &&
+      sample.y === last.y &&
+      sample.vx === last.vx &&
+      sample.vy === last.vy &&
+      sample.leftY === last.leftY &&
+      sample.rightY === last.rightY;
+    if (!duplicate) {
+      const tickGap = last ? tick - last.tick : 0;
+      const sameTrajectory =
+        last &&
+        tickGap >= 0 &&
+        tickGap <= MAX_CONTIGUOUS_TICK_GAP &&
+        Math.abs(last.vx - sample.vx) <= VELOCITY_ERROR_EPSILON &&
+        Math.abs(last.vy - sample.vy) <= VELOCITY_ERROR_EPSILON;
+      const stateError = sameTrajectory
+        ? Math.hypot(
+            sample.x - (last.x + (last.vx * tickGap) / TICKS_PER_SECOND),
+            sample.y - (last.y + (last.vy * tickGap) / TICKS_PER_SECOND),
+          )
+        : 0;
+      const previousDisplay =
+        sameTrajectory && (stateError > MOTION_ERROR_EPSILON || motionCorrection !== null)
+          ? displayedMotion(arrivedAt)
+          : null;
+      if (tickGap > MAX_CONTIGUOUS_TICK_GAP) {
+        motionSamples.length = 0;
       }
-      motionSamples.push({
-        tick,
-        arrivedAt,
-        x: clamp(next.ballX, 0, 1),
-        y: clamp(next.ballY, 0, 1),
-        vx: Number.isFinite(Number(next.ballVx)) ? Number(next.ballVx) : 0,
-        vy: Number.isFinite(Number(next.ballVy)) ? Number(next.ballVy) : 0,
-        leftY: clamp(next.leftY, MIN_PADDLE_Y, MAX_PADDLE_Y),
-        rightY: clamp(next.rightY, MIN_PADDLE_Y, MAX_PADDLE_Y),
-      });
-      if (motionSamples.length > MAX_MOTION_SAMPLES) motionSamples.shift();
+      if (last && tickGap === 0 && motionSamples.length > 0) motionSamples.pop();
+      motionSamples.push(sample);
+      if (motionSamples.length > 2) motionSamples.shift();
+      motionCorrection = null;
+      if (previousDisplay) {
+        const x = previousDisplay.ballX - sample.x;
+        const y = previousDisplay.ballY - sample.y;
+        if (Math.hypot(x, y) <= MAX_SMOOTH_CORRECTION)
+          motionCorrection = { x, y, startedAt: arrivedAt };
+      }
     }
   }
   render();
@@ -500,48 +502,6 @@ function render(): void {
   if (snapshot.role === "host") renderAddresses();
 }
 
-function lerp(a: number, b: number, amount: number): number {
-  return a + (b - a) * amount;
-}
-
-function interpolateBall(a: MotionSample, b: MotionSample, tick: number): { x: number; y: number } {
-  const duration = b.tick - a.tick;
-  const progress = clamp((tick - a.tick) / duration, 0, 1);
-  const xBounce = a.vx * b.vx < 0;
-  const yBounce = a.vy * b.vy < 0;
-  if (!xBounce && !yBounce) {
-    return { x: lerp(a.x, b.x, progress), y: lerp(a.y, b.y, progress) };
-  }
-
-  // Проходим через точку отскока: прямая между снимками срезала бы угол у ракетки или стены.
-  const durationSeconds = duration / TICKS_PER_SECOND;
-  let bounceTime: number;
-  let corner: { x: number; y: number };
-  if (xBounce) {
-    const bounceX = a.vx > 0 ? RIGHT_CONTACT_X : LEFT_CONTACT_X;
-    bounceTime = (bounceX - a.x) / a.vx;
-    corner = {
-      x: bounceX,
-      y: clamp(a.y + a.vy * bounceTime, TOP_CONTACT_Y, BOTTOM_CONTACT_Y),
-    };
-  } else {
-    const bounceY = a.vy > 0 ? BOTTOM_CONTACT_Y : TOP_CONTACT_Y;
-    bounceTime = (bounceY - a.y) / a.vy;
-    corner = { x: clamp(a.x + a.vx * bounceTime, 0, 1), y: bounceY };
-  }
-  const bounceProgress = clamp(
-    bounceTime / durationSeconds,
-    MIN_BOUNCE_PROGRESS,
-    MAX_BOUNCE_PROGRESS,
-  );
-  if (progress <= bounceProgress) {
-    const portion = progress / bounceProgress;
-    return { x: lerp(a.x, corner.x, portion), y: lerp(a.y, corner.y, portion) };
-  }
-  const portion = (progress - bounceProgress) / (1 - bounceProgress);
-  return { x: lerp(corner.x, b.x, portion), y: lerp(corner.y, b.y, portion) };
-}
-
 function displayedMotion(now: number): Pick<PongSnapshot, "ballX" | "ballY" | "leftY" | "rightY"> {
   if (motionSamples.length === 0) {
     return {
@@ -552,51 +512,13 @@ function displayedMotion(now: number): Pick<PongSnapshot, "ballX" | "ballY" | "l
     };
   }
   const latest = motionSamples.at(-1)!;
-  const elapsedTicks =
-    (Math.max(0, now - latest.arrivedAt) * TICKS_PER_SECOND) / MILLISECONDS_PER_SECOND;
-  const targetTick =
-    latest.tick -
-    (interpolationDelayMs * TICKS_PER_SECOND) / MILLISECONDS_PER_SECOND +
-    elapsedTicks;
-  if (renderTick === null || lastFrameTime === null) {
-    renderTick = targetTick;
-  } else {
-    const frameTicks = clamp(
-      ((now - lastFrameTime) * TICKS_PER_SECOND) / MILLISECONDS_PER_SECOND,
-      0,
-      MAX_RENDER_FRAME_TICKS,
-    );
-    const correction = clamp(
-      (targetTick - renderTick) * RENDER_CORRECTION_FACTOR,
-      -frameTicks,
-      frameTicks * MAX_RENDER_SPEEDUP_FRACTION,
-    );
-    renderTick += Math.max(0, frameTicks + correction);
-    if (targetTick - renderTick > RENDER_RESYNC_TICKS) renderTick = targetTick;
-  }
-  lastFrameTime = now;
-  renderTick = Math.min(renderTick, latest.tick + MAX_EXTRAPOLATION_TICKS);
-
-  const first = motionSamples[0];
-  if (renderTick <= first.tick) {
-    return { ballX: first.x, ballY: first.y, leftY: first.leftY, rightY: first.rightY };
-  }
-  for (let i = 1; i < motionSamples.length; i++) {
-    const next = motionSamples[i];
-    if (renderTick <= next.tick) {
-      const previous = motionSamples[i - 1];
-      const amount = (renderTick - previous.tick) / (next.tick - previous.tick);
-      const ball = interpolateBall(previous, next, renderTick);
-      return {
-        ballX: ball.x,
-        ballY: ball.y,
-        leftY: lerp(previous.leftY, next.leftY, amount),
-        rightY: lerp(previous.rightY, next.rightY, amount),
-      };
-    }
-  }
-  let seconds = Math.min((renderTick - latest.tick) / TICKS_PER_SECOND, MAX_EXTRAPOLATION_SECONDS);
-  // Без следующего снимка неизвестно, попал ли мяч в ракетку: прогноз останавливается у контакта.
+  const frameSeconds = clamp(
+    (now - latest.arrivedAt) / MILLISECONDS_PER_SECOND,
+    0,
+    MAX_EXTRAPOLATION_SECONDS,
+  );
+  let seconds = frameSeconds;
+  // A future bounce is unknown; stop at the first wall or paddle contact.
   if (latest.vx > 0 && latest.x <= RIGHT_CONTACT_X) {
     seconds = Math.min(seconds, Math.max(0, (RIGHT_CONTACT_X - latest.x) / latest.vx));
   } else if (latest.vx < 0 && latest.x >= LEFT_CONTACT_X) {
@@ -607,19 +529,37 @@ function displayedMotion(now: number): Pick<PongSnapshot, "ballX" | "ballY" | "l
   } else if (latest.vy < 0 && latest.y >= TOP_CONTACT_Y) {
     seconds = Math.min(seconds, Math.max(0, (TOP_CONTACT_Y - latest.y) / latest.vy));
   }
-  const previous = motionSamples.length > 1 ? motionSamples.at(-2) : null;
-  const paddleTicks = Math.min(renderTick - latest.tick, MAX_EXTRAPOLATION_TICKS);
-  const leftVelocity = previous
-    ? (latest.leftY - previous.leftY) / (latest.tick - previous.tick)
-    : 0;
-  const rightVelocity = previous
-    ? (latest.rightY - previous.rightY) / (latest.tick - previous.tick)
-    : 0;
+  let ballX = latest.x + latest.vx * seconds;
+  let ballY = latest.y + latest.vy * seconds;
+  if (motionCorrection) {
+    const remaining = 1 - (now - motionCorrection.startedAt) / MOTION_CORRECTION_MS;
+    if (remaining > 0) {
+      ballX += motionCorrection.x * remaining;
+      ballY += motionCorrection.y * remaining;
+    } else {
+      motionCorrection = null;
+    }
+  }
+  // The smoothing offset must obey the same contact bounds as extrapolation.
+  if (latest.vx > 0 && latest.x <= RIGHT_CONTACT_X) ballX = Math.min(ballX, RIGHT_CONTACT_X);
+  if (latest.vx < 0 && latest.x >= LEFT_CONTACT_X) ballX = Math.max(ballX, LEFT_CONTACT_X);
+  if (latest.vy > 0 && latest.y <= BOTTOM_CONTACT_Y) ballY = Math.min(ballY, BOTTOM_CONTACT_Y);
+  if (latest.vy < 0 && latest.y >= TOP_CONTACT_Y) ballY = Math.max(ballY, TOP_CONTACT_Y);
+
+  const previous = motionSamples.length > 1 ? motionSamples[0] : null;
+  const tickGap = previous ? latest.tick - previous.tick : 0;
+  const paddleVelocity = (newY: number, oldY: number): number => {
+    if (tickGap <= 0 || tickGap > MAX_CONTIGUOUS_TICK_GAP) return 0;
+    const velocity = ((newY - oldY) * TICKS_PER_SECOND) / tickGap;
+    return Math.abs(velocity) <= PADDLE_SPEED + VELOCITY_ERROR_EPSILON ? velocity : 0;
+  };
+  const leftVelocity = previous ? paddleVelocity(latest.leftY, previous.leftY) : 0;
+  const rightVelocity = previous ? paddleVelocity(latest.rightY, previous.rightY) : 0;
   return {
-    ballX: clamp(latest.x + latest.vx * seconds, 0, 1),
-    ballY: clamp(latest.y + latest.vy * seconds, TOP_CONTACT_Y, BOTTOM_CONTACT_Y),
-    leftY: clamp(latest.leftY + leftVelocity * paddleTicks, MIN_PADDLE_Y, MAX_PADDLE_Y),
-    rightY: clamp(latest.rightY + rightVelocity * paddleTicks, MIN_PADDLE_Y, MAX_PADDLE_Y),
+    ballX: clamp(ballX, 0, 1),
+    ballY: clamp(ballY, TOP_CONTACT_Y, BOTTOM_CONTACT_Y),
+    leftY: clamp(latest.leftY + leftVelocity * frameSeconds, MIN_PADDLE_Y, MAX_PADDLE_Y),
+    rightY: clamp(latest.rightY + rightVelocity * frameSeconds, MIN_PADDLE_Y, MAX_PADDLE_Y),
   };
 }
 
@@ -649,35 +589,26 @@ function displayedLocalPaddle(now: number): number | null {
     0,
     MAX_LOCAL_FRAME_SECONDS,
   );
-  const ping = Number(snapshot.pingMs);
   if (localPaddle.lastAxis !== 0 && axis === 0) {
-    localPaddle.releaseUntil =
-      now +
-      clamp(
-        Number.isFinite(ping) ? ping + RELEASE_RTT_PADDING_MS : RELEASE_FALLBACK_MS,
-        MIN_RELEASE_GRACE_MS,
-        MAX_RELEASE_GRACE_MS,
-      );
+    localPaddle.releaseUntil = now + LOCAL_RELEASE_GRACE_MS;
   }
   const predictedY = clamp(
     localPaddle.y + axis * PADDLE_SPEED * seconds,
     MIN_PADDLE_Y,
     MAX_PADDLE_Y,
   );
-  const maxLead = clamp(
-    PADDLE_SPEED *
-      ((Number.isFinite(ping) && ping >= 0 ? ping : FALLBACK_PREDICTION_RTT_MS) /
-        MILLISECONDS_PER_SECOND +
-        PREDICTION_RTT_PADDING_SECONDS),
-    MIN_PREDICTION_LEAD_Y,
-    MAX_PREDICTION_LEAD_Y,
-  );
   if (axis > 0)
-    localPaddle.y = Math.max(localPaddle.y, Math.min(predictedY, authoritativeY + maxLead));
+    localPaddle.y = Math.max(
+      authoritativeY,
+      Math.min(predictedY, authoritativeY + LOCAL_PREDICTION_LEAD_Y),
+    );
   else if (axis < 0)
-    localPaddle.y = Math.min(localPaddle.y, Math.max(predictedY, authoritativeY - maxLead));
+    localPaddle.y = Math.min(
+      authoritativeY,
+      Math.max(predictedY, authoritativeY - LOCAL_PREDICTION_LEAD_Y),
+    );
 
-  // The latest snapshot is older than local input. Never pull the paddle backward while a key is held.
+  // The WebSocket snapshot can trail a just-pressed key by one or two ticks.
   const difference = authoritativeY - localPaddle.y;
   if ((axis === 0 && now >= localPaddle.releaseUntil) || (axis !== 0 && difference * axis > 0)) {
     const correction = 1 - Math.exp(-seconds / PADDLE_RECONCILIATION_SECONDS);
@@ -1002,7 +933,7 @@ function connectSocket(): void {
         return;
       }
       webSocketSnapshotVersion++;
-      applySnapshot(data);
+      applySnapshot(data, "websocket");
     } catch {
       currentSocket.close();
     }

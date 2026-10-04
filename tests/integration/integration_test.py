@@ -4,6 +4,7 @@ import os
 import re
 import socket
 import subprocess
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -223,6 +224,71 @@ def send_oversized_udp_datagrams(*ports):
                 assert sender.sendto(payload, ("127.0.0.1", port)) == length
 
 
+class UdpRelay:
+    """Relay one local guest to a host, with a controllable host-to-guest pause."""
+
+    def __init__(self, host_port):
+        self.host_port = host_port
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.socket.bind(("127.0.0.1", 0))
+        self.socket.settimeout(0.05)
+        self.port = self.socket.getsockname()[1]
+        self.guest_address = None
+        self.pause_host_packets = threading.Event()
+        self.pause_guest_inputs = threading.Event()
+        self.stop = threading.Event()
+        self.dropped_state_packets = 0
+        self.forwarded_state_packets = 0
+        self.buffered_input_count = 0
+        self.latest_buffered_input = None
+        self.input_lock = threading.Lock()
+        self.thread = threading.Thread(target=self._relay, daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self.stop.set()
+        self.socket.close()
+        self.thread.join(timeout=1)
+        assert not self.thread.is_alive(), "UDP relay did not stop"
+
+    def release_latest_input(self):
+        with self.input_lock:
+            packet = self.latest_buffered_input
+            self.latest_buffered_input = None
+        if packet is not None:
+            self.socket.sendto(packet, ("127.0.0.1", self.host_port))
+        return packet
+
+    def _relay(self):
+        while not self.stop.is_set():
+            try:
+                packet, address = self.socket.recvfrom(65535)
+                if address == ("127.0.0.1", self.host_port):
+                    if self.pause_host_packets.is_set():
+                        if packet.startswith(b"\x92\x05"):  # StatePacket union tag.
+                            self.dropped_state_packets += 1
+                    elif self.guest_address is not None:
+                        self.socket.sendto(packet, self.guest_address)
+                        if packet.startswith(b"\x92\x05"):
+                            self.forwarded_state_packets += 1
+                else:
+                    self.guest_address = address
+                    if self.pause_guest_inputs.is_set() and packet.startswith(b"\x92\x04"):
+                        with self.input_lock:
+                            self.latest_buffered_input = packet
+                            self.buffered_input_count += 1
+                    else:
+                        self.socket.sendto(packet, ("127.0.0.1", self.host_port))
+            except socket.timeout:
+                pass
+            except OSError:
+                if not self.stop.is_set():
+                    raise
+
+
 subprocess.run(["pnpm", "build"], cwd=ROOT, check=True)
 subprocess.run(["dotnet", "build", str(PROJECT / "LanPong.csproj"), "-c", "Release"],
                cwd=ROOT, check=True)
@@ -343,18 +409,81 @@ try:
     assert left_guest["phase"] == "waiting", left_guest
     wait_until("host observes guest leave", lambda: request(5180, "/api/status")["connection"] == "waiting")
     assert request(5180, "/api/status").get("pingMs") is None
-    rejoining = request(5181, "/api/join", {"address": "127.0.0.1", "port": 47888})
-    assert rejoining["role"] == "guest" and rejoining["connection"] == "connecting", rejoining
-    wait_until("UDP reconnect after receiver cancellation", lambda:
-               request(5180, "/api/status")["connection"] == "connected"
-               and request(5181, "/api/status")["connection"] == "connected")
-    rejoined_tick = request(5181, "/api/status")["tick"]
-    wait_until("state sync after reconnect", lambda:
-               request(5181, "/api/status")["tick"] >= rejoined_tick + 10)
-    left_host = request(5180, "/api/leave", {})
-    assert left_host["role"] == "none" and left_host["connection"] == "idle", left_host
-    assert left_host["phase"] == "waiting", left_host
-    request(5181, "/api/leave", {})
+    with UdpRelay(47888) as relay:
+        rejoining = request(5181, "/api/join", {"address": "127.0.0.1", "port": relay.port})
+        assert rejoining["role"] == "guest" and rejoining["connection"] == "connecting", rejoining
+        wait_until("UDP reconnect after receiver cancellation", lambda:
+                   request(5180, "/api/status")["connection"] == "connected"
+                   and request(5181, "/api/status")["connection"] == "connected")
+        rejoined_tick = request(5181, "/api/status")["tick"]
+        wait_until("state sync after reconnect", lambda:
+                   request(5181, "/api/status")["tick"] >= rejoined_tick + 10)
+        wait_until("rejoined gameplay", lambda:
+                   request(5181, "/api/status")["phase"] == "playing")
+
+        # Delay only guest inputs. Releasing the latest packet must make the
+        # host replay the earlier ticks carried in its redundant input history.
+        with websocket(5181) as rollback_ws:
+            assert decode_snapshot(recv_frame(rollback_ws))["connection"] == "connected"
+            before_rollback = request(5180, "/api/status")
+            guest_tick = request(5181, "/api/status")["tick"]
+            axis = 1 if before_rollback["rightY"] < 0.5 else -1
+            relay.pause_guest_inputs.set()
+            deadline = time.monotonic() + 0.35
+            target_tick = guest_tick + 6
+            while guest_tick < target_tick and time.monotonic() < deadline:
+                send_binary(rollback_ws, controls[axis])
+                time.sleep(0.012)
+                guest_tick = request(5181, "/api/status")["tick"]
+            assert guest_tick >= target_tick, guest_tick
+            assert relay.buffered_input_count >= 4, relay.buffered_input_count
+            before_release = request(5180, "/api/status")
+            assert abs(before_release["rightY"] - before_rollback["rightY"]) < 0.01, (
+                before_rollback, before_release)
+            assert relay.release_latest_input() is not None
+
+            def rollback_visible():
+                current = request(5180, "/api/status")
+                elapsed_ticks = current["tick"] - before_release["tick"]
+                ordinary_movement = elapsed_ticks * 0.85 / 60
+                movement = (current["rightY"] - before_release["rightY"]) * axis
+                return current if movement > ordinary_movement + 0.025 else None
+
+            wait_until("host replays delayed guest paddle input", rollback_visible, seconds=2)
+            relay.pause_guest_inputs.clear()
+
+        restarted = request(5180, "/api/restart", {})
+        wait_until("restarted gameplay before guest prediction", lambda:
+                   request(5180, "/api/status")["phase"] == "playing"
+                   and request(5181, "/api/status")["phase"] == "playing"
+                   and request(5181, "/api/status")["roundId"] == restarted["roundId"])
+
+        # A predictive guest keeps moving its paddle and advancing simulation
+        # ticks while authoritative states are briefly held by the relay.
+        with websocket(5181) as predictive_ws:
+            assert decode_snapshot(recv_frame(predictive_ws))["connection"] == "connected"
+            before_pause = request(5181, "/api/status")
+            axis = 1 if before_pause["rightY"] < 0.5 else -1
+            relay.pause_host_packets.set()
+            for _ in range(16):
+                send_binary(predictive_ws, controls[axis])
+                time.sleep(0.025)
+            during_pause = request(5181, "/api/status")
+            assert relay.dropped_state_packets >= 3, relay.dropped_state_packets
+            assert during_pause["tick"] >= before_pause["tick"] + 10, (before_pause, during_pause)
+            assert (during_pause["rightY"] - before_pause["rightY"]) * axis > 0.05, (
+                before_pause, during_pause)
+            previously_forwarded = relay.forwarded_state_packets
+            relay.pause_host_packets.clear()
+
+        wait_until("guest reconciles after paused host states", lambda:
+                   relay.forwarded_state_packets >= previously_forwarded + 3
+                   and abs(request(5180, "/api/status")["rightY"]
+                       - request(5181, "/api/status")["rightY"]) < 0.1)
+        left_host = request(5180, "/api/leave", {})
+        assert left_host["role"] == "none" and left_host["connection"] == "idle", left_host
+        assert left_host["phase"] == "waiting", left_host
+        request(5181, "/api/leave", {})
     request(5180, "/api/host", {"port": 47888})
     request(5181, "/api/join", {"address": "127.0.0.1", "port": 47888})
     wait_until("connected before guest SIGTERM", lambda:
@@ -370,7 +499,7 @@ try:
                and request(5181, "/api/status")["connection"] == "connected")
     terminate_connected_process(processes[0], 5180, 5181, "connecting", "host")
 
-    print("PASS: static UI, discovery, UDP handshake, ping RTT, oversized UDP datagrams, gameplay, binary MessagePack WebSocket snapshots and controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, leave, reconnect, and graceful host/guest shutdown")
+    print("PASS: static UI, discovery, UDP handshake, ping RTT, oversized UDP datagrams, gameplay, binary MessagePack WebSocket snapshots and controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, leave, reconnect, host rollback of delayed inputs, guest prediction during paused host states, and graceful host/guest shutdown")
 finally:
     for process in processes:
         if process.poll() is None:

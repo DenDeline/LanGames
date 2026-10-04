@@ -15,6 +15,8 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
     private readonly SemaphoreSlim _transition = new(1, 1);
     private readonly CancellationTokenSource _lifetime = new();
     private readonly GameEngine _game = new();
+    private readonly HostRollbackTimeline _hostTimeline;
+    private readonly GuestPredictionTimeline _guestTimeline;
     private readonly Dictionary<Guid, (int Axis, DateTime Updated)> _controllers = [];
     private readonly string[] _localAddresses = GetLocalAddresses();
     private readonly Task _clockTask;
@@ -37,11 +39,9 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
     private ConnectionState _connection = ConnectionState.Idle;
     private string _message = "Создайте игру или подключитесь к другу.";
     private int _udpPort;
-    private int _remoteAxis;
     private long _outSequence;
-    private long _nextInputSendTimestamp;
-    private int _lastSentAxis;
-    private long _lastInputSequence = -1;
+    private long _lastInputSentTick;
+    private int _lastHostAxis;
     private long _lastStateSequence = -1;
     private long _lastStateSentTick;
     private long _pingSequence;
@@ -49,7 +49,6 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
     private long _pingSentTimestamp;
     private double? _pingMs;
     private DateTime _lastPeerSeen = DateTime.MinValue;
-    private DateTime _lastInputSeen = DateTime.MinValue;
     private DateTime _lastHelloSent = DateTime.MinValue;
     private DateTime _lastRestartSent = DateTime.MinValue;
     private DateTime _lastPingSent = DateTime.MinValue;
@@ -58,6 +57,8 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
     public PongPeer(ILogger<PongPeer> logger)
     {
         _logger = logger;
+        _hostTimeline = new HostRollbackTimeline(_game);
+        _guestTimeline = new GuestPredictionTimeline(_game);
         _clockTask = Task.Run(() => ClockAsync(_lifetime.Token));
     }
 
@@ -165,7 +166,11 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
         {
             if (_stopping) throw new InvalidOperationException("Приложение завершает работу.");
             if (_connection != ConnectionState.Connected) throw new InvalidOperationException("Сначала подключитесь к игре.");
-            if (_role == PeerRole.Host) _game.StartMatch();
+            if (_role == PeerRole.Host)
+            {
+                _game.StartMatch();
+                _hostTimeline.Reset();
+            }
             else if (_role == PeerRole.Guest)
             {
                 _pendingRestartRequestId = Guid.NewGuid().ToString("N");
@@ -258,16 +263,18 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
             _role = PeerRole.None;
             _connection = ConnectionState.Idle;
             _message = "Создайте игру или подключитесь к другу.";
-            _udpPort = _remoteAxis = 0;
+            _udpPort = 0;
             _controllers.Clear();
             _outSequence = 0;
-            _nextInputSendTimestamp = 0;
-            _lastSentAxis = 0;
-            _lastInputSequence = _lastStateSequence = -1;
+            _lastInputSentTick = 0;
+            _lastHostAxis = 0;
+            _lastStateSequence = -1;
             _lastStateSentTick = 0;
-            _lastPeerSeen = _lastInputSeen = _lastHelloSent = _lastRestartSent = DateTime.MinValue;
+            _lastPeerSeen = _lastHelloSent = _lastRestartSent = DateTime.MinValue;
             ResetPing();
             _game.ResetWaiting();
+            _hostTimeline.Reset();
+            _guestTimeline.Reset();
         }
         stop?.Cancel();
         socket?.Dispose();
@@ -298,6 +305,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                 UdpClient? socket;
                 IPEndPoint? destination = null;
                 WirePacket? packet = null;
+                InputPacket? inputPacket = null;
                 WirePacket? pingPacket = null;
                 var now = DateTime.UtcNow;
                 lock (_gate)
@@ -318,23 +326,24 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                             _sessionId = null;
                             _connection = ConnectionState.Waiting;
                             _message = "Связь потеряна. Ожидание второго игрока…";
-                            _remoteAxis = 0;
+                            _lastHostAxis = 0;
                             _lastStateSentTick = 0;
                             accumulatedTime = 0;
                             ResetPing();
                             _game.ResetWaiting();
+                            _hostTimeline.Reset();
                         }
                         if (_peerEndpoint is not null)
                         {
                             destination = _peerEndpoint;
-                            var remoteAxis = now - _lastInputSeen < NetworkConstants.InputStaleAfter ? _remoteAxis : 0;
                             var localAxis = LocalAxis(now);
                             // PeriodicTimer coalesces missed wakes. Measure elapsed monotonic time
                             // and catch up a bounded number of fixed physics steps instead.
                             accumulatedTime = Math.Min(accumulatedTime + elapsed, fixedStep * maxCatchUpSteps);
                             for (var step = 0; step < maxCatchUpSteps && accumulatedTime >= fixedStep; step++)
                             {
-                                _game.Advance(fixedStep, localAxis, remoteAxis);
+                                _lastHostAxis = localAxis;
+                                _hostTimeline.Advance(localAxis);
                                 accumulatedTime -= fixedStep;
                             }
                             if (_game.TickNumber - _lastStateSentTick >= NetworkConstants.StateSendIntervalTicks)
@@ -347,7 +356,6 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                     }
                     else if (_role == PeerRole.Guest && _targetEndpoint is not null)
                     {
-                        accumulatedTime = 0;
                         destination = _targetEndpoint;
                         if (_connection == ConnectionState.Connected && now - _lastPeerSeen > NetworkConstants.PeerIdleTimeout)
                         {
@@ -358,6 +366,9 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                             _restartAfterRound = 0;
                             ResetPing();
                             _game.ResetWaiting();
+                            _guestTimeline.Reset();
+                            _lastInputSentTick = 0;
+                            accumulatedTime = 0;
                         }
                         if (_connection == ConnectionState.Connecting && now - _lastHelloSent >= NetworkConstants.HelloRetryInterval)
                         {
@@ -372,23 +383,24 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                                 _lastRestartSent = now;
                                 packet = new RestartPacket { SessionId = _sessionId, RequestId = _pendingRestartRequestId };
                             }
-                            else
+                            if (_guestTimeline.Started)
                             {
                                 var axis = LocalAxis(now);
-                                var axisChanged = axis != _lastSentAxis;
-                                if (axisChanged || timestamp >= _nextInputSendTimestamp)
+                                accumulatedTime = Math.Min(accumulatedTime + elapsed, fixedStep * maxCatchUpSteps);
+                                for (var step = 0; step < maxCatchUpSteps && accumulatedTime >= fixedStep; step++)
                                 {
-                                    // Keep the periodic deadline anchored to its schedule. Reset it
-                                    // after an input edge or a long pause so we never send a burst.
-                                    _nextInputSendTimestamp = axisChanged || _nextInputSendTimestamp == 0 ||
-                                        timestamp - _nextInputSendTimestamp >= NetworkConstants.GuestInputSendIntervalTicks
-                                            ? timestamp + NetworkConstants.GuestInputSendIntervalTicks
-                                            : _nextInputSendTimestamp + NetworkConstants.GuestInputSendIntervalTicks;
-                                    _lastSentAxis = axis;
-                                    packet = new InputPacket { SessionId = _sessionId, Sequence = ++_outSequence, Axis = axis };
+                                    _guestTimeline.Advance(axis);
+                                    accumulatedTime -= fixedStep;
+                                }
+                                if (_game.TickNumber > _lastInputSentTick && _guestTimeline.HasCurrentInput)
+                                {
+                                    inputPacket = _guestTimeline.CreateInputPacket(_sessionId, ++_outSequence);
+                                    _lastInputSentTick = _game.TickNumber;
                                 }
                             }
+                            else accumulatedTime = 0;
                         }
+                        else accumulatedTime = 0;
                     }
                     if (_connection == ConnectionState.Connected && _sessionId is not null &&
                         destination is not null && now - _lastPingSent >= NetworkConstants.PingInterval)
@@ -403,6 +415,8 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                 }
                 if (socket is not null && destination is not null && packet is not null)
                     await SendQuietlyAsync(socket, destination, packet, cancellationToken, sendBuffer);
+                if (socket is not null && destination is not null && inputPacket is not null)
+                    await SendQuietlyAsync(socket, destination, inputPacket, cancellationToken, sendBuffer);
                 if (socket is not null && destination is not null && pingPacket is not null)
                     await SendQuietlyAsync(socket, destination, pingPacket, cancellationToken, sendBuffer);
             }
@@ -420,7 +434,8 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
             BallX = state.BallX, BallY = state.BallY,
             BallVx = state.BallVx, BallVy = state.BallVy,
             LeftScore = state.LeftScore, RightScore = state.RightScore,
-            Phase = state.Phase, Countdown = state.Countdown, RoundId = state.RoundId
+            Phase = state.Phase, Countdown = state.Countdown, RoundId = state.RoundId,
+            ServeDirection = state.ServeDirection, Hits = state.Hits, HostAxis = _lastHostAxis
         };
     }
 
@@ -537,11 +552,11 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                         _sessionId = Guid.NewGuid().ToString("N");
                         _connection = ConnectionState.Connected;
                         _message = "Соперник подключился. Игра началась!";
-                        _lastInputSequence = -1;
                         _lastStateSentTick = 0;
                         _lastRestartRequestId = null;
                         ResetPing();
                         _game.StartMatch();
+                        _hostTimeline.Reset();
                     }
                     if (_peerSocketAddress?.Equals(remote) == true)
                     {
@@ -562,11 +577,11 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                             ObservePong(pong);
                             break;
                         case InputPacket input when input.SessionId == _sessionId &&
-                                                    input.Sequence > _lastInputSequence &&
-                                                    input.Axis is >= -1 and <= 1:
-                            _lastInputSequence = input.Sequence;
-                            _remoteAxis = input.Axis;
-                            _lastInputSeen = _lastPeerSeen = now;
+                                                    input.RoundId == _game.RoundId:
+                            _lastPeerSeen = now;
+                            if (_hostTimeline.Receive(input))
+                                _lastStateSentTick = Math.Min(_lastStateSentTick,
+                                    _game.TickNumber - NetworkConstants.StateSendIntervalTicks);
                             break;
                         case RestartPacket restart when restart.SessionId == _sessionId &&
                                                         !string.IsNullOrEmpty(restart.RequestId):
@@ -575,6 +590,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                             {
                                 _lastRestartRequestId = restart.RequestId;
                                 _game.StartMatch();
+                                _hostTimeline.Reset();
                             }
                             break;
                         case ByePacket bye when bye.SessionId == _sessionId:
@@ -583,10 +599,11 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                             _sessionId = null;
                             _connection = ConnectionState.Waiting;
                             _message = "Соперник вышел. Ожидание нового игрока…";
-                            _remoteAxis = 0;
+                            _lastHostAxis = 0;
                             _lastStateSentTick = 0;
                             ResetPing();
                             _game.ResetWaiting();
+                            _hostTimeline.Reset();
                             break;
                     }
                 }
@@ -606,6 +623,8 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                             _restartAfterRound = 0;
                             ResetPing();
                             _game.ResetWaiting();
+                            _guestTimeline.Reset();
+                            _lastInputSentTick = 0;
                         }
                         _connection = ConnectionState.Connected;
                         _message = "Вы подключились. Игра началась!";
@@ -623,7 +642,14 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                                                 state.Sequence > _lastStateSequence:
                         _lastStateSequence = state.Sequence;
                         _lastPeerSeen = now;
-                        _game.Restore(state.ToGameState());
+                        _guestTimeline.Reconcile(state.ToGameState(), state.HostAxis, _pingMs, LocalAxis(now));
+                        if (_game.TickNumber < _lastInputSentTick)
+                            _lastInputSentTick = _game.TickNumber - 1;
+                        if (_game.TickNumber > _lastInputSentTick && _guestTimeline.HasCurrentInput)
+                        {
+                            _lastInputSentTick = _game.TickNumber;
+                            reply = _guestTimeline.CreateInputPacket(_sessionId, ++_outSequence);
+                        }
                         if (_pendingRestartRequestId is not null && state.RoundId > _restartAfterRound)
                             _pendingRestartRequestId = null;
                         break;
@@ -635,6 +661,8 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                         _restartAfterRound = 0;
                         ResetPing();
                         _game.ResetWaiting();
+                        _guestTimeline.Reset();
+                        _lastInputSentTick = 0;
                         break;
                 }
             }

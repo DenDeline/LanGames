@@ -2,7 +2,7 @@ using static LanPong.GameConstants;
 
 namespace LanPong;
 
-/// <summary>A deterministic host simulation. The guest only applies observable states.</summary>
+/// <summary>A deterministic simulation that can restore and replay prior ticks.</summary>
 internal sealed class GameEngine
 {
     private GamePhase _phase = GamePhase.Waiting;
@@ -29,8 +29,31 @@ internal sealed class GameEngine
         BallVx = BallVx, BallVy = BallVy,
         LeftScore = LeftScore, RightScore = RightScore,
         Phase = _phase, Countdown = Countdown,
-        TickNumber = TickNumber, RoundId = RoundId
+        TickNumber = TickNumber, RoundId = RoundId,
+        ServeDirection = _serveDirection, Hits = _hits
     };
+
+    /// <summary>Capture every value needed to replay the simulation from this tick.</summary>
+    public GameState CaptureCheckpoint() => Capture();
+
+    /// <summary>Restore a locally captured checkpoint without changing its values.</summary>
+    public void RestoreCheckpoint(GameState checkpoint)
+    {
+        LeftY = checkpoint.LeftY;
+        RightY = checkpoint.RightY;
+        BallX = checkpoint.BallX;
+        BallY = checkpoint.BallY;
+        BallVx = checkpoint.BallVx;
+        BallVy = checkpoint.BallVy;
+        LeftScore = checkpoint.LeftScore;
+        RightScore = checkpoint.RightScore;
+        _phase = checkpoint.Phase;
+        Countdown = checkpoint.Countdown;
+        TickNumber = checkpoint.TickNumber;
+        RoundId = checkpoint.RoundId;
+        _serveDirection = checkpoint.ServeDirection;
+        _hits = checkpoint.Hits;
+    }
 
     public void ResetWaiting()
     {
@@ -229,7 +252,7 @@ internal sealed class GameEngine
         else StartRound(direction);
     }
 
-    /// <summary>Apply a network state to the guest's display replica.</summary>
+    /// <summary>Apply an untrusted network state to the local simulation.</summary>
     public void Restore(GameState state)
     {
         LeftY = FiniteClamp(state.LeftY, MinPaddleY, MaxPaddleY, ArenaCenter);
@@ -244,6 +267,8 @@ internal sealed class GameEngine
         Countdown = FiniteClamp(state.Countdown, 0, MaximumReplicaCountdown, 0);
         TickNumber = Math.Max(0, state.TickNumber);
         RoundId = Math.Max(0, state.RoundId);
+        _serveDirection = state.ServeDirection is -1 or 1 ? state.ServeDirection : 1;
+        _hits = Math.Max(0, state.Hits);
     }
 
     private static double FiniteClamp(double value, double min, double max, double fallback) =>

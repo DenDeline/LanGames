@@ -50,7 +50,10 @@ public sealed class PeerEnumWireTests
     [Test]
     public async Task StatePacket_PhaseIsNumericAndRoundTripsAsEnum()
     {
-        var bytes = WirePacketCodec.Serialize(new StatePacket { Phase = GamePhase.Playing, Sequence = 42 });
+        var bytes = WirePacketCodec.Serialize(new StatePacket
+        {
+            Phase = GamePhase.Playing, Sequence = 42, ServeDirection = 1
+        });
         var (isInteger, phaseValue) = ReadPackedPhase(bytes);
 
         await Assert.That(isInteger).IsTrue();

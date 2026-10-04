@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net;
 
 namespace LanPong;
@@ -11,14 +10,14 @@ internal static class NetworkConstants
     // Also shown in the browser form and mirrored in frontend/src/game.ts.
     public const int DefaultUdpPort = 47777;
 
-    // Bound scheduler catch-up; two 60 Hz simulation ticks yield a 30 Hz state stream.
+    // Bound scheduler catch-up; two 60 Hz simulation ticks yield a 30 Hz UDP state stream.
     public const int MaximumSimulationCatchUpSteps = 4;
     public const int StateSendIntervalTicks = 2;
-    public const int GuestInputRefreshesPerSecond = 30;
-    public static readonly TimeSpan GuestInputSendInterval = TimeSpan.FromSeconds(1.0 / GuestInputRefreshesPerSecond);
-    public static readonly long GuestInputSendIntervalTicks =
-        (long)Math.Round(Stopwatch.Frequency * GuestInputSendInterval.TotalSeconds);
-    public const int BrowserSnapshotsPerSecond = 30;
+    public const int RollbackHistoryTicks = 24;
+    public const int InputRedundancyTicks = 8;
+    public const int MaximumFutureInputTicks = 8;
+    public const int RemoteInputStaleTicks = 21;
+    public const int BrowserSnapshotsPerSecond = 60;
     public static readonly TimeSpan BrowserSnapshotInterval = TimeSpan.FromSeconds(1.0 / BrowserSnapshotsPerSecond);
 
     // Controls expire if a tab or remote player stops refreshing them.
