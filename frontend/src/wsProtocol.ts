@@ -1,0 +1,149 @@
+import { Decoder, encode } from "@msgpack/msgpack";
+
+export type PeerRole = "none" | "host" | "guest";
+export type ConnectionState = "idle" | "waiting" | "connecting" | "connected" | "disconnected";
+export type GamePhase = "waiting" | "countdown" | "playing" | "gameover";
+
+export interface PongSnapshot {
+  role: PeerRole;
+  connection: ConnectionState;
+  message: string;
+  udpPort: number;
+  localAddresses: string[];
+  peerAddress: string | null;
+  leftY: number;
+  rightY: number;
+  ballX: number;
+  ballY: number;
+  ballVx: number;
+  ballVy: number;
+  leftScore: number;
+  rightScore: number;
+  phase: GamePhase;
+  countdown: number;
+  tick: number;
+  roundId: number;
+  pingMs: number | null;
+}
+
+// The WebSocket array layout is independent of the JSON HTTP response shape.
+// Change the version whenever indices or enum ordinals change.
+const VERSION = 1;
+const SNAPSHOT_FIELDS = 20;
+const MAX_SNAPSHOT_BYTES = 16 * 1024;
+const ROLES = ["none", "host", "guest"] as const;
+const CONNECTIONS = ["idle", "waiting", "connecting", "connected"] as const;
+const PHASES = ["waiting", "countdown", "playing", "gameover"] as const;
+const decoder = new Decoder({
+  maxArrayLength: 64,
+  maxMapLength: 0,
+  maxStrLength: 4096,
+  maxBinLength: 0,
+  maxExtLength: 0,
+});
+
+const controlFrames = [
+  Uint8Array.from(encode([VERSION, -1])).buffer,
+  Uint8Array.from(encode([VERSION, 0])).buffer,
+  Uint8Array.from(encode([VERSION, 1])).buffer,
+];
+
+function isIndex(value: unknown, length: number): value is number {
+  return Number.isInteger(value) && (value as number) >= 0 && (value as number) < length;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isNonnegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+export function encodeWsAxis(axis: number): ArrayBuffer {
+  if (!Number.isInteger(axis) || axis < -1 || axis > 1) throw new RangeError("Invalid axis");
+  return controlFrames[axis + 1];
+}
+
+export function decodeWsSnapshot(bytes: ArrayBuffer): PongSnapshot | null {
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_SNAPSHOT_BYTES) return null;
+
+  let frame: unknown;
+  try {
+    frame = decoder.decode(bytes);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(frame) || frame.length !== SNAPSHOT_FIELDS || frame[0] !== VERSION)
+    return null;
+
+  const [
+    ,
+    role,
+    connection,
+    message,
+    udpPort,
+    localAddresses,
+    peerAddress,
+    leftY,
+    rightY,
+    ballX,
+    ballY,
+    ballVx,
+    ballVy,
+    leftScore,
+    rightScore,
+    phase,
+    countdown,
+    tick,
+    roundId,
+    pingMs,
+  ]: unknown[] = frame;
+
+  if (
+    !isIndex(role, ROLES.length) ||
+    !isIndex(connection, CONNECTIONS.length) ||
+    !isIndex(phase, PHASES.length) ||
+    typeof message !== "string" ||
+    !isNonnegativeInteger(udpPort) ||
+    udpPort > 65535 ||
+    !Array.isArray(localAddresses) ||
+    !localAddresses.every((address) => typeof address === "string") ||
+    (peerAddress !== null && typeof peerAddress !== "string") ||
+    !isFiniteNumber(leftY) ||
+    !isFiniteNumber(rightY) ||
+    !isFiniteNumber(ballX) ||
+    !isFiniteNumber(ballY) ||
+    !isFiniteNumber(ballVx) ||
+    !isFiniteNumber(ballVy) ||
+    !isFiniteNumber(countdown) ||
+    !isNonnegativeInteger(leftScore) ||
+    !isNonnegativeInteger(rightScore) ||
+    !isNonnegativeInteger(tick) ||
+    !isNonnegativeInteger(roundId) ||
+    (pingMs !== null && !isFiniteNumber(pingMs))
+  )
+    return null;
+
+  return {
+    role: ROLES[role],
+    connection: CONNECTIONS[connection],
+    message,
+    udpPort,
+    localAddresses,
+    peerAddress,
+    leftY,
+    rightY,
+    ballX,
+    ballY,
+    ballVx,
+    ballVy,
+    leftScore,
+    rightScore,
+    phase: PHASES[phase],
+    countdown,
+    tick,
+    roundId,
+    pingMs,
+  };
+}

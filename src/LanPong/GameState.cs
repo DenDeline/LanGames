@@ -5,8 +5,8 @@ namespace LanPong;
 [JsonConverter(typeof(JsonStringEnumConverter<GamePhase>))]
 public enum GamePhase
 {
-    // These ordinals are carried by MessagePack StatePacket.Phase (protocol v3).
-    // Keep them stable until the protocol version changes again.
+    // These ordinals are carried by MessagePack StatePacket.Phase (UDP v3)
+    // and browser WebSocket snapshots (v1). Update both versions if they change.
     [JsonStringEnumMemberName("waiting")]
     Waiting = 0,
     [JsonStringEnumMemberName("countdown")]

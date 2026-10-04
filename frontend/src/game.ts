@@ -1,28 +1,4 @@
-type PeerRole = "none" | "host" | "guest";
-type ConnectionState = "idle" | "waiting" | "connecting" | "connected" | "disconnected";
-type GamePhase = "waiting" | "countdown" | "playing" | "gameover";
-
-interface PongSnapshot {
-  role: PeerRole;
-  connection: ConnectionState;
-  message: string;
-  udpPort: number;
-  localAddresses: string[];
-  peerAddress: string | null;
-  leftY: number;
-  rightY: number;
-  ballX: number;
-  ballY: number;
-  ballVx: number;
-  ballVy: number;
-  leftScore: number;
-  rightScore: number;
-  phase: GamePhase;
-  countdown: number;
-  tick: number;
-  roundId: number;
-  pingMs: number | null;
-}
+import { decodeWsSnapshot, encodeWsAxis, type PongSnapshot } from "./wsProtocol";
 
 interface MotionSample {
   tick: number;
@@ -988,7 +964,7 @@ function currentAxis(): number {
 }
 
 function sendAxis(): void {
-  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ axis: currentAxis() }));
+  if (socket?.readyState === WebSocket.OPEN) socket.send(encodeWsAxis(currentAxis()));
 }
 
 function clearControls(): void {
@@ -1005,6 +981,7 @@ function connectSocket(): void {
     return;
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   const currentSocket = new WebSocket(`${scheme}//${location.host}/ws`);
+  currentSocket.binaryType = "arraybuffer";
   socket = currentSocket;
   currentSocket.addEventListener("open", () => {
     clearTimeout(reconnectTimer);
@@ -1012,19 +989,26 @@ function connectSocket(): void {
     refreshStatus();
   });
   currentSocket.addEventListener("message", (event) => {
+    if (socket !== currentSocket) return;
     try {
       const payload: unknown = event.data;
-      if (typeof payload !== "string") return;
-      const data: unknown = JSON.parse(payload);
-      if (isRecord(data)) {
-        webSocketSnapshotVersion++;
-        applySnapshot(data);
+      if (!(payload instanceof ArrayBuffer)) {
+        currentSocket.close();
+        return;
       }
+      const data = decodeWsSnapshot(payload);
+      if (data === null) {
+        currentSocket.close();
+        return;
+      }
+      webSocketSnapshotVersion++;
+      applySnapshot(data);
     } catch {
-      /* Пропускаем повреждённый кадр. */
+      currentSocket.close();
     }
   });
   currentSocket.addEventListener("close", () => {
+    if (socket !== currentSocket) return;
     clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(connectSocket, SOCKET_RECONNECT_MS);
   });

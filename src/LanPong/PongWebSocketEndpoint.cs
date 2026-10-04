@@ -1,12 +1,11 @@
+using System.Buffers;
 using System.Net.WebSockets;
-using System.Text.Json;
 
 namespace LanPong;
 
 internal static class PongWebSocketEndpoint
 {
     private const int MaxControlBytes = 256;
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public static async Task HandleAsync(HttpContext context, PongPeer peer, CancellationToken shutdownToken)
     {
@@ -121,10 +120,12 @@ internal static class PongWebSocketEndpoint
     private static async Task SendSnapshotsAsync(WebSocket socket, PongPeer peer, CancellationToken cancellationToken)
     {
         using var timer = new PeriodicTimer(NetworkConstants.BrowserSnapshotInterval);
+        var buffer = new ArrayBufferWriter<byte>(512);
         do
         {
-            var bytes = JsonSerializer.SerializeToUtf8Bytes(peer.Snapshot(), JsonOptions);
-            await socket.SendAsync(bytes, WebSocketMessageType.Text, true, CancellationToken.None);
+            buffer.Clear();
+            BrowserWebSocketProtocol.WriteSnapshot(peer.Snapshot(), buffer);
+            await socket.SendAsync(buffer.WrittenMemory, WebSocketMessageType.Binary, true, CancellationToken.None);
         }
         while (socket.State == WebSocketState.Open && await timer.WaitForNextTickAsync(cancellationToken));
     }
@@ -142,7 +143,7 @@ internal static class PongWebSocketEndpoint
                 var result = await socket.ReceiveAsync(chunk.AsMemory(), CancellationToken.None);
                 if (result.MessageType == WebSocketMessageType.Close) return;
 
-                if (result.MessageType != WebSocketMessageType.Text || result.Count > message.Length - length)
+                if (result.MessageType != WebSocketMessageType.Binary || result.Count > message.Length - length)
                     discard = true;
                 if (!discard)
                 {
@@ -153,16 +154,8 @@ internal static class PongWebSocketEndpoint
             }
 
             if (discard) continue;
-            try
-            {
-                using var document = JsonDocument.Parse(message.AsMemory(0, length));
-                if (document.RootElement.ValueKind == JsonValueKind.Object &&
-                    document.RootElement.TryGetProperty("axis", out var axis) &&
-                    axis.ValueKind == JsonValueKind.Number &&
-                    axis.TryGetInt32(out var direction))
-                    peer.SetInput(controllerId, direction);
-            }
-            catch (JsonException) { /* Ignore malformed local UI messages. */ }
+            if (BrowserWebSocketProtocol.TryReadAxis(message.AsMemory(0, length), out var axis))
+                peer.SetInput(controllerId, axis);
         }
     }
 }

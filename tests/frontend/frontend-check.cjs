@@ -10,7 +10,8 @@ const source = fs.readFileSync(
 );
 const startup = source.indexOf("export function startGame()");
 assert.ok(startup > 0, "startGame must mark the browser-only initialization");
-const core = source.slice(0, startup);
+// The protocol module is exercised separately; the VM only needs game logic.
+const core = source.slice(0, startup).replace(/^import .*;\r?\n/gm, "");
 let now = 1000;
 let gradients = 0;
 let imageDraws = 0;

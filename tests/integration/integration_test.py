@@ -11,6 +11,42 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PROJECT = ROOT / "src" / "LanPong"
 DLL = PROJECT / "bin" / "Release" / "net10.0" / "LanPong.dll"
+MSGPACK_HELPER = ROOT / "tests" / "integration" / "msgpack_interop.mjs"
+SNAPSHOT_FIELDS = (
+    "version", "role", "connection", "message", "udpPort", "localAddresses",
+    "peerAddress", "leftY", "rightY", "ballX", "ballY", "ballVx", "ballVy",
+    "leftScore", "rightScore", "phase", "countdown", "tick", "roundId", "pingMs",
+)
+ROLES = ("none", "host", "guest")
+CONNECTIONS = ("idle", "waiting", "connecting", "connected")
+PHASES = ("waiting", "countdown", "playing", "gameover")
+
+
+def msgpack_helper(operation, payload=b""):
+    result = subprocess.run(
+        ["node", str(MSGPACK_HELPER), operation],
+        input=base64.b64encode(payload), capture_output=True, check=True, cwd=ROOT,
+    )
+    return json.loads(result.stdout)
+
+
+def control_packets():
+    return {int(axis): base64.b64decode(encoded) for axis, encoded in
+            msgpack_helper("encode-controls").items()}
+
+
+def decode_snapshot(frame):
+    assert frame is not None and frame[0] == 0x2, frame
+    values = msgpack_helper("decode", frame[1])
+    assert isinstance(values, list) and len(values) == len(SNAPSHOT_FIELDS), values
+    snapshot = dict(zip(SNAPSHOT_FIELDS, values))
+    assert snapshot["version"] == 1, snapshot
+    snapshot["role"] = ROLES[snapshot["role"]]
+    snapshot["connection"] = CONNECTIONS[snapshot["connection"]]
+    snapshot["phase"] = PHASES[snapshot["phase"]]
+    assert isinstance(snapshot["localAddresses"], list), snapshot
+    assert isinstance(snapshot["message"], str), snapshot
+    return snapshot
 
 
 def request(port, path, payload=None):
@@ -60,20 +96,29 @@ def websocket(port):
 
 
 def send_frame(conn, opcode, data, final=True):
-    assert len(data) < 126
+    length = len(data)
+    if length < 126:
+        header = bytes([(0x80 if final else 0) | opcode, 0x80 | length])
+    elif length <= 65535:
+        header = bytes([(0x80 if final else 0) | opcode, 0x80 | 126]) + length.to_bytes(2, "big")
+    else:
+        header = bytes([(0x80 if final else 0) | opcode, 0x80 | 127]) + length.to_bytes(8, "big")
     mask = os.urandom(4)
     masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(data))
-    conn.sendall(bytes([(0x80 if final else 0) | opcode, 0x80 | len(data)]) + mask + masked)
+    conn.sendall(header + mask + masked)
 
 
 def send_text(conn, text):
     send_frame(conn, 0x1, text.encode())
 
 
-def send_fragmented_text(conn, text):
-    data = text.encode()
+def send_binary(conn, data):
+    send_frame(conn, 0x2, data)
+
+
+def send_fragmented_binary(conn, data):
     middle = len(data) // 2
-    send_frame(conn, 0x1, data[:middle], final=False)
+    send_frame(conn, 0x2, data[:middle], final=False)
     send_frame(conn, 0x0, data[middle:])
 
 
@@ -146,9 +191,7 @@ def launch(port, log):
 
 def terminate_connected_process(process, port, remote_port, remote_connection, role):
     with websocket(port) as conn:
-        first = recv_frame(conn)
-        assert first is not None and first[0] == 0x1, first
-        assert json.loads(first[1])["connection"] == "connected"
+        assert decode_snapshot(recv_frame(conn))["connection"] == "connected"
 
         started = time.monotonic()
         process.terminate()
@@ -249,31 +292,39 @@ try:
                and request(5180, "/api/status")["connection"] == "connected"
                and request(5181, "/api/status")["connection"] == "connected")
     with websocket(5180) as host_ws, websocket(5180) as passive_ws, websocket(5181) as guest_ws:
-        frame = recv_frame(host_ws)
-        assert frame is not None and frame[0] == 0x1, frame
-        snapshot = json.loads(frame[1])
+        controls = control_packets()
+        snapshot = decode_snapshot(recv_frame(host_ws))
         assert snapshot["role"] == "host" and snapshot["connection"] == "connected", snapshot
         assert "tick" in snapshot and "leftY" in snapshot and "rightY" in snapshot, snapshot
 
-        send_text(host_ws, '[]')
-        send_text(host_ws, '{"axis":"down"}')
-        send_text(host_ws, '{"axis":')
+        send_text(host_ws, '{"axis":1}')
+        send_binary(host_ws, b"\x90")  # Wrong array shape.
+        send_binary(host_ws, b"\x92\x02\x01")  # Wrong protocol version.
+        send_binary(host_ws, b"\x92\x01\xa2up")  # Non-numeric axis.
+        send_binary(host_ws, b"\x92\x01\x02")  # Axis outside -1..1.
+        send_binary(host_ws, b"\xc1")  # Reserved MessagePack prefix.
+        send_binary(host_ws, controls[1] + b"\x00")  # A second packed value.
+        send_binary(host_ws, controls[1] + bytes(257 - len(controls[1])))
+        time.sleep(0.15)
+        after_invalid = request(5180, "/api/status")
+        assert abs(after_invalid["leftY"] - before["leftY"]) < 0.005, (before, after_invalid)
+
         for _ in range(8):
-            send_text(host_ws, '{"axis":-1}')
+            send_binary(host_ws, controls[-1])
             time.sleep(0.04)
         after_malformed = request(5180, "/api/status")
         assert after_malformed["leftY"] < before["leftY"], (before, after_malformed)
 
         for _ in range(8):
-            send_fragmented_text(host_ws, '{"axis":1}')
+            send_fragmented_binary(host_ws, controls[1])
             time.sleep(0.04)
         after_fragmented = request(5180, "/api/status")
         assert after_fragmented["leftY"] > after_malformed["leftY"], (after_malformed, after_fragmented)
 
         for _ in range(25):
-            send_text(host_ws, '{"axis":-1}')
-            send_text(passive_ws, '{"axis":0}')
-            send_text(guest_ws, '{"axis":1}')
+            send_binary(host_ws, controls[-1])
+            send_binary(passive_ws, controls[0])
+            send_binary(guest_ws, controls[1])
             time.sleep(0.04)
         moved = request(5180, "/api/status")
         assert moved["leftY"] < before["leftY"], (before, moved)
@@ -319,7 +370,7 @@ try:
                and request(5181, "/api/status")["connection"] == "connected")
     terminate_connected_process(processes[0], 5180, 5181, "connecting", "host")
 
-    print("PASS: static UI, discovery, UDP handshake, ping RTT, oversized UDP datagrams, gameplay, WebSocket snapshots, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, leave, reconnect, and graceful host/guest shutdown")
+    print("PASS: static UI, discovery, UDP handshake, ping RTT, oversized UDP datagrams, gameplay, binary MessagePack WebSocket snapshots and controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, leave, reconnect, and graceful host/guest shutdown")
 finally:
     for process in processes:
         if process.poll() is None:
