@@ -1,0 +1,139 @@
+@media (max-width: 1120px) {
+  .app-shell {
+    width: min(100% - 40px, 920px);
+  }
+  .layout {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+  }
+  .sidebar-tip {
+    grid-column: 1 / -1;
+  }
+}
+@media (max-width: 720px) {
+  .app-shell {
+    width: calc(100% - 24px);
+  }
+  .topbar {
+    padding: 22px 0 20px;
+  }
+  .brand {
+    gap: 10px;
+  }
+  .brand-mark {
+    width: 43px;
+    height: 43px;
+  }
+  .brand .eyebrow {
+    font-size: 8px;
+    letter-spacing: 0.09em;
+  }
+  h1 {
+    font-size: 24px;
+  }
+  .connection-pill {
+    padding: 5px 8px;
+    min-height: 29px;
+    font-size: 10px;
+  }
+  .arena-panel {
+    padding: 15px;
+  }
+  .arena-heading {
+    margin-bottom: 15px;
+  }
+  .arena-heading h2 {
+    font-size: 20px;
+  }
+  .scoreboard {
+    min-height: 60px;
+    margin-bottom: 14px;
+    gap: 20px;
+  }
+  .score-side {
+    width: 40%;
+    gap: 12px;
+  }
+  .score-side strong {
+    font-size: 46px;
+  }
+  .score-player {
+    font-size: 10px;
+    letter-spacing: 0.05em;
+  }
+  .score-divider {
+    height: 40px;
+  }
+  .arena-footer {
+    margin-top: 15px;
+  }
+  .network-hint {
+    display: none;
+  }
+  .sidebar {
+    display: flex;
+  }
+  .panel {
+    padding: 19px;
+  }
+  .touch-controls {
+    display: flex;
+  }
+}
+@media (max-width: 420px) {
+  .brand-mark {
+    display: none;
+  }
+  .connection-pill {
+    max-width: 130px;
+  }
+  .role-badge {
+    max-width: 115px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .score-player {
+    font-size: 9px;
+  }
+  .score-side strong {
+    font-size: 40px;
+  }
+  .overlay-kicker {
+    font-size: 8px;
+  }
+  #overlay-description {
+    font-size: 10px;
+  }
+  .keyboard-hint {
+    font-size: 10px;
+  }
+  .arena-footer {
+    gap: 12px;
+  }
+  .sound-controls {
+    gap: 6px;
+  }
+  .sound-controls input[type="range"] {
+    width: 72px;
+  }
+}
+@media (pointer: coarse) {
+  .touch-controls {
+    display: flex;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .score-side.is-scored strong {
+    animation: none;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

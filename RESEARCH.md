@@ -77,7 +77,7 @@ WebSocket передаёт один снимок или одну команду 
 
 ## Числовые параметры прежней версии
 
-Константы разделены по назначению: `GameConstants.cs` задаёт правила и геометрию, `NetworkConstants.cs` — интервалы обмена и обнаружения, а константы в `frontend/src/game.ts` — отображение и локальный прогноз. Таблица ниже сохраняет параметры до внедрения отката для сравнения; её значения более не описывают текущую версию. При настройке следует измерять задержку ввода и число исправленных тактов на реальном Wi-Fi.
+Константы разделены по назначению: `GameConstants.cs` задаёт правила и геометрию, `NetworkConstants.cs` — интервалы обмена и обнаружения, а константы в `frontend/src/motion.ts` — отображение и локальный прогноз. Таблица ниже сохраняет параметры до внедрения отката для сравнения; её значения более не описывают текущую версию. При настройке следует измерять задержку ввода и число исправленных тактов на реальном Wi-Fi.
 
 | Параметр | Значение | Основание и компромисс |
 | --- | --- | --- |
@@ -104,3 +104,11 @@ WebSocket передаёт один снимок или одну команду 
 Сеансы WebSocket получают сигнал `ApplicationStopping`. После остановки отправителя снимков сервер отправляет кадр закрытия с кодом 1001 (`Going Away`) и ограничивает время закрытия. Порядок важен: [API `WebSocket.SendAsync`](https://learn.microsoft.com/en-us/dotnet/api/system.net.websockets.websocket.sendasync?view=net-10.0) допускает только одну одновременную отправку, а [закрытие WebSocket](https://learn.microsoft.com/en-us/dotnet/api/system.net.websockets.websocket.closeoutputasync?view=net-10.0) тоже отправляет кадр. Исходный контракт браузерного закрытия сохраняется.
 
 Основание: [жизненный цикл Generic Host](https://learn.microsoft.com/en-us/dotnet/core/extensions/generic-host), [остановка размещённых служб ASP.NET Core](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/host/hosted-services?view=aspnetcore-10.0), [работа с WebSocket в ASP.NET Core](https://learn.microsoft.com/en-us/aspnet/core/fundamentals/websockets?view=aspnetcore-10.0), [код закрытия 1001](https://learn.microsoft.com/en-us/dotnet/api/system.net.websockets.websocketclosestatus?view=net-10.0). Проверка запускает два связанных процесса, завершает каждый по SIGTERM при открытом WebSocket и проверяет быстрый выход, сигнал `ByePacket` и кадр 1001.
+
+## Разделение фронтенда
+
+Перед изменением `frontend/src/game.ts` содержал 1387 строк и объединял HTTP/WebSocket, проверку и принятие снимков, прогноз движения, Canvas, звук, интерфейс и ввод. `frontend/src/style.css` содержал 972 строки. Бинарный `wsProtocol.ts` уже имел отдельную ответственность. Главным ограничением оказался тест `frontend-check.cjs`: он выполнял срез скомпилированного `game.js` через VM и обращался к закрытым переменным файла, поэтому простой перенос функций в модули нарушил бы тест даже при прежнем поведении игры.
+
+Выбранные границы повторяют потоки данных: `snapshot.ts` описывает состояние и разбирает HTTP JSON, `wsProtocol.ts` декодирует бинарный WebSocket, `session.ts` принимает новое состояние и отвергает устаревший HTTP-такт, `motion.ts` хранит краткую историю и прогноз, `arena.ts` рисует Canvas, `feedback.ts` хранит IDs уже показанных событий, `sound.ts` управляет звуком, `view.ts` обновляет DOM, `input.ts` собирает управление. `game.ts` связывает эти части с HTTP и WebSocket. Геометрия остаётся в одном браузерном модуле `motion.ts`, чтобы рисунок и прогноз использовали одинаковые значения. Тесты обращаются к публичным API модулей вместо текста скомпилированного файла.
+
+Этот выбор соответствует модели ES-модулей TypeScript: экспорт делает границы и зависимости явными ([TypeScript Modules](https://www.typescriptlang.org/docs/handbook/2/modules.html)). Vite поддерживает прямой импорт TypeScript и CSS, а также сохраняет порядок CSS `@import` при сборке ([Vite Features](https://vite.dev/guide/features.html)). Поэтому стили разделены на семь файлов с прежним порядком правил; итоговый CSS сборки совпал с исходным побайтно. Vite только преобразует TypeScript, а проверку типов выполняет отдельная команда `pnpm typecheck`, как рекомендует документация Vite.

@@ -1,0 +1,109 @@
+.session-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.live-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.live-indicator i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #8594a6;
+}
+.live-indicator[data-state="connected"] {
+  color: var(--cyan);
+}
+.live-indicator[data-state="connected"] i {
+  background: var(--cyan);
+  box-shadow: 0 0 8px #66e8df;
+}
+.live-indicator[data-state="disconnected"] {
+  color: var(--coral);
+}
+.live-indicator[data-state="disconnected"] i {
+  background: var(--coral);
+}
+.session-message {
+  min-height: 43px;
+  margin: 16px 0 15px;
+  color: #d6e1ed;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.session-details {
+  display: grid;
+  gap: 0;
+  margin: 0 0 17px;
+  border-top: 1px solid var(--line);
+}
+.session-details div {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line);
+}
+.session-details > [hidden] {
+  display: none;
+}
+.session-details dt {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.session-details dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 750;
+  text-align: right;
+}
+#ping-value {
+  font-variant-numeric: tabular-nums;
+}
+.session-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.session-actions .secondary-button {
+  flex: 1;
+}
+.text-button {
+  min-height: 38px;
+  padding: 3px;
+  border: 0;
+  background: transparent;
+  color: #abb9ca;
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+.text-button:hover:not(:disabled) {
+  color: var(--coral);
+}
+.sidebar-tip {
+  display: flex;
+  gap: 10px;
+  margin: 3px 4px 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.sidebar-tip span {
+  color: var(--cyan);
+}

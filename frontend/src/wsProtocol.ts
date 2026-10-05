@@ -1,40 +1,14 @@
 import { Decoder, encode } from "@msgpack/msgpack";
+import type { PongSnapshot } from "./snapshot.js";
 
-export type PeerRole = "none" | "host" | "guest";
-export type ConnectionState = "idle" | "waiting" | "connecting" | "connected" | "disconnected";
-export type GamePhase = "waiting" | "countdown" | "playing" | "gameover";
-export type GameEventKind = "serve" | "paddle" | "wall" | "goal" | "match";
-
-export interface GameEvent {
-  id: string;
-  kind: GameEventKind;
-  tick: number;
-  x: number;
-  y: number;
-}
-
-export interface PongSnapshot {
-  role: PeerRole;
-  connection: ConnectionState;
-  message: string;
-  udpPort: number;
-  localAddresses: string[];
-  peerAddress: string | null;
-  leftY: number;
-  rightY: number;
-  ballX: number;
-  ballY: number;
-  ballVx: number;
-  ballVy: number;
-  leftScore: number;
-  rightScore: number;
-  phase: GamePhase;
-  countdown: number;
-  tick: number;
-  roundId: number;
-  pingMs: number | null;
-  events: GameEvent[];
-}
+export type {
+  PeerRole,
+  ConnectionState,
+  GamePhase,
+  GameEventKind,
+  GameEvent,
+  PongSnapshot,
+} from "./snapshot.js";
 
 // The WebSocket array layout is independent of the JSON HTTP response shape.
 // Change the version whenever indices or enum ordinals change.
