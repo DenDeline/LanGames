@@ -121,7 +121,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                 _udpPort = port;
             }
             _mdns.SetHostPort(port);
-            _receiveTask = Task.Run(() => ReceiveAsync(socket, stop.Token));
+            _receiveTask = Task.Run(() => ReceiveAsync(socket, stop));
         }
         finally { _transition.Release(); }
     }
@@ -183,7 +183,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                 _message = "Подключаемся к игроку…";
                 _udpPort = ((IPEndPoint)socket.Client.LocalEndPoint!).Port;
             }
-            _receiveTask = Task.Run(() => ReceiveAsync(socket, stop.Token));
+            _receiveTask = Task.Run(() => ReceiveAsync(socket, stop));
         }
         finally { _transition.Release(); }
     }
@@ -238,46 +238,54 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
 
     private async Task StopSocketAsync()
     {
-        UdpClient? socket;
-        CancellationTokenSource? stop;
-        Task? receiver;
+        (UdpClient? Socket, CancellationTokenSource? Stop, Task? Receiver) detached;
         lock (_gate)
-        {
-            socket = _socket;
-            stop = _socketStop;
-            receiver = _receiveTask;
-            _socket = null;
-            _socketStop = null;
-            _receiveTask = null;
-            _peerEndpoint = _targetEndpoint = null;
-            _peerSocketAddress = _targetSocketAddress = null;
-            _sessionId = _lastRestartRequestId = _pendingRestartRequestId = null;
-            _restartAfterRound = 0;
-            _role = PeerRole.None;
-            _connection = ConnectionState.Idle;
-            _message = "Создайте игру или подключитесь к другу.";
-            _udpPort = 0;
-            _controllers.Clear();
-            _outSequence = 0;
-            _lastInputSentTick = 0;
-            _lastHostAxis = 0;
-            _lastStateSequence = -1;
-            _lastStateSentTick = 0;
-            _lastPeerSeen = _lastHelloSent = _lastRestartSent = DateTime.MinValue;
-            ResetPing();
-            _game.ResetWaiting();
-            _hostTimeline.Reset();
-            _guestTimeline.Reset();
-        }
+            detached = ResetSocketLocked();
         _mdns.SetHostPort(null);
-        stop?.Cancel();
-        socket?.Dispose();
-        if (receiver is not null)
+        detached.Stop?.Cancel();
+        detached.Socket?.Dispose();
+        if (detached.Receiver is not null)
         {
-            try { await receiver; }
+            try { await detached.Receiver; }
             catch (OperationCanceledException) { }
         }
-        stop?.Dispose();
+        if (detached.Receiver is null) detached.Stop?.Dispose();
+    }
+
+    // The receive loop may call this without awaiting its own completion.
+    private (UdpClient? Socket, CancellationTokenSource? Stop, Task? Receiver) ResetSocketLocked(
+        string message = "Создайте игру или подключитесь к другу.")
+    {
+        var detached = (_socket, _socketStop, _receiveTask);
+        _socket = null;
+        _socketStop = null;
+        _receiveTask = null;
+        _peerEndpoint = _targetEndpoint = null;
+        _peerSocketAddress = _targetSocketAddress = null;
+        _sessionId = _lastRestartRequestId = _pendingRestartRequestId = null;
+        _restartAfterRound = 0;
+        _role = PeerRole.None;
+        _connection = ConnectionState.Idle;
+        _message = message;
+        _udpPort = 0;
+        _controllers.Clear();
+        _outSequence = 0;
+        _lastInputSentTick = 0;
+        _lastHostAxis = 0;
+        _lastStateSequence = -1;
+        _lastStateSentTick = 0;
+        _lastPeerSeen = _lastHelloSent = _lastRestartSent = DateTime.MinValue;
+        ResetPing();
+        _game.ResetWaiting();
+        _hostTimeline.Reset();
+        _guestTimeline.Reset();
+        return detached;
+    }
+
+    private static void CloseDetachedSocket(UdpClient? socket, CancellationTokenSource? stop)
+    {
+        stop?.Cancel();
+        socket?.Dispose();
     }
 
     private async Task ClockAsync(CancellationToken cancellationToken)
@@ -301,6 +309,8 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                 WirePacket? packet = null;
                 InputPacket? inputPacket = null;
                 WirePacket? pingPacket = null;
+                UdpClient? socketToClose = null;
+                CancellationTokenSource? stopToClose = null;
                 var now = DateTime.UtcNow;
                 lock (_gate)
                 {
@@ -354,15 +364,10 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                         destination = _targetEndpoint;
                         if (_connection == ConnectionState.Connected && now - _lastPeerSeen > NetworkConstants.PeerIdleTimeout)
                         {
-                            _connection = ConnectionState.Connecting;
-                            _message = "Связь потеряна. Повторное подключение…";
-                            _sessionId = null;
-                            _pendingRestartRequestId = null;
-                            _restartAfterRound = 0;
-                            ResetPing();
-                            _game.ResetWaiting();
-                            _guestTimeline.Reset();
-                            _lastInputSentTick = 0;
+                            (socketToClose, stopToClose, _) = ResetSocketLocked(
+                                "Связь потеряна. Подключитесь к игре заново.");
+                            socket = null;
+                            destination = null;
                             accumulatedTime = 0;
                         }
                         if (_connection == ConnectionState.Connecting && now - _lastHelloSent >= NetworkConstants.HelloRetryInterval)
@@ -408,6 +413,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                     if (_pingMs is not null && now - _lastPongSeen > NetworkConstants.PingStaleAfter)
                         _pingMs = null;
                 }
+                CloseDetachedSocket(socketToClose, stopToClose);
                 if (socket is not null && destination is not null && packet is not null)
                     await SendQuietlyAsync(socket, destination, packet, cancellationToken, sendBuffer);
                 if (socket is not null && destination is not null && inputPacket is not null)
@@ -474,8 +480,10 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
         return axis;
     }
 
-    private async Task ReceiveAsync(UdpClient socket, CancellationToken cancellationToken)
+    private async Task ReceiveAsync(UdpClient socket, CancellationTokenSource stop)
     {
+        using var ownedStop = stop;
+        var cancellationToken = ownedStop.Token;
         // One receive is outstanding at a time, so the datagram and remote address
         // can be handled before the next receive overwrites either buffer.
         var receiveBuffer = new byte[WirePacketCodec.MaxPacketBytes + 1];
@@ -529,6 +537,8 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
     {
         WirePacket? reply = null;
         IPEndPoint? replyDestination = null;
+        UdpClient? socketToClose = null;
+        CancellationTokenSource? stopToClose = null;
         var now = DateTime.UtcNow;
         lock (_gate)
         {
@@ -650,22 +660,19 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                         if (_pendingRestartRequestId is not null && state.RoundId > _restartAfterRound)
                             _pendingRestartRequestId = null;
                         break;
-                    case ByePacket bye when _sessionId is not null && bye.SessionId == _sessionId:
-                        _connection = ConnectionState.Connecting;
-                        _message = "Соперник вышел. Повторное подключение…";
-                        _sessionId = null;
-                        _pendingRestartRequestId = null;
-                        _restartAfterRound = 0;
-                        ResetPing();
-                        _game.ResetWaiting();
-                        _guestTimeline.Reset();
-                        _lastInputSentTick = 0;
+                    // Welcome and Bye can arrive out of order while the first handshake is in flight.
+                    case ByePacket bye when !string.IsNullOrEmpty(bye.SessionId) &&
+                                             (bye.SessionId == _sessionId ||
+                                              _connection == ConnectionState.Connecting && _sessionId is null):
+                        (socketToClose, stopToClose, _) = ResetSocketLocked(
+                            "Соперник вышел. Подключитесь к новой игре вручную.");
                         break;
                 }
             }
             if (reply is not null && replyDestination is null)
                 replyDestination = _role == PeerRole.Host ? _peerEndpoint : _targetEndpoint;
         }
+        CloseDetachedSocket(socketToClose, stopToClose);
         if (reply is not null && replyDestination is not null)
             await SendQuietlyAsync(socket, replyDestination, reply, cancellationToken);
     }

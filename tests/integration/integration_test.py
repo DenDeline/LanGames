@@ -241,7 +241,7 @@ def launch(port, log):
     )
 
 
-def terminate_connected_process(process, port, remote_port, remote_connection, role):
+def terminate_connected_process(process, port, remote_port, remote_connection, remote_role, role):
     with websocket(port) as conn:
         assert decode_snapshot(recv_frame(conn))["connection"] == "connected"
 
@@ -253,8 +253,13 @@ def terminate_connected_process(process, port, remote_port, remote_connection, r
         except (BrokenPipeError, ConnectionResetError):
             # The close frame is the contract; the process may already have exited.
             pass
-        wait_until(f"{role} shutdown Bye reaches remote peer", lambda:
-                   request(remote_port, "/api/status")["connection"] == remote_connection,
+
+        def remote_left_match():
+            snapshot = request(remote_port, "/api/status")
+            return snapshot if (snapshot["connection"] == remote_connection
+                                and snapshot["role"] == remote_role) else None
+
+        wait_until(f"{role} shutdown Bye reaches remote peer", remote_left_match,
                    seconds=max(0, 2 - (time.monotonic() - started)))
         remaining = 4 - (time.monotonic() - started)
         assert remaining > 0, f"{role} shutdown exceeded four seconds"
@@ -295,9 +300,11 @@ class UdpRelay:
         self.port = self.socket.getsockname()[1]
         self.guest_address = None
         self.pause_host_packets = threading.Event()
+        self.drop_welcome = threading.Event()
         self.pause_guest_inputs = threading.Event()
         self.stop = threading.Event()
         self.dropped_state_packets = 0
+        self.dropped_welcome_packets = 0
         self.forwarded_state_packets = 0
         self.buffered_input_count = 0
         self.latest_buffered_input = None
@@ -330,6 +337,8 @@ class UdpRelay:
                     if self.pause_host_packets.is_set():
                         if packet.startswith(b"\x92\x05"):  # StatePacket union tag.
                             self.dropped_state_packets += 1
+                    elif self.drop_welcome.is_set() and packet.startswith(b"\x92\x03"):
+                        self.dropped_welcome_packets += 1
                     elif self.guest_address is not None:
                         self.socket.sendto(packet, self.guest_address)
                         if packet.startswith(b"\x92\x05"):
@@ -558,7 +567,64 @@ try:
         left_host = request(5180, "/api/leave", {})
         assert left_host["role"] == "none" and left_host["connection"] == "idle", left_host
         assert left_host["phase"] == "waiting", left_host
-        request(5181, "/api/leave", {})
+
+        def guest_has_left():
+            snapshot = request(5181, "/api/status")
+            return snapshot if snapshot["role"] == "none" and snapshot["connection"] == "idle" else None
+
+        left_by_host = wait_until("guest leaves after host Bye", guest_has_left)
+        assert left_by_host["phase"] == "waiting", left_by_host
+
+        restarted_host = request(5180, "/api/host", {"port": 47888})
+        assert restarted_host["role"] == "host" and restarted_host["connection"] == "waiting", restarted_host
+        time.sleep(1.2)  # More than two Hello retry intervals.
+        still_waiting = request(5180, "/api/status")
+        still_idle = request(5181, "/api/status")
+        assert still_waiting["connection"] == "waiting", still_waiting
+        assert still_idle["role"] == "none" and still_idle["connection"] == "idle", still_idle
+
+        manual_rejoin = request(5181, "/api/join", {"address": "127.0.0.1", "port": relay.port})
+        assert manual_rejoin["role"] == "guest", manual_rejoin
+        wait_until("manual join after host leave", lambda:
+                   request(5180, "/api/status")["connection"] == "connected"
+                   and request(5181, "/api/status")["connection"] == "connected")
+
+        # Simulate a lost Bye: the guest must also leave after peer timeout,
+        # rather than automatically joining the next game on the same port.
+        relay.pause_host_packets.set()
+        request(5180, "/api/leave", {})
+        timed_out_guest = wait_until("guest leaves after lost host Bye", guest_has_left)
+        assert timed_out_guest["phase"] == "waiting", timed_out_guest
+        request(5180, "/api/host", {"port": 47888})
+        relay.pause_host_packets.clear()
+        time.sleep(1.2)
+        still_waiting = request(5180, "/api/status")
+        still_idle = request(5181, "/api/status")
+        assert still_waiting["connection"] == "waiting", still_waiting
+        assert still_idle["role"] == "none" and still_idle["connection"] == "idle", still_idle
+
+        # The host may accept Hello while every Welcome is lost. Its Bye must
+        # still end the guest's pending connection, without a session ID.
+        relay.drop_welcome.set()
+        pending_join = request(5181, "/api/join", {"address": "127.0.0.1", "port": relay.port})
+        assert pending_join["role"] == "guest", pending_join
+        wait_until("host accepts Hello without delivering Welcome", lambda:
+                   request(5180, "/api/status")["connection"] == "connected"
+                   and relay.dropped_welcome_packets >= 1)
+        pending_guest = request(5181, "/api/status")
+        assert pending_guest["role"] == "guest" and pending_guest["connection"] == "connecting", pending_guest
+        request(5180, "/api/leave", {})
+        pending_guest_left = wait_until("pending guest leaves after host Bye", guest_has_left)
+        assert pending_guest_left["phase"] == "waiting", pending_guest_left
+        relay.drop_welcome.clear()
+
+        request(5180, "/api/host", {"port": 47888})
+        time.sleep(1.2)
+        still_waiting = request(5180, "/api/status")
+        still_idle = request(5181, "/api/status")
+        assert still_waiting["connection"] == "waiting", still_waiting
+        assert still_idle["role"] == "none" and still_idle["connection"] == "idle", still_idle
+        request(5180, "/api/leave", {})
     if has_ipv6_loopback():
         ipv6_host = request(5180, "/api/host", {"port": 47888})
         assert "::1" in ipv6_host["localAddresses"], ipv6_host
@@ -584,7 +650,7 @@ try:
     wait_until("connected before guest SIGTERM", lambda:
                request(5180, "/api/status")["connection"] == "connected"
                and request(5181, "/api/status")["connection"] == "connected")
-    terminate_connected_process(processes[1], 5181, 5180, "waiting", "guest")
+    terminate_connected_process(processes[1], 5181, 5180, "waiting", "host", "guest")
 
     processes[1] = launch(5181, logs[1])
     wait_until("restarted guest web server", lambda: request(5181, "/api/status"))
@@ -592,9 +658,9 @@ try:
     wait_until("connected before host SIGTERM", lambda:
                request(5180, "/api/status")["connection"] == "connected"
                and request(5181, "/api/status")["connection"] == "connected")
-    terminate_connected_process(processes[0], 5180, 5181, "connecting", "host")
+    terminate_connected_process(processes[0], 5180, 5181, "idle", "none", "host")
 
-    print("PASS: static UI, discovery, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, binary MessagePack WebSocket snapshots, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, leave, reconnect, host rollback of delayed inputs, guest prediction during paused host states, and graceful host/guest shutdown")
+    print("PASS: static UI, discovery, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, binary MessagePack WebSocket snapshots, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, and graceful host/guest shutdown")
 finally:
     for process in processes:
         if process.poll() is None:
