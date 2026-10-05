@@ -17,7 +17,7 @@ internal sealed class MdnsDiscovery : IAsyncDisposable
     private static readonly TimeSpan AnnouncementInterval = TimeSpan.FromSeconds(15);
     private readonly string _instanceName = $"LanPong-{Guid.NewGuid():N}";
     private readonly ILogger _logger;
-    private readonly object _gate = new();
+    private readonly Lock _gate = new();
     private readonly SemaphoreSlim _sendGate = new(1, 1);
     private readonly SemaphoreSlim _advertiseSignal = new(0, 1);
     private readonly CancellationTokenSource _stop = new();
@@ -119,52 +119,62 @@ internal sealed class MdnsDiscovery : IAsyncDisposable
                 foreach (var record in message.Records)
                 {
                     if (record.Type == MdnsPacketCodec.Ptr && SameName(record.Name, ServiceType) &&
-                        record.Ttl == 0 && record.Target is { } retiredInstance)
+                        record is { Ttl: 0, Target: { } retiredInstance })
                     {
                         instances.Remove(retiredInstance);
                         withdrawn.Add(retiredInstance);
                         continue;
                     }
+                    
                     if (record.Ttl == 0) continue;
-                    if (record.Type == MdnsPacketCodec.Ptr && SameName(record.Name, ServiceType) &&
-                        record.Target is { } instanceName)
+                    
+                    switch (record.Type)
                     {
-                        withdrawn.Remove(instanceName);
-                        if (!instances.TryGetValue(instanceName, out var instance))
-                            instances[instanceName] = instance = new FoundInstance();
-                        instance.SeenPtr = true;
-                        if (queried.Add(instanceName))
+                        case MdnsPacketCodec.Ptr when SameName(record.Name, ServiceType) &&
+                                                      record.Target is { } instanceName:
                         {
-                            // Some responders omit SRV/TXT/A from the PTR response.
-                            await SendMulticastAsync(MdnsPacketCodec.Query(instanceName, MdnsPacketCodec.Srv), timeout.Token);
-                            await SendMulticastAsync(MdnsPacketCodec.Query(instanceName, MdnsPacketCodec.Txt), timeout.Token);
+                            withdrawn.Remove(instanceName);
+                            if (!instances.TryGetValue(instanceName, out var instance))
+                                instances[instanceName] = instance = new FoundInstance();
+                            instance.SeenPtr = true;
+                            if (queried.Add(instanceName))
+                            {
+                                // Some responders omit SRV/TXT/A from the PTR response.
+                                await SendMulticastAsync(MdnsPacketCodec.Query(instanceName, MdnsPacketCodec.Srv), timeout.Token);
+                                await SendMulticastAsync(MdnsPacketCodec.Query(instanceName, MdnsPacketCodec.Txt), timeout.Token);
+                            }
+
+                            break;
                         }
-                    }
-                    else if (record.Type == MdnsPacketCodec.Srv && record.Target is { } target &&
-                             record.Name.EndsWith("." + ServiceType, StringComparison.OrdinalIgnoreCase) &&
-                             !withdrawn.Contains(record.Name))
-                    {
-                        if (!instances.TryGetValue(record.Name, out var instance))
-                            instances[record.Name] = instance = new FoundInstance();
-                        instance.Port = record.Port;
-                        instance.Target = target;
-                        if (queried.Add(target))
-                            await SendMulticastAsync(MdnsPacketCodec.Query(target, MdnsPacketCodec.A), timeout.Token);
-                    }
-                    else if (record.Type == MdnsPacketCodec.Txt &&
-                             record.Name.EndsWith("." + ServiceType, StringComparison.OrdinalIgnoreCase) &&
-                             !withdrawn.Contains(record.Name))
-                    {
-                        if (!instances.TryGetValue(record.Name, out var instance))
-                            instances[record.Name] = instance = new FoundInstance();
-                        instance.Version = record.Version;
-                    }
-                    else if (record.Type == MdnsPacketCodec.A && record.Address is { } ip)
-                    {
-                        if (!addresses.TryGetValue(record.Name, out var candidates))
-                            addresses[record.Name] = candidates = [];
-                        if (!candidates.Any(item => item.Address.Equals(ip) && item.Source.Equals(datagram.Source)))
-                            candidates.Add((ip, datagram.Source));
+                        case MdnsPacketCodec.Srv when record.Target is { } target &&
+                                                      record.Name.EndsWith("." + ServiceType, StringComparison.OrdinalIgnoreCase) &&
+                                                      !withdrawn.Contains(record.Name):
+                        {
+                            if (!instances.TryGetValue(record.Name, out var instance))
+                                instances[record.Name] = instance = new FoundInstance();
+                            instance.Port = record.Port;
+                            instance.Target = target;
+                            if (queried.Add(target))
+                                await SendMulticastAsync(MdnsPacketCodec.Query(target, MdnsPacketCodec.A), timeout.Token);
+                            break;
+                        }
+                        case MdnsPacketCodec.Txt when
+                            record.Name.EndsWith("." + ServiceType, StringComparison.OrdinalIgnoreCase) &&
+                            !withdrawn.Contains(record.Name):
+                        {
+                            if (!instances.TryGetValue(record.Name, out var instance))
+                                instances[record.Name] = instance = new FoundInstance();
+                            instance.Version = record.Version;
+                            break;
+                        }
+                        case MdnsPacketCodec.A when record.Address is { } ip:
+                        {
+                            if (!addresses.TryGetValue(record.Name, out var candidates))
+                                addresses[record.Name] = candidates = [];
+                            if (!candidates.Any(item => item.Address.Equals(ip) && item.Source.Equals(datagram.Source)))
+                                candidates.Add((ip, datagram.Source));
+                            break;
+                        }
                     }
                 }
             }
@@ -185,7 +195,7 @@ internal sealed class MdnsDiscovery : IAsyncDisposable
                 var host = new DiscoveredHost(chosen.ToString(), instance.Port);
                 results[$"{host.Address}:{host.Port}"] = host;
             }
-            return results.Values.ToArray();
+            return [.. results.Values];
         }
         finally
         {
