@@ -42,7 +42,7 @@ interface ArenaCache {
 
 interface DiscoveredHost {
   address: string;
-  port?: number | string | null;
+  port: number;
 }
 
 interface TrailPoint {
@@ -1165,14 +1165,19 @@ function isDiscoveredHost(value: unknown): value is DiscoveredHost {
     isRecord(value) &&
     typeof value.address === "string" &&
     value.address.trim().length > 0 &&
-    (value.port == null || typeof value.port === "number" || typeof value.port === "string")
+    typeof value.port === "number" &&
+    Number.isInteger(value.port) &&
+    value.port >= 1 &&
+    value.port <= 65535
   );
 }
 
 async function discoverHosts(): Promise<void> {
   if (busy || discovering) return;
-  const port = getPort(ui.joinPort);
-  if (port === null) return;
+  const enteredPort = Number(ui.joinPort.value);
+  const fallbackPort =
+    Number.isInteger(enteredPort) && enteredPort >= 1 && enteredPort <= 65535 ? enteredPort : null;
+  const path = fallbackPort === null ? "/api/discover" : `/api/discover?port=${fallbackPort}`;
   discovering = true;
   ui.discoveryResults.hidden = false;
   ui.discoveryResults.replaceChildren();
@@ -1182,7 +1187,7 @@ async function discoverHosts(): Promise<void> {
   ui.discoveryResults.append(searching);
   render();
   try {
-    const response = await fetch(`/api/discover?port=${encodeURIComponent(port)}`, {
+    const response = await fetch(path, {
       cache: "no-store",
     });
     const data = await readJson(response);
@@ -1198,17 +1203,17 @@ async function discoverHosts(): Promise<void> {
     } else {
       const first = hosts[0];
       ui.peerAddress.value = first.address;
-      if (Number.isInteger(Number(first.port))) ui.joinPort.value = String(first.port);
+      ui.joinPort.value = String(first.port);
       for (const host of hosts) {
         const item = document.createElement("button");
         item.type = "button";
         item.className = "discovery-result";
         const address = document.createElement("strong");
         address.textContent = host.address;
-        item.append(address, document.createTextNode(` · порт ${host.port ?? port}`));
+        item.append(address, document.createTextNode(` · порт ${host.port}`));
         item.addEventListener("click", () => {
           ui.peerAddress.value = host.address;
-          if (Number.isInteger(Number(host.port))) ui.joinPort.value = String(host.port);
+          ui.joinPort.value = String(host.port);
           ui.peerAddress.focus();
         });
         ui.discoveryResults.append(item);

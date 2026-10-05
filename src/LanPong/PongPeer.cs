@@ -17,6 +17,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
     private readonly GameEngine _game = new();
     private readonly HostRollbackTimeline _hostTimeline;
     private readonly GuestPredictionTimeline _guestTimeline;
+    private readonly MdnsDiscovery _mdns;
     private GameEvent[] _confirmedGuestEvents = [];
     private readonly Dictionary<Guid, (int Axis, DateTime Updated)> _controllers = [];
     private readonly string[] _localAddresses = GetLocalAddresses();
@@ -58,6 +59,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
     public PongPeer(ILogger<PongPeer> logger)
     {
         _logger = logger;
+        _mdns = new MdnsDiscovery(logger);
         _hostTimeline = new HostRollbackTimeline(_game);
         _guestTimeline = new GuestPredictionTimeline(_game);
         _clockTask = Task.Run(() => ClockAsync(_lifetime.Token));
@@ -118,6 +120,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                 _message = "Ожидание второго игрока. Передайте ему ваш IP-адрес.";
                 _udpPort = port;
             }
+            _mdns.SetHostPort(port);
             _receiveTask = Task.Run(() => ReceiveAsync(socket, stop.Token));
         }
         finally { _transition.Release(); }
@@ -213,6 +216,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
     public async Task<IReadOnlyList<DiscoveredHost>> DiscoverAsync(int port, CancellationToken cancellationToken)
     {
         ValidatePort(port);
+        var mdnsTask = _mdns.DiscoverAsync(cancellationToken);
         using var probe = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
         probe.EnableBroadcast = true;
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -244,6 +248,15 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                 try { await Task.Delay(NetworkConstants.DiscoveryReceiveRetryDelay, timeout.Token); }
                 catch (OperationCanceledException) { break; }
             }
+        }
+        try
+        {
+            foreach (var host in await mdnsTask)
+                found[$"{host.Address}:{host.Port}"] = host;
+        }
+        catch (Exception ex) when (ex is SocketException or ObjectDisposedException)
+        {
+            _logger.LogDebug(ex, "mDNS discovery failed; UDP broadcast results remain available");
         }
         return found.Values.ToArray();
     }
@@ -281,6 +294,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
             _hostTimeline.Reset();
             _guestTimeline.Reset();
         }
+        _mdns.SetHostPort(null);
         stop?.Cancel();
         socket?.Dispose();
         if (receiver is not null)
@@ -331,6 +345,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                             _sessionId = null;
                             _connection = ConnectionState.Waiting;
                             _message = "Связь потеряна. Ожидание второго игрока…";
+                            _mdns.SetHostPort(_udpPort);
                             _lastHostAxis = 0;
                             _lastStateSentTick = 0;
                             accumulatedTime = 0;
@@ -559,6 +574,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                         _sessionId = Guid.NewGuid().ToString("N");
                         _connection = ConnectionState.Connected;
                         _message = "Соперник подключился. Игра началась!";
+                        _mdns.SetHostPort(null);
                         _lastStateSentTick = 0;
                         _lastRestartRequestId = null;
                         ResetPing();
@@ -606,6 +622,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                             _sessionId = null;
                             _connection = ConnectionState.Waiting;
                             _message = "Соперник вышел. Ожидание нового игрока…";
+                            _mdns.SetHostPort(_udpPort);
                             _lastHostAxis = 0;
                             _lastStateSentTick = 0;
                             ResetPing();
@@ -767,6 +784,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
         {
             if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
+                await _mdns.DisposeAsync();
                 _transition.Dispose();
                 _lifetime.Dispose();
             }
