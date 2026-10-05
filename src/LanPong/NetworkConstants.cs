@@ -6,6 +6,7 @@ namespace LanPong;
 internal static class NetworkConstants
 {
     public static readonly IPEndPoint AnyIpv4Endpoint = new(IPAddress.Any, 0);
+    public static readonly IPEndPoint AnyIpv6Endpoint = new(IPAddress.IPv6Any, 0);
 
     // Also shown in the browser form and mirrored in frontend/src/game.ts.
     public const int DefaultUdpPort = 47777;

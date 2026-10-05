@@ -53,6 +53,52 @@ public sealed class MdnsPacketCodecTests
     }
 
     [Test]
+    public async Task Advertisement_WithIpv4AndIpv6Addresses_UsesAAndAaaaRecords()
+    {
+        var ipv4 = IPAddress.Parse("192.0.2.44");
+        var ipv6 = IPAddress.Parse("2001:db8::44");
+        var bytes = MdnsPacketCodec.Advertisement("_lanpong._udp.local.",
+            "Game._lanpong._udp.local.", "host.local.", 47888, [ipv4, ipv6], ttl: 120);
+
+        await Assert.That(MdnsPacketCodec.TryParse(bytes, out var message)).IsTrue();
+        await Assert.That(message.Records.Count).IsEqualTo(5);
+        await Assert.That(message.Records.Single(record => record.Type == MdnsPacketCodec.A).Address)
+            .IsEqualTo(ipv4);
+        await Assert.That(message.Records.Single(record => record.Type == MdnsPacketCodec.Aaaa).Address)
+            .IsEqualTo(ipv6);
+        await Assert.That(message.Records.All(record => record.Ttl == 120)).IsTrue();
+    }
+
+    [Test]
+    public async Task TryParse_CompressedAaaaResponse_DecodesAddressAndRejectsWrongLength()
+    {
+        // Replace the final A record in the independent compressed DNS fixture.
+        var ipv6 = IPAddress.Parse("2001:db8::44");
+        var bytes = CompressedResponse()[..^16]
+            .Concat(new byte[] { 0xc0, 0x44, 0x00, 0x1c, 0x80, 0x01, 0x00, 0x00, 0x00, 0x78, 0x00, 0x10 })
+            .Concat(ipv6.GetAddressBytes()).ToArray();
+
+        await Assert.That(MdnsPacketCodec.TryParse(bytes, out var message)).IsTrue();
+        await Assert.That(message.Records.Single(record => record.Type == MdnsPacketCodec.Aaaa).Address)
+            .IsEqualTo(ipv6);
+
+        var wrongLength = (byte[])bytes.Clone();
+        wrongLength[^17] = 15;
+        await Assert.That(MdnsPacketCodec.TryParse(wrongLength, out _)).IsFalse();
+    }
+
+    [Test]
+    public async Task Query_Aaaa_EncodesDnsQuestionForIpv6Address()
+    {
+        var bytes = MdnsPacketCodec.Query("host.local.", MdnsPacketCodec.Aaaa);
+
+        await Assert.That(MdnsPacketCodec.TryParse(bytes, out var message)).IsTrue();
+        await Assert.That(message.Questions.Count).IsEqualTo(1);
+        await Assert.That(message.Questions[0].Name).IsEqualTo("host.local.");
+        await Assert.That(message.Questions[0].Type).IsEqualTo(MdnsPacketCodec.Aaaa);
+    }
+
+    [Test]
     public async Task TryParse_RejectsInvalidPointersLengthsAndRecordCounts()
     {
         var valid = CompressedResponse();

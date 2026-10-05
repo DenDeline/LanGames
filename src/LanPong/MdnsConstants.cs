@@ -15,6 +15,8 @@ internal static class MdnsConstants
 
     public static readonly IPAddress Group = IPAddress.Parse("224.0.0.251");
     public static readonly IPEndPoint GroupEndpoint = new(Group, Port);
+    public static readonly IPAddress GroupIpv6 = IPAddress.Parse("ff02::fb");
+    public static readonly IPEndPoint GroupIpv6Endpoint = new(GroupIpv6, Port);
     public static readonly TimeSpan AnnouncementInterval = TimeSpan.FromSeconds(15);
     public static readonly TimeSpan DiscoveryResponseWindow = TimeSpan.FromMilliseconds(1300);
 }

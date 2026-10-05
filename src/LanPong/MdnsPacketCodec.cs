@@ -1,15 +1,17 @@
 using System.Buffers.Binary;
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 
 namespace LanPong;
 
-/// <summary>Small bounded DNS packet codec for the four DNS-SD record types used by LAN Pong.</summary>
+/// <summary>Small bounded DNS packet codec for the DNS-SD record types used by LAN Pong.</summary>
 internal static class MdnsPacketCodec
 {
     public const ushort A = 1;
     public const ushort Ptr = 12;
     public const ushort Txt = 16;
+    public const ushort Aaaa = 28;
     public const ushort Srv = 33;
     public const ushort Any = 255;
     private const int HeaderLength = 12;
@@ -20,6 +22,7 @@ internal static class MdnsPacketCodec
     private const int MaxLabels = 127;
     private const int MaxLabelBytes = 63;
     private const int Ipv4AddressBytes = 4;
+    private const int Ipv6AddressBytes = 16;
     private const ushort InternetClass = 1;
     private const ushort UnicastResponseFlag = 0x8000;
     private const ushort ClassMask = 0x7fff;
@@ -78,7 +81,15 @@ internal static class MdnsPacketCodec
             data.Write(property);
         }, unique: !legacy);
         foreach (var address in addresses)
-            WriteRecord(stream, hostName, A, ttl, data => data.Write(address.GetAddressBytes()), unique: !legacy);
+        {
+            var type = address.AddressFamily switch
+            {
+                AddressFamily.InterNetwork => A,
+                AddressFamily.InterNetworkV6 => Aaaa,
+                _ => throw new ArgumentException("Unsupported address family", nameof(addresses))
+            };
+            WriteRecord(stream, hostName, type, ttl, data => data.Write(address.GetAddressBytes()), unique: !legacy);
+        }
         return stream.ToArray();
     }
 
@@ -143,8 +154,13 @@ internal static class MdnsPacketCodec
                         offset += itemLength;
                     }
                     break;
-                case A when length == Ipv4AddressBytes:
+                case A:
+                    if (length != Ipv4AddressBytes) return false;
                     address = new IPAddress(span.Slice(offset, Ipv4AddressBytes));
+                    break;
+                case Aaaa:
+                    if (length != Ipv6AddressBytes) return false;
+                    address = new IPAddress(span.Slice(offset, Ipv6AddressBytes));
                     break;
             }
             offset = end;

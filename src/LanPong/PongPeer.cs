@@ -76,7 +76,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                 : state.RecentEvents.ToArray();
             return new PongSnapshot(
                 _role, _connection, _message, _udpPort, _localAddresses,
-                (_peerEndpoint ?? _targetEndpoint)?.ToString(),
+                FormatEndpoint(_peerEndpoint ?? _targetEndpoint),
                 state.LeftY, state.RightY, state.BallX, state.BallY,
                 state.BallVx, state.BallVy,
                 state.LeftScore, state.RightScore, state.Phase,
@@ -103,7 +103,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
         {
             ThrowIfStopping();
             await StopSocketAsync();
-            var socket = new UdpClient(new IPEndPoint(IPAddress.Any, port));
+            var socket = CreateUdpSocket(port);
             var stop = new CancellationTokenSource();
             lock (_gate)
             {
@@ -132,9 +132,18 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
         if (string.IsNullOrWhiteSpace(address)) throw new ArgumentException("Введите IP-адрес создателя игры.");
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfStopping();
-        var addresses = await Dns.GetHostAddressesAsync(address.Trim(), cancellationToken);
-        var ip = addresses.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork)
-            ?? throw new ArgumentException("Нужен IPv4-адрес компьютера в локальной сети.");
+        var input = address.Trim();
+        if (input.Length > 2 && input[0] == '[' && input[^1] == ']')
+            input = input[1..^1];
+        IPAddress? ip;
+        if (!IPAddress.TryParse(input, out ip))
+        {
+            var addresses = await Dns.GetHostAddressesAsync(input, cancellationToken);
+            // Preserve the previous IPv4 behavior for names with both A and AAAA records.
+            ip = addresses.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork)
+                 ?? addresses.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetworkV6);
+        }
+        if (ip is null) throw new ArgumentException("Нужен IPv4- или IPv6-адрес компьютера в локальной сети.");
 
         await _transition.WaitAsync(cancellationToken);
         try
@@ -143,7 +152,18 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
             ThrowIfStopping();
             await StopSocketAsync();
             cancellationToken.ThrowIfCancellationRequested();
-            var socket = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
+            var socket = CreateUdpSocket(0);
+            if (ip.AddressFamily == AddressFamily.InterNetworkV6 &&
+                socket.Client.AddressFamily != AddressFamily.InterNetworkV6)
+            {
+                socket.Dispose();
+                throw new ArgumentException("IPv6 недоступен на этом компьютере.");
+            }
+            // A dual-mode socket receives IPv4 peers as IPv4-mapped IPv6 addresses.
+            var targetAddress = socket.Client.AddressFamily == AddressFamily.InterNetworkV6 &&
+                                ip.AddressFamily == AddressFamily.InterNetwork
+                ? ip.MapToIPv6()
+                : ip;
             var stop = new CancellationTokenSource();
             lock (_gate)
             {
@@ -156,7 +176,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                 }
                 _socket = socket;
                 _socketStop = stop;
-                _targetEndpoint = new IPEndPoint(ip, port);
+                _targetEndpoint = new IPEndPoint(targetAddress, port);
                 _targetSocketAddress = _targetEndpoint.Serialize();
                 _role = PeerRole.Guest;
                 _connection = ConnectionState.Connecting;
@@ -459,7 +479,10 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
         // One receive is outstanding at a time, so the datagram and remote address
         // can be handled before the next receive overwrites either buffer.
         var receiveBuffer = new byte[WirePacketCodec.MaxPacketBytes + 1];
-        var receiveFrom = NetworkConstants.AnyIpv4Endpoint.Serialize();
+        var anyEndpoint = socket.Client.AddressFamily == AddressFamily.InterNetworkV6
+            ? NetworkConstants.AnyIpv6Endpoint
+            : NetworkConstants.AnyIpv4Endpoint;
+        var receiveFrom = anyEndpoint.Serialize();
         while (!cancellationToken.IsCancellationRequested)
         {
             try
@@ -516,7 +539,9 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                 {
                     if (_peerEndpoint is null)
                     {
-                        _peerEndpoint = (IPEndPoint)NetworkConstants.AnyIpv4Endpoint.Create(remote);
+                        _peerEndpoint = (IPEndPoint)(socket.Client.AddressFamily == AddressFamily.InterNetworkV6
+                            ? NetworkConstants.AnyIpv6Endpoint
+                            : NetworkConstants.AnyIpv4Endpoint).Create(remote);
                         _peerSocketAddress = _peerEndpoint.Serialize();
                         _sessionId = Guid.NewGuid().ToString("N");
                         _connection = ConnectionState.Connected;
@@ -673,6 +698,43 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
         if (port is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(port), "Порт должен быть от 1 до 65535.");
     }
 
+    private static UdpClient CreateUdpSocket(int port)
+    {
+        if (!Socket.OSSupportsIPv6)
+            return new UdpClient(new IPEndPoint(IPAddress.Any, port));
+
+        var socket = new UdpClient(AddressFamily.InterNetworkV6);
+        try
+        {
+            // Set this before binding so one socket can receive both address families.
+            socket.Client.DualMode = true;
+        }
+        catch (SocketException)
+        {
+            socket.Dispose();
+            return new UdpClient(new IPEndPoint(IPAddress.Any, port));
+        }
+
+        try
+        {
+            socket.Client.Bind(new IPEndPoint(IPAddress.IPv6Any, port));
+            return socket;
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
+
+    private static string? FormatEndpoint(IPEndPoint? endpoint)
+    {
+        if (endpoint is null) return null;
+        return endpoint.Address.IsIPv4MappedToIPv6
+            ? $"{endpoint.Address.MapToIPv4()}:{endpoint.Port}"
+            : endpoint.ToString();
+    }
+
     private void ThrowIfStopping()
     {
         lock (_gate)
@@ -681,19 +743,21 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
 
     private static string[] GetLocalAddresses()
     {
+        string[] loopbacks = Socket.OSSupportsIPv6 ? ["127.0.0.1", "::1"] : ["127.0.0.1"];
         try
         {
             return NetworkInterface.GetAllNetworkInterfaces()
                 .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
                 .SelectMany(n => n.GetIPProperties().UnicastAddresses)
                 .Select(a => a.Address)
-                .Where(a => a.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(a))
+                .Where(a => (a.AddressFamily is AddressFamily.InterNetwork or AddressFamily.InterNetworkV6) &&
+                            !IPAddress.IsLoopback(a))
                 .Select(a => a.ToString())
                 .Distinct()
-                .Append("127.0.0.1")
+                .Concat(loopbacks)
                 .ToArray();
         }
-        catch (NetworkInformationException) { return ["127.0.0.1"]; }
+        catch (NetworkInformationException) { return loopbacks; }
     }
 
     public Task StartingAsync(CancellationToken cancellationToken) => Task.CompletedTask;

@@ -158,7 +158,7 @@
                     id="peer-address"
                     name="address"
                     type="text"
-                    placeholder="Например, 192.168.1.42"
+                    placeholder="Например, 192.168.1.42 или 2001:db8::42"
                     required
                     autocomplete="off"
                     spellcheck="false"
@@ -190,7 +190,8 @@
               </form>
               <p class="form-note">
                 Поиск через mDNS подставит IP и порт найденной игры независимо от значения поля
-                порта. Если игра не найдена, введите IP и порт вручную.
+                порта. Если игра не найдена, введите IPv4 или IPv6 и порт вручную. Для link-local
+                IPv6 (fe80::…) укажите зону интерфейса вашего компьютера.
               </p>
             </div>
           </section>

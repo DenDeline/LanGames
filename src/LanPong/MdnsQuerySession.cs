@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 
 namespace LanPong;
 
@@ -33,7 +34,7 @@ internal sealed class MdnsQuerySession(string serviceType, string ownInstanceNam
                 if (!_instances.TryGetValue(instanceName, out var instance))
                     _instances[instanceName] = instance = new FoundInstance();
                 instance.SeenPtr = true;
-                // Some responders omit SRV/TXT/A from the PTR response.
+                // Some responders omit SRV/TXT/address records from the PTR response.
                 return _queried.Add(instanceName)
                     ? [(instanceName, MdnsPacketCodec.Srv), (instanceName, MdnsPacketCodec.Txt)]
                     : [];
@@ -46,7 +47,9 @@ internal sealed class MdnsQuerySession(string serviceType, string ownInstanceNam
                     _instances[record.Name] = instance = new FoundInstance();
                 instance.Port = record.Port;
                 instance.Target = target;
-                return _queried.Add(target) ? [(target, MdnsPacketCodec.A)] : [];
+                return _queried.Add(target)
+                    ? [(target, MdnsPacketCodec.A), (target, MdnsPacketCodec.Aaaa)]
+                    : [];
             }
             case MdnsPacketCodec.Txt when
                 record.Name.EndsWith("." + serviceType, StringComparison.OrdinalIgnoreCase) &&
@@ -57,12 +60,18 @@ internal sealed class MdnsQuerySession(string serviceType, string ownInstanceNam
                 instance.Version = record.Version;
                 break;
             }
-            case MdnsPacketCodec.A when record.Address is { } ip:
+            case MdnsPacketCodec.A or MdnsPacketCodec.Aaaa when record.Address is { } ip &&
+                (record.Type == MdnsPacketCodec.A && ip.AddressFamily == AddressFamily.InterNetwork ||
+                 record.Type == MdnsPacketCodec.Aaaa && ip.AddressFamily == AddressFamily.InterNetworkV6):
             {
+                var address = ip.IsIPv6LinkLocal && source.AddressFamily == AddressFamily.InterNetworkV6 &&
+                              source.ScopeId > 0 && ip.GetAddressBytes().AsSpan().SequenceEqual(source.GetAddressBytes())
+                    ? new IPAddress(ip.GetAddressBytes(), source.ScopeId)
+                    : ip;
                 if (!_addresses.TryGetValue(record.Name, out var candidates))
                     _addresses[record.Name] = candidates = [];
-                if (!candidates.Any(item => item.Address.Equals(ip) && item.Source.Equals(source)))
-                    candidates.Add((ip, source));
+                if (!candidates.Any(item => item.Address.Equals(address) && item.Source.Equals(source)))
+                    candidates.Add((address, source));
                 break;
             }
         }
@@ -79,11 +88,16 @@ internal sealed class MdnsQuerySession(string serviceType, string ownInstanceNam
                 instance.Port is < 1 or > ushort.MaxValue || instance.Target is null ||
                 !_addresses.TryGetValue(instance.Target, out var candidates)) continue;
 
-            // A multi-homed host may advertise several addresses. The A record
-            // that matches the response's source is on the observed local link.
-            var chosen = candidates.FirstOrDefault(item => item.Address.Equals(item.Source)).Address
-                ?? candidates.Select(item => item.Address).FirstOrDefault(isOnLocalSubnet);
-            if (chosen is null || chosen.Equals(IPAddress.Any)) continue;
+            // A multi-homed host may advertise several addresses. Prefer the
+            // address matching the response source, then one on the same family/link.
+            var usable = candidates.Where(item => !item.Address.Equals(IPAddress.Any) &&
+                !item.Address.Equals(IPAddress.IPv6Any) &&
+                (!item.Address.IsIPv6LinkLocal || item.Address.ScopeId > 0)).ToArray();
+            var chosen = usable.FirstOrDefault(item => item.Address.Equals(item.Source)).Address
+                ?? usable.FirstOrDefault(item => item.Address.AddressFamily == item.Source.AddressFamily &&
+                                                 isOnLocalSubnet(item.Address)).Address
+                ?? usable.Select(item => item.Address).FirstOrDefault(isOnLocalSubnet);
+            if (chosen is null) continue;
             var host = new DiscoveredHost(chosen.ToString(), instance.Port);
             results[$"{host.Address}:{host.Port}"] = host;
         }

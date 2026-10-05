@@ -275,6 +275,15 @@ def send_oversized_udp_datagrams(*ports):
                 assert sender.sendto(payload, ("127.0.0.1", port)) == length
 
 
+def has_ipv6_loopback():
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as probe:
+            probe.bind(("::1", 0))
+            return True
+    except OSError:
+        return False
+
+
 class UdpRelay:
     """Relay one local guest to a host, with a controllable host-to-guest pause."""
 
@@ -550,6 +559,26 @@ try:
         assert left_host["role"] == "none" and left_host["connection"] == "idle", left_host
         assert left_host["phase"] == "waiting", left_host
         request(5181, "/api/leave", {})
+    if has_ipv6_loopback():
+        ipv6_host = request(5180, "/api/host", {"port": 47888})
+        assert "::1" in ipv6_host["localAddresses"], ipv6_host
+        ipv6_guest = request(5181, "/api/join", {"address": "::1", "port": 47888})
+        assert ipv6_guest["role"] == "guest", ipv6_guest
+        wait_until("IPv6 UDP handshake", lambda:
+                   request(5180, "/api/status")["connection"] == "connected"
+                   and request(5181, "/api/status")["connection"] == "connected")
+        wait_until("IPv6 UDP state and RTT", lambda:
+                   request(5181, "/api/status")["tick"] >= 10
+                   and request(5180, "/api/status").get("pingMs") is not None
+                   and request(5181, "/api/status").get("pingMs") is not None)
+        with websocket(5181) as ipv6_ws:
+            ipv6_snapshot = decode_snapshot(recv_frame(ipv6_ws))
+            assert ipv6_snapshot["connection"] == "connected", ipv6_snapshot
+            assert "::1" in ipv6_snapshot["peerAddress"], ipv6_snapshot
+        request(5181, "/api/leave", {})
+        wait_until("host observes IPv6 guest leave", lambda:
+                   request(5180, "/api/status")["connection"] == "waiting")
+        request(5180, "/api/leave", {})
     request(5180, "/api/host", {"port": 47888})
     request(5181, "/api/join", {"address": "127.0.0.1", "port": 47888})
     wait_until("connected before guest SIGTERM", lambda:
@@ -565,7 +594,7 @@ try:
                and request(5181, "/api/status")["connection"] == "connected")
     terminate_connected_process(processes[0], 5180, 5181, "connecting", "host")
 
-    print("PASS: static UI, discovery, UDP handshake, ping RTT, oversized UDP datagrams, gameplay, binary MessagePack WebSocket snapshots, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, leave, reconnect, host rollback of delayed inputs, guest prediction during paused host states, and graceful host/guest shutdown")
+    print("PASS: static UI, discovery, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, binary MessagePack WebSocket snapshots, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, leave, reconnect, host rollback of delayed inputs, guest prediction during paused host states, and graceful host/guest shutdown")
 finally:
     for process in processes:
         if process.poll() is None:

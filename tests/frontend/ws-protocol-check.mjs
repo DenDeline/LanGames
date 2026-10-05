@@ -73,6 +73,12 @@ assert.deepEqual(decoded, {
   ],
 });
 
+const ipv6 = [...snapshot];
+ipv6[5] = ["::1", "fe80::1234%3"];
+ipv6[6] = "[::1]:47777";
+assert.deepEqual(decodeWsSnapshot(frame(ipv6))?.localAddresses, ipv6[5]);
+assert.equal(decodeWsSnapshot(frame(ipv6))?.peerAddress, ipv6[6]);
+
 const idle = [...snapshot];
 idle[1] = 0;
 idle[2] = 0;

@@ -21,8 +21,9 @@ public sealed class MdnsQuerySessionTests
         var srvQueries = session.Observe(Srv(PeerInstance, PeerHost, 47888), Source);
 
         await Assert.That(session.GetResults().Count).IsEqualTo(0);
-        await Assert.That(srvQueries.Count).IsEqualTo(1);
+        await Assert.That(srvQueries.Count).IsEqualTo(2);
         await Assert.That(srvQueries[0]).IsEqualTo((PeerHost, MdnsPacketCodec.A));
+        await Assert.That(srvQueries[1]).IsEqualTo((PeerHost, MdnsPacketCodec.Aaaa));
 
         var ptrQueries = session.Observe(Ptr(PeerInstance), Source);
         await Assert.That(ptrQueries.Count).IsEqualTo(2);
@@ -100,15 +101,75 @@ public sealed class MdnsQuerySessionTests
         await Assert.That(hosts[0].Address).IsEqualTo(localAddress.ToString());
     }
 
+    [Test]
+    public async Task GetResults_UsesIpv6SourceAndScopesLinkLocalAaaaAddress()
+    {
+        var source = IPAddress.Parse("fe80::44%7");
+        var session = NewSession(_ => true);
+        AddInstance(session, PeerInstance, PeerHost, 47888, source: source);
+        session.Observe(Address(PeerHost, IPAddress.Parse("192.168.1.44")), source);
+        session.Observe(Address(PeerHost, IPAddress.Parse("fe80::44")), source);
+
+        var hosts = session.GetResults();
+        await Assert.That(hosts.Count).IsEqualTo(1);
+        await Assert.That(hosts[0]).IsEqualTo(new DiscoveredHost(source.ToString(), 47888));
+    }
+
+    [Test]
+    public async Task GetResults_ScopesOnlyLinkLocalAaaaMatchingIpv6Source()
+    {
+        var source = IPAddress.Parse("fe80::44%7");
+        var session = NewSession(_ => true);
+        AddInstance(session, PeerInstance, PeerHost, 47888, source: source);
+
+        // An announcement can include link-local addresses from other interfaces.
+        session.Observe(Address(PeerHost, IPAddress.Parse("fe80::99")), source);
+        await Assert.That(session.GetResults().Count).IsEqualTo(0);
+
+        session.Observe(Address(PeerHost, IPAddress.Parse("fe80::44")), source);
+        await Assert.That(session.GetResults().Single())
+            .IsEqualTo(new DiscoveredHost(source.ToString(), 47888));
+    }
+
+    [Test]
+    public async Task GetResults_PrefersReachableIpv6AddressOverIpv4OnIpv6Link()
+    {
+        var source = IPAddress.Parse("fe80::1%7");
+        var ipv6 = IPAddress.Parse("fd12:3456::44");
+        var session = NewSession(_ => true);
+        AddInstance(session, PeerInstance, PeerHost, 47888, source: source);
+        session.Observe(Address(PeerHost, IPAddress.Parse("192.168.1.44")), source);
+        session.Observe(Address(PeerHost, ipv6), source);
+
+        var hosts = session.GetResults();
+        await Assert.That(hosts.Count).IsEqualTo(1);
+        await Assert.That(hosts[0].Address).IsEqualTo(ipv6.ToString());
+    }
+
+    [Test]
+    public async Task GetResults_DoesNotReturnUnscopedLinkLocalIpv6Address()
+    {
+        var session = NewSession(_ => true);
+        AddInstance(session, PeerInstance, PeerHost, 47888);
+        session.Observe(Address(PeerHost, IPAddress.Parse("fe80::44")), Source);
+
+        await Assert.That(session.GetResults().Count).IsEqualTo(0);
+
+        var ipv4 = IPAddress.Parse("192.168.1.44");
+        session.Observe(Address(PeerHost, ipv4), Source);
+        await Assert.That(session.GetResults().Single().Address).IsEqualTo(ipv4.ToString());
+    }
+
     private static MdnsQuerySession NewSession(Func<IPAddress, bool> isOnLocalSubnet) =>
         new(Service, OwnInstance, isOnLocalSubnet);
 
     private static void AddInstance(MdnsQuerySession session, string instance, string host, int port,
-        int version = WirePacket.CurrentVersion)
+        int version = WirePacket.CurrentVersion, IPAddress? source = null)
     {
-        session.Observe(Ptr(instance), Source);
-        session.Observe(Srv(instance, host, port), Source);
-        session.Observe(Txt(instance, version), Source);
+        var sender = source ?? Source;
+        session.Observe(Ptr(instance), sender);
+        session.Observe(Srv(instance, host, port), sender);
+        session.Observe(Txt(instance, version), sender);
     }
 
     private static MdnsPacketCodec.Record Ptr(string instance, uint ttl = 120) =>
@@ -121,5 +182,6 @@ public sealed class MdnsQuerySessionTests
         new(instance, MdnsPacketCodec.Txt, 120, Version: version);
 
     private static MdnsPacketCodec.Record Address(string host, IPAddress address) =>
-        new(host, MdnsPacketCodec.A, 120, Address: address);
+        new(host, address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+            ? MdnsPacketCodec.A : MdnsPacketCodec.Aaaa, 120, Address: address);
 }
