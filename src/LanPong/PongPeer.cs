@@ -213,53 +213,8 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
         finally { _transition.Release(); }
     }
 
-    public async Task<IReadOnlyList<DiscoveredHost>> DiscoverAsync(int port, CancellationToken cancellationToken)
-    {
-        ValidatePort(port);
-        var mdnsTask = _mdns.DiscoverAsync(cancellationToken);
-        using var probe = new UdpClient(new IPEndPoint(IPAddress.Any, 0));
-        probe.EnableBroadcast = true;
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(NetworkConstants.DiscoveryResponseWindow);
-        var query = WirePacketCodec.Serialize(new DiscoverPacket());
-        var destinations = new[] { IPAddress.Broadcast, IPAddress.Loopback };
-        foreach (var destination in destinations)
-        {
-            try { await probe.SendAsync(query, new IPEndPoint(destination, port), timeout.Token); }
-            catch (SocketException ex) { _logger.LogDebug(ex, "Discovery send failed for {Address}", destination); }
-        }
-
-        var found = new Dictionary<string, DiscoveredHost>();
-        while (!timeout.IsCancellationRequested)
-        {
-            try
-            {
-                var received = await probe.ReceiveAsync(timeout.Token);
-                if (!WirePacketCodec.TryDeserialize(received.Buffer, out var packet)) continue;
-                if (packet is not OfferPacket { Port: >= 1 and <= 65535 } offer) continue;
-                var host = new DiscoveredHost(received.RemoteEndPoint.Address.ToString(), offer.Port);
-                found[$"{host.Address}:{host.Port}"] = host;
-            }
-            catch (OperationCanceledException) { break; }
-            catch (SocketException ex)
-            {
-                // Some systems report ICMP "port unreachable" for the loopback probe here.
-                _logger.LogDebug(ex, "Discovery receive failed");
-                try { await Task.Delay(NetworkConstants.DiscoveryReceiveRetryDelay, timeout.Token); }
-                catch (OperationCanceledException) { break; }
-            }
-        }
-        try
-        {
-            foreach (var host in await mdnsTask)
-                found[$"{host.Address}:{host.Port}"] = host;
-        }
-        catch (Exception ex) when (ex is SocketException or ObjectDisposedException)
-        {
-            _logger.LogDebug(ex, "mDNS discovery failed; UDP broadcast results remain available");
-        }
-        return found.Values.ToArray();
-    }
+    public Task<IReadOnlyList<DiscoveredHost>> DiscoverAsync(CancellationToken cancellationToken) =>
+        _mdns.DiscoverAsync(cancellationToken);
 
     private async Task StopSocketAsync()
     {
@@ -557,15 +512,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
             if (_socket != socket) return;
             if (_role == PeerRole.Host)
             {
-                if (packet is DiscoverPacket)
-                {
-                    if (_peerEndpoint is null)
-                    {
-                        reply = new OfferPacket { Port = _udpPort };
-                        replyDestination = (IPEndPoint)NetworkConstants.AnyIpv4Endpoint.Create(remote);
-                    }
-                }
-                else if (packet is HelloPacket)
+                if (packet is HelloPacket)
                 {
                     if (_peerEndpoint is null)
                     {

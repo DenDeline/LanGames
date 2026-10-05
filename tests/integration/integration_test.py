@@ -94,10 +94,9 @@ def request(port, path, payload=None):
         return json.load(response)
 
 
-def discover_host_without_broadcast():
-    # The requested UDP port differs from the host's; a match must come from mDNS.
+def discover_waiting_host():
     return [
-        item for item in request(5181, "/api/discover?port=47889")["hosts"]
+        item for item in request(5181, "/api/discover")["hosts"]
         if item.get("port") == 47888 and item.get("address")
     ]
 
@@ -107,7 +106,7 @@ def wait_for_mdns_host_absence():
 
     def absent_twice():
         nonlocal missing_queries
-        missing_queries = missing_queries + 1 if not discover_host_without_broadcast() else 0
+        missing_queries = missing_queries + 1 if not discover_waiting_host() else 0
         return missing_queries >= 2
 
     # Two discovery windows avoid mistaking one lost multicast response for a goodbye.
@@ -372,19 +371,18 @@ try:
     # A datagram with a valid Hello prefix must still be rejected in full when
     # the receive buffer truncates it at the packet-size boundary.
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
-        hello_prefix = bytes([0x92, 0x02, 0x91, 0x03])
+        hello_prefix = bytes([0x92, 0x02, 0x91, 0x05])
         payload = hello_prefix + bytes(1201 - len(hello_prefix))
         assert sender.sendto(payload, ("127.0.0.1", 47888)) == len(payload)
     time.sleep(0.2)
     assert request(5180, "/api/status")["connection"] == "waiting"
+    hosts = request(5181, "/api/discover")["hosts"]
+    assert isinstance(hosts, list), hosts
     if require_mdns_loopback:
-        # A query on the wrong UDP port cannot find this host through broadcast.
         # Run this strict check only when same-machine mDNS multicast is supported.
-        mdns_hosts = wait_until("mDNS discovery despite wrong broadcast port",
-                                discover_host_without_broadcast, seconds=10)
-        print(f"PASS: mDNS found host on 47888 while UDP broadcast queried 47889: {mdns_hosts}")
-    hosts = request(5181, "/api/discover?port=47888")["hosts"]
-    assert any(item["port"] == 47888 for item in hosts), hosts
+        mdns_hosts = wait_until("mDNS finds waiting host",
+                                discover_waiting_host, seconds=10)
+        print(f"PASS: mDNS found host on 47888: {mdns_hosts}")
     guest = request(5181, "/api/join", {"address": "127.0.0.1", "port": 47888})
     assert guest["role"] == "guest" and guest["connection"] == "connecting", guest
 
@@ -394,11 +392,11 @@ try:
     if require_mdns_loopback:
         wait_for_mdns_host_absence()
     # Once connected, a datagram from a third socket must not be treated as the peer.
-    # The host offers discovery only while waiting for a player.
+    # A connected host must reject a valid Hello packet from an unknown sender.
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as stranger:
         stranger.bind(("127.0.0.1", 0))
         stranger.settimeout(0.2)
-        stranger.sendto(bytes([0x92, 0x00, 0x91, 0x03]), ("127.0.0.1", 47888))
+        stranger.sendto(bytes([0x92, 0x02, 0x91, 0x05]), ("127.0.0.1", 47888))
         try:
             stranger.recvfrom(1201)
             raise AssertionError("connected host replied to an unknown UDP sender")
@@ -475,7 +473,7 @@ try:
     assert request(5180, "/api/status").get("pingMs") is None
     if require_mdns_loopback:
         resumed_mdns_hosts = wait_until("waiting host reappears in mDNS",
-                                        discover_host_without_broadcast, seconds=10)
+                                        discover_waiting_host, seconds=10)
         print(f"PASS: waiting host reappeared in mDNS: {resumed_mdns_hosts}")
     with UdpRelay(47888) as relay:
         rejoining = request(5181, "/api/join", {"address": "127.0.0.1", "port": relay.port})

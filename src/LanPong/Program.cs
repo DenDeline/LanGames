@@ -64,22 +64,18 @@ app.MapPost("/api/restart", () =>
     }
 });
 
-app.MapGet("/api/discover", async (int? port, CancellationToken cancellationToken) =>
+app.MapGet("/api/discover", async (CancellationToken cancellationToken) =>
 {
     using var stop = CancellationTokenSource.CreateLinkedTokenSource(
         cancellationToken, app.Lifetime.ApplicationStopping);
     try
     {
-        var hosts = await peer.DiscoverAsync(port ?? NetworkConstants.DefaultUdpPort, stop.Token);
+        var hosts = await peer.DiscoverAsync(stop.Token);
         return Results.Ok(new { hosts });
     }
     catch (OperationCanceledException) when (app.Lifetime.ApplicationStopping.IsCancellationRequested)
     {
         return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
-    }
-    catch (ArgumentException ex)
-    {
-        return Results.BadRequest(new { error = ex.Message });
     }
 });
 

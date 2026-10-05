@@ -3,8 +3,6 @@ using MessagePack;
 
 namespace LanPong;
 
-[Union(0, typeof(DiscoverPacket))]
-[Union(1, typeof(OfferPacket))]
 [Union(2, typeof(HelloPacket))]
 [Union(3, typeof(WelcomePacket))]
 [Union(4, typeof(InputPacket))]
@@ -21,16 +19,6 @@ public abstract record WirePacket
 
     [Key(0)]
     public int Version { get; set; } = CurrentVersion;
-}
-
-[MessagePackObject]
-public sealed record DiscoverPacket : WirePacket;
-
-[MessagePackObject]
-public sealed record OfferPacket : WirePacket
-{
-    [Key(1)]
-    public int Port { get; init; }
 }
 
 [MessagePackObject]

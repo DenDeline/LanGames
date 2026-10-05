@@ -10,15 +10,15 @@ public sealed class WirePacketCodecTests
     {
         var packets = CreatePackets();
 
-        for (var tag = 0; tag < packets.Length; tag++)
+        for (var index = 0; index < packets.Length; index++)
         {
-            var original = packets[tag];
+            var original = packets[index];
             var bytes = WirePacketCodec.Serialize(original);
             var decoded = WirePacketCodec.TryDeserialize(bytes, out var packet);
 
             await Assert.That(bytes.Length < WirePacketCodec.MaxPacketBytes).IsTrue();
             await Assert.That(bytes[0]).IsEqualTo((byte)0x92); // [union tag, payload]
-            await Assert.That(bytes[1]).IsEqualTo((byte)tag);
+            await Assert.That(bytes[1]).IsEqualTo((byte)(index + 2));
             await Assert.That(decoded).IsTrue();
             await Assert.That(packet?.GetType()).IsEqualTo(original.GetType());
             await AssertPacketEquivalent(original, packet);
@@ -46,13 +46,24 @@ public sealed class WirePacketCodecTests
     [Test]
     public async Task TryDeserialize_RejectsPreviousProtocolAndJson()
     {
-        var oldBinary = WirePacketCodec.Serialize(new OfferPacket { Version = WirePacket.CurrentVersion - 1, Port = 28080 });
-        var oldJson = "{\"version\":1,\"type\":\"offer\",\"port\":28080}"u8.ToArray();
+        var oldBinary = WirePacketCodec.Serialize(new HelloPacket { Version = WirePacket.CurrentVersion - 1 });
+        var oldJson = "{\"version\":1,\"type\":\"hello\"}"u8.ToArray();
         var oldFlatMessagePack = new byte[] { 0x92, 0x02, 0xa5, (byte)'h', (byte)'e', (byte)'l', (byte)'l', (byte)'o' };
 
         await Assert.That(WirePacketCodec.TryDeserialize(oldBinary, out _)).IsFalse();
         await Assert.That(WirePacketCodec.TryDeserialize(oldJson, out _)).IsFalse();
         await Assert.That(WirePacketCodec.TryDeserialize(oldFlatMessagePack, out _)).IsFalse();
+    }
+
+    [Test]
+    public async Task TryDeserialize_RejectsRetiredDiscoveryUnionTags()
+    {
+        // Discovery moved to mDNS; tags 0 and 1 must not become game packets.
+        var oldDiscover = new byte[] { 0x92, 0x00, 0x91, 0x05 };
+        var oldOffer = new byte[] { 0x92, 0x01, 0x92, 0x05, 0xcd, 0x6d, 0xb0 };
+
+        await Assert.That(WirePacketCodec.TryDeserialize(oldDiscover, out _)).IsFalse();
+        await Assert.That(WirePacketCodec.TryDeserialize(oldOffer, out _)).IsFalse();
     }
 
     [Test]
@@ -173,8 +184,6 @@ public sealed class WirePacketCodecTests
 
     private static WirePacket[] CreatePackets() =>
     [
-        new DiscoverPacket(),
-        new OfferPacket { Port = 28080 },
         new HelloPacket(),
         new WelcomePacket { SessionId = "session" },
         new InputPacket

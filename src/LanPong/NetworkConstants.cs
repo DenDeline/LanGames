@@ -34,7 +34,6 @@ internal static class NetworkConstants
     public const double PingSmoothingAlpha = 0.25;
 
     public static readonly TimeSpan DiscoveryResponseWindow = TimeSpan.FromMilliseconds(1300);
-    public static readonly TimeSpan DiscoveryReceiveRetryDelay = TimeSpan.FromMilliseconds(50);
     public static readonly TimeSpan UdpReceiveRetryDelay = TimeSpan.FromMilliseconds(100);
     public static readonly TimeSpan UdpByeTimeout = TimeSpan.FromSeconds(1);
     public static readonly TimeSpan WebSocketCloseTimeout = TimeSpan.FromSeconds(1);

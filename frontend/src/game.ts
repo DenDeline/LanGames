@@ -1174,10 +1174,6 @@ function isDiscoveredHost(value: unknown): value is DiscoveredHost {
 
 async function discoverHosts(): Promise<void> {
   if (busy || discovering) return;
-  const enteredPort = Number(ui.joinPort.value);
-  const fallbackPort =
-    Number.isInteger(enteredPort) && enteredPort >= 1 && enteredPort <= 65535 ? enteredPort : null;
-  const path = fallbackPort === null ? "/api/discover" : `/api/discover?port=${fallbackPort}`;
   discovering = true;
   ui.discoveryResults.hidden = false;
   ui.discoveryResults.replaceChildren();
@@ -1187,7 +1183,7 @@ async function discoverHosts(): Promise<void> {
   ui.discoveryResults.append(searching);
   render();
   try {
-    const response = await fetch(path, {
+    const response = await fetch("/api/discover", {
       cache: "no-store",
     });
     const data = await readJson(response);

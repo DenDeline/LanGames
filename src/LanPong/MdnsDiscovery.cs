@@ -64,7 +64,7 @@ internal sealed class MdnsDiscovery : IAsyncDisposable
         }
         catch (Exception ex) when (ex is SocketException or NetworkInformationException)
         {
-            _logger.LogWarning(ex, "mDNS is unavailable; UDP broadcast discovery remains enabled");
+            _logger.LogWarning(ex, "mDNS is unavailable; connect by IP address instead");
             socket?.Dispose();
             _receiveTask = Task.CompletedTask;
             _advertiseTask = Task.CompletedTask;
