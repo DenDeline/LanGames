@@ -1,5 +1,6 @@
 import base64
 import json
+import math
 import os
 import re
 import socket
@@ -17,10 +18,12 @@ SNAPSHOT_FIELDS = (
     "version", "role", "connection", "message", "udpPort", "localAddresses",
     "peerAddress", "leftY", "rightY", "ballX", "ballY", "ballVx", "ballVy",
     "leftScore", "rightScore", "phase", "countdown", "tick", "roundId", "pingMs",
+    "recentEvents",
 )
 ROLES = ("none", "host", "guest")
 CONNECTIONS = ("idle", "waiting", "connecting", "connected")
 PHASES = ("waiting", "countdown", "playing", "gameover")
+EVENT_KINDS = ("serve", "paddle", "wall", "goal", "match")
 
 
 def msgpack_helper(operation, payload=b""):
@@ -41,13 +44,42 @@ def decode_snapshot(frame):
     values = msgpack_helper("decode", frame[1])
     assert isinstance(values, list) and len(values) == len(SNAPSHOT_FIELDS), values
     snapshot = dict(zip(SNAPSHOT_FIELDS, values))
-    assert snapshot["version"] == 1, snapshot
+    assert snapshot["version"] == 2, snapshot
     snapshot["role"] = ROLES[snapshot["role"]]
     snapshot["connection"] = CONNECTIONS[snapshot["connection"]]
     snapshot["phase"] = PHASES[snapshot["phase"]]
     assert isinstance(snapshot["localAddresses"], list), snapshot
     assert isinstance(snapshot["message"], str), snapshot
+    events = snapshot["recentEvents"]
+    assert isinstance(events, list) and len(events) <= 12, snapshot
+    event_ids = set()
+    previous_tick = -1
+    for event in events:
+        assert isinstance(event, list) and len(event) == 5, event
+        event_id, kind, tick, x, y = event
+        assert isinstance(event_id, str) and 0 < len(event_id) <= 64, event
+        assert event_id not in event_ids, event
+        event_ids.add(event_id)
+        assert type(kind) is int and 1 <= kind <= len(EVENT_KINDS), event
+        assert type(tick) is int and previous_tick <= tick <= snapshot["tick"], event
+        assert all(type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1
+                   for value in (x, y)), event
+        previous_tick = tick
     return snapshot
+
+
+def wait_for_ws_event(conn, kind, event_id=None, seconds=3):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        conn.settimeout(max(0.01, deadline - time.monotonic()))
+        try:
+            snapshot = decode_snapshot(recv_frame(conn))
+        except socket.timeout:
+            break
+        for event in snapshot["recentEvents"]:
+            if event[1] == kind and (event_id is None or event[0] == event_id):
+                return snapshot, event
+    raise AssertionError(f"WebSocket event {EVENT_KINDS[kind - 1]} was not received")
 
 
 def request(port, path, payload=None):
@@ -359,15 +391,18 @@ try:
                and request(5181, "/api/status")["connection"] == "connected")
     with websocket(5180) as host_ws, websocket(5180) as passive_ws, websocket(5181) as guest_ws:
         controls = control_packets()
-        snapshot = decode_snapshot(recv_frame(host_ws))
+        snapshot, host_serve = wait_for_ws_event(host_ws, 1)
         assert snapshot["role"] == "host" and snapshot["connection"] == "connected", snapshot
         assert "tick" in snapshot and "leftY" in snapshot and "rightY" in snapshot, snapshot
+        guest_snapshot, guest_serve = wait_for_ws_event(guest_ws, 1, host_serve[0])
+        assert guest_snapshot["role"] == "guest" and guest_snapshot["connection"] == "connected", guest_snapshot
+        assert guest_serve == host_serve, (host_serve, guest_serve)
 
         send_text(host_ws, '{"axis":1}')
         send_binary(host_ws, b"\x90")  # Wrong array shape.
-        send_binary(host_ws, b"\x92\x02\x01")  # Wrong protocol version.
-        send_binary(host_ws, b"\x92\x01\xa2up")  # Non-numeric axis.
-        send_binary(host_ws, b"\x92\x01\x02")  # Axis outside -1..1.
+        send_binary(host_ws, b"\x92\x01\x01")  # Wrong protocol version.
+        send_binary(host_ws, b"\x92\x02\xa2up")  # Non-numeric axis.
+        send_binary(host_ws, b"\x92\x02\x02")  # Axis outside -1..1.
         send_binary(host_ws, b"\xc1")  # Reserved MessagePack prefix.
         send_binary(host_ws, controls[1] + b"\x00")  # A second packed value.
         send_binary(host_ws, controls[1] + bytes(257 - len(controls[1])))
@@ -499,7 +534,7 @@ try:
                and request(5181, "/api/status")["connection"] == "connected")
     terminate_connected_process(processes[0], 5180, 5181, "connecting", "host")
 
-    print("PASS: static UI, discovery, UDP handshake, ping RTT, oversized UDP datagrams, gameplay, binary MessagePack WebSocket snapshots and controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, leave, reconnect, host rollback of delayed inputs, guest prediction during paused host states, and graceful host/guest shutdown")
+    print("PASS: static UI, discovery, UDP handshake, ping RTT, oversized UDP datagrams, gameplay, binary MessagePack WebSocket snapshots, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, leave, reconnect, host rollback of delayed inputs, guest prediction during paused host states, and graceful host/guest shutdown")
 finally:
     for process in processes:
         if process.poll() is None:

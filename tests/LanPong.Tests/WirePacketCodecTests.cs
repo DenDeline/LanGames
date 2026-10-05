@@ -77,7 +77,7 @@ public sealed class WirePacketCodecTests
 
         var valid = WirePacketCodec.Serialize(new StatePacket
         {
-            SessionId = "test", Sequence = 42, ServeDirection = 1
+            SessionId = "test", Sequence = 42, ServeDirection = 1, RecentEvents = []
         });
         for (var index = 0; index < valid.Length; index++)
         {
@@ -121,13 +121,16 @@ public sealed class WirePacketCodecTests
         var state = new StatePacket
         {
             SessionId = "session", Sequence = 10, RoundId = 3,
-            ServeDirection = -1, Hits = 4, HostAxis = 1
+            ServeDirection = -1, Hits = 4, HostAxis = 1,
+            LastEventTick = 9, EventOrdinal = 1,
+            RecentEvents = [new GameEvent("9:0:2", GameEventKind.Paddle, 9, 0.05, 0.5)]
         };
 
         await Assert.That(WirePacketCodec.TryDeserialize(WirePacketCodec.Serialize(state), out var decoded)).IsTrue();
         var replayState = ((StatePacket)decoded!).ToGameState();
         await Assert.That(replayState.ServeDirection).IsEqualTo(-1);
         await Assert.That(replayState.Hits).IsEqualTo(4);
+        await Assert.That(replayState.RecentEvents.ToArray().SequenceEqual(state.RecentEvents)).IsTrue();
 
         StatePacket[] invalid =
         [
@@ -135,11 +138,37 @@ public sealed class WirePacketCodecTests
             state with { ServeDirection = 2 },
             state with { Hits = -1 },
             state with { HostAxis = 2 },
-            state with { HostAxis = -2 }
+            state with { HostAxis = -2 },
+            state with { RecentEvents = null },
+            state with { LastEventTick = 11 },
+            state with { EventOrdinal = -1 },
+            state with { RecentEvents = [new GameEvent("9:0:0", (GameEventKind)0, 9, 0.05, 0.5)] },
+            state with { RecentEvents = [new GameEvent("9:0:2", GameEventKind.Paddle, 11, 0.05, 0.5)] },
+            state with { RecentEvents = [new GameEvent("9:0:2", GameEventKind.Paddle, 9, double.NaN, 0.5)] }
         ];
 
         foreach (var packet in invalid)
             await Assert.That(WirePacketCodec.TryDeserialize(WirePacketCodec.Serialize(packet), out _)).IsFalse();
+    }
+
+    [Test]
+    public async Task StatePacket_WithFullEventHistory_FitsUdpDatagram()
+    {
+        var tick = long.MaxValue;
+        var state = new StatePacket
+        {
+            SessionId = new string('f', 32), Sequence = tick,
+            RoundId = int.MaxValue, ServeDirection = 1,
+            LastEventTick = tick, EventOrdinal = GameEventHistory.Capacity,
+            RecentEvents = Enumerable.Range(0, GameEventHistory.Capacity)
+                .Select(index => new GameEvent($"{tick}:{index}:3", GameEventKind.Wall,
+                    tick, 0.5, 0.5)).ToArray()
+        };
+
+        var bytes = WirePacketCodec.Serialize(state);
+
+        await Assert.That(bytes.Length).IsLessThanOrEqualTo(WirePacketCodec.MaxPacketBytes);
+        await Assert.That(WirePacketCodec.TryDeserialize(bytes, out _)).IsTrue();
     }
 
     private static WirePacket[] CreatePackets() =>
@@ -160,7 +189,9 @@ public sealed class WirePacketCodecTests
             BallX = 0.35, BallY = 0.64, BallVx = -0.72, BallVy = 0.31,
             LeftScore = 2, RightScore = 3, Phase = GamePhase.Playing,
             Countdown = 1.25, RoundId = 7,
-            ServeDirection = -1, Hits = 4, HostAxis = 1
+            ServeDirection = -1, Hits = 4, HostAxis = 1,
+            LastEventTick = 123450, EventOrdinal = 1,
+            RecentEvents = [new GameEvent("123450:0:3", GameEventKind.Wall, 123450, 0.4, 0.012)]
         },
         new RestartPacket { SessionId = "session", RequestId = "restart" },
         new PingPacket { SessionId = "session", Sequence = 43 },
@@ -179,6 +210,15 @@ public sealed class WirePacketCodecTests
             // Record equality compares array identity, so reuse the source array
             // after checking its decoded contents and order above.
             await Assert.That(decodedInput with { Axes = input.Axes }).IsEqualTo(input);
+            return;
+        }
+
+        if (original is StatePacket state)
+        {
+            await Assert.That(decoded is StatePacket).IsTrue();
+            var decodedState = (StatePacket)decoded!;
+            await Assert.That(decodedState.RecentEvents!.SequenceEqual(state.RecentEvents!)).IsTrue();
+            await Assert.That(decodedState with { RecentEvents = state.RecentEvents }).IsEqualTo(state);
             return;
         }
 

@@ -16,8 +16,8 @@ namespace LanPong;
 [MessagePackObject]
 public abstract record WirePacket
 {
-    // Version 4 assigns simulation ticks to inputs and sends complete replay state.
-    public const int CurrentVersion = 4;
+    // Version 5 includes replayable game events in authoritative state packets.
+    public const int CurrentVersion = 5;
 
     [Key(0)]
     public int Version { get; set; } = CurrentVersion;
@@ -94,6 +94,12 @@ public sealed record StatePacket : WirePacket
     public int Hits { get; init; }
     [Key(16)]
     public int HostAxis { get; init; }
+    [Key(17)]
+    public GameEvent[]? RecentEvents { get; init; }
+    [Key(18)]
+    public long LastEventTick { get; init; }
+    [Key(19)]
+    public int EventOrdinal { get; init; }
 
     internal GameState ToGameState() => new()
     {
@@ -103,7 +109,9 @@ public sealed record StatePacket : WirePacket
         LeftScore = LeftScore, RightScore = RightScore,
         Phase = Phase, Countdown = Countdown,
         TickNumber = Sequence, RoundId = RoundId,
-        ServeDirection = ServeDirection, Hits = Hits
+        ServeDirection = ServeDirection, Hits = Hits,
+        RecentEvents = GameEventHistory.FromArray(RecentEvents ?? []),
+        LastEventTick = LastEventTick, EventOrdinal = EventOrdinal
     };
 }
 
@@ -169,7 +177,10 @@ internal static class WirePacketCodec
                 decoded is StatePacket state &&
                 (!Enum.IsDefined(state.Phase) || state.Sequence < 0 || state.RoundId < 0 ||
                  state.ServeDirection is not (-1 or 1) || state.Hits < 0 ||
-                 state.HostAxis is < -1 or > 1))
+                 state.HostAxis is < -1 or > 1 || state.LastEventTick < -1 ||
+                 state.LastEventTick > state.Sequence || state.EventOrdinal < 0 ||
+                 state.RecentEvents is not { Length: <= GameEventHistory.Capacity } ||
+                 !ValidEvents(state.RecentEvents!, state.Sequence)))
                 return false;
 
             packet = decoded;
@@ -179,6 +190,21 @@ internal static class WirePacketCodec
         {
             return false;
         }
+    }
+
+    private static bool ValidEvents(GameEvent[] events, long sequence)
+    {
+        long previousTick = -1;
+        foreach (var item in events)
+        {
+            if (!Enum.IsDefined(item.Kind) || item.Tick < previousTick || item.Tick > sequence ||
+                item.Id is null || item.Id.Length is < 5 or > 64 ||
+                !double.IsFinite(item.X) || item.X is < 0 or > 1 ||
+                !double.IsFinite(item.Y) || item.Y is < 0 or > 1)
+                return false;
+            previousTick = item.Tick;
+        }
+        return true;
     }
 }
 
@@ -201,6 +227,7 @@ public sealed record PongSnapshot(
     double Countdown,
     long Tick,
     int RoundId,
-    double? PingMs);
+    double? PingMs,
+    GameEvent[] RecentEvents);
 
 public sealed record DiscoveredHost(string Address, int Port);

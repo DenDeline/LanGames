@@ -52,7 +52,7 @@ public sealed class PeerEnumWireTests
     {
         var bytes = WirePacketCodec.Serialize(new StatePacket
         {
-            Phase = GamePhase.Playing, Sequence = 42, ServeDirection = 1
+            Phase = GamePhase.Playing, Sequence = 42, ServeDirection = 1, RecentEvents = []
         });
         var (isInteger, phaseValue) = ReadPackedPhase(bytes);
 
@@ -86,7 +86,7 @@ public sealed class PeerEnumWireTests
         LocalAddresses: [], PeerAddress: null,
         LeftY: 0.5, RightY: 0.5, BallX: 0.5, BallY: 0.5,
         BallVx: 0, BallVy: 0, LeftScore: 0, RightScore: 0,
-        Phase: phase, Countdown: 0, Tick: 0, RoundId: 0, PingMs: null);
+        Phase: phase, Countdown: 0, Tick: 0, RoundId: 0, PingMs: null, RecentEvents: []);
 
     private static (bool IsInteger, int Value) ReadPackedPhase(byte[] bytes)
     {

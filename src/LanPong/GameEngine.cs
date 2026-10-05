@@ -8,6 +8,9 @@ internal sealed class GameEngine
     private GamePhase _phase = GamePhase.Waiting;
     private int _serveDirection = 1;
     private int _hits;
+    private long _lastEventTick = -1;
+    private int _eventOrdinal;
+    private GameEventHistory _recentEvents = GameEventHistory.Empty;
 
     public double LeftY { get; private set => field = Math.Clamp(value, MinPaddleY, MaxPaddleY); } = ArenaCenter;
     public double RightY { get; private set => field = Math.Clamp(value, MinPaddleY, MaxPaddleY); } = ArenaCenter;
@@ -21,6 +24,7 @@ internal sealed class GameEngine
     public double Countdown { get; private set; }
     public long TickNumber { get; private set; }
     public int RoundId { get; private set; }
+    public GameEvent[] RecentEvents => _recentEvents.ToArray();
 
     public GameState Capture() => new()
     {
@@ -30,7 +34,9 @@ internal sealed class GameEngine
         LeftScore = LeftScore, RightScore = RightScore,
         Phase = _phase, Countdown = Countdown,
         TickNumber = TickNumber, RoundId = RoundId,
-        ServeDirection = _serveDirection, Hits = _hits
+        ServeDirection = _serveDirection, Hits = _hits,
+        LastEventTick = _lastEventTick, EventOrdinal = _eventOrdinal,
+        RecentEvents = _recentEvents
     };
 
     /// <summary>Capture every value needed to replay the simulation from this tick.</summary>
@@ -53,6 +59,9 @@ internal sealed class GameEngine
         RoundId = checkpoint.RoundId;
         _serveDirection = checkpoint.ServeDirection;
         _hits = checkpoint.Hits;
+        _lastEventTick = checkpoint.LastEventTick;
+        _eventOrdinal = checkpoint.EventOrdinal;
+        _recentEvents = checkpoint.RecentEvents;
     }
 
     public void ResetWaiting()
@@ -65,6 +74,9 @@ internal sealed class GameEngine
         _phase = GamePhase.Waiting;
         _serveDirection = 1;
         _hits = 0;
+        _lastEventTick = -1;
+        _eventOrdinal = 0;
+        _recentEvents = GameEventHistory.Empty;
     }
 
     public void StartMatch()
@@ -72,7 +84,11 @@ internal sealed class GameEngine
         LeftY = RightY = ArenaCenter;
         LeftScore = RightScore = 0;
         RoundId++;
+        _lastEventTick = -1;
+        _eventOrdinal = 0;
+        _recentEvents = GameEventHistory.Empty;
         StartRound(1);
+        RecordEvent(GameEventKind.MatchStart, ArenaCenter, ArenaCenter);
     }
 
     private void StartRound(int direction)
@@ -114,6 +130,7 @@ internal sealed class GameEngine
                 _phase = GamePhase.Playing;
                 BallVx = ServeSpeedX * _serveDirection;
                 BallVy = ServeSpeedY * _serveDirection;
+                RecordEvent(GameEventKind.Serve, BallX, BallY);
                 continue;
             }
 
@@ -124,6 +141,7 @@ internal sealed class GameEngine
 
             if (result.Goal == Goal.Left) RightScore++;
             else LeftScore++;
+            RecordEvent(GameEventKind.Goal, result.Goal == Goal.Left ? 0 : 1, BallY);
             AfterPoint(result.Goal == Goal.Left ? -1 : 1);
             if (_phase == GamePhase.GameOver) break;
         }
@@ -157,10 +175,12 @@ internal sealed class GameEngine
                 case Contact.Top:
                     BallY = TopContactY;
                     BallVy = -BallVy;
+                    RecordEvent(GameEventKind.Wall, BallX, BallY);
                     break;
                 case Contact.Bottom:
                     BallY = BottomContactY;
                     BallVy = -BallVy;
+                    RecordEvent(GameEventKind.Wall, BallX, BallY);
                     break;
                 case Contact.LeftPaddle:
                     var leftAtContact = PaddleAt(startLeftY, leftAxis, elapsed);
@@ -168,6 +188,7 @@ internal sealed class GameEngine
                     {
                         BallX = LeftContactX;
                         Bounce(leftAtContact, 1);
+                        RecordEvent(GameEventKind.Paddle, BallX, BallY);
                     }
                     else BallX = LeftContactX - MissSeparation;
                     break;
@@ -177,6 +198,7 @@ internal sealed class GameEngine
                     {
                         BallX = RightContactX;
                         Bounce(rightAtContact, -1);
+                        RecordEvent(GameEventKind.Paddle, BallX, BallY);
                     }
                     else BallX = RightContactX + MissSeparation;
                     break;
@@ -252,6 +274,19 @@ internal sealed class GameEngine
         else StartRound(direction);
     }
 
+    private void RecordEvent(GameEventKind kind, double x, double y)
+    {
+        if (_lastEventTick != TickNumber)
+        {
+            _lastEventTick = TickNumber;
+            _eventOrdinal = 0;
+        }
+        // Tick, event order, and kind are part of the id, so replay cannot reuse
+        // an already observed id for a different kind or tick.
+        var id = $"{TickNumber}:{_eventOrdinal++}:{(int)kind}";
+        _recentEvents = _recentEvents.Append(new GameEvent(id, kind, TickNumber, x, y));
+    }
+
     /// <summary>Apply an untrusted network state to the local simulation.</summary>
     public void Restore(GameState state)
     {
@@ -269,6 +304,9 @@ internal sealed class GameEngine
         RoundId = Math.Max(0, state.RoundId);
         _serveDirection = state.ServeDirection is -1 or 1 ? state.ServeDirection : 1;
         _hits = Math.Max(0, state.Hits);
+        _lastEventTick = Math.Clamp(state.LastEventTick, -1, TickNumber);
+        _eventOrdinal = Math.Max(0, state.EventOrdinal);
+        _recentEvents = state.RecentEvents ?? GameEventHistory.Empty;
     }
 
     private static double FiniteClamp(double value, double min, double max, double fallback) =>

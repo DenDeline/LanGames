@@ -17,6 +17,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
     private readonly GameEngine _game = new();
     private readonly HostRollbackTimeline _hostTimeline;
     private readonly GuestPredictionTimeline _guestTimeline;
+    private GameEvent[] _confirmedGuestEvents = [];
     private readonly Dictionary<Guid, (int Axis, DateTime Updated)> _controllers = [];
     private readonly string[] _localAddresses = GetLocalAddresses();
     private readonly Task _clockTask;
@@ -67,13 +68,17 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
         lock (_gate)
         {
             var state = _game.Capture();
+            var events = _role == PeerRole.Guest
+                ? _connection == ConnectionState.Connected && _guestTimeline.Started
+                    ? _confirmedGuestEvents : []
+                : state.RecentEvents.ToArray();
             return new PongSnapshot(
                 _role, _connection, _message, _udpPort, _localAddresses,
                 (_peerEndpoint ?? _targetEndpoint)?.ToString(),
                 state.LeftY, state.RightY, state.BallX, state.BallY,
                 state.BallVx, state.BallVy,
                 state.LeftScore, state.RightScore, state.Phase,
-                state.Countdown, state.TickNumber, state.RoundId, _pingMs);
+                state.Countdown, state.TickNumber, state.RoundId, _pingMs, events);
         }
     }
 
@@ -435,7 +440,9 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
             BallVx = state.BallVx, BallVy = state.BallVy,
             LeftScore = state.LeftScore, RightScore = state.RightScore,
             Phase = state.Phase, Countdown = state.Countdown, RoundId = state.RoundId,
-            ServeDirection = state.ServeDirection, Hits = state.Hits, HostAxis = _lastHostAxis
+            ServeDirection = state.ServeDirection, Hits = state.Hits, HostAxis = _lastHostAxis,
+            RecentEvents = state.RecentEvents.ToArray(),
+            LastEventTick = state.LastEventTick, EventOrdinal = state.EventOrdinal
         };
     }
 
@@ -642,6 +649,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                                                 state.Sequence > _lastStateSequence:
                         _lastStateSequence = state.Sequence;
                         _lastPeerSeen = now;
+                        _confirmedGuestEvents = state.RecentEvents ?? [];
                         _guestTimeline.Reconcile(state.ToGameState(), state.HostAxis, _pingMs, LocalAxis(now));
                         if (_game.TickNumber < _lastInputSentTick)
                             _lastInputSentTick = _game.TickNumber - 1;

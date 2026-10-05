@@ -234,6 +234,7 @@ h1 span {
   margin-bottom: 21px;
 }
 .score-side {
+  --score-accent: var(--cyan);
   display: flex;
   align-items: center;
   gap: clamp(15px, 3vw, 38px);
@@ -244,6 +245,7 @@ h1 span {
   justify-content: flex-end;
 }
 .score-side-right {
+  --score-accent: var(--coral);
   justify-content: flex-start;
 }
 .score-player {
@@ -268,6 +270,28 @@ h1 span {
   letter-spacing: -0.075em;
   text-align: center;
   font-variant-numeric: tabular-nums;
+}
+.score-side.is-local .score-player {
+  text-shadow: 0 0 12px var(--score-accent);
+}
+.score-side.is-local strong {
+  color: var(--score-accent);
+  text-shadow: 0 0 18px var(--score-accent);
+}
+.score-side.is-scored strong {
+  animation: score-pop 450ms ease-out;
+}
+@keyframes score-pop {
+  25% {
+    transform: scale(1.2);
+    color: #fff;
+    text-shadow:
+      0 0 20px var(--score-accent),
+      0 0 40px var(--score-accent);
+  }
+  100% {
+    transform: scale(1);
+  }
 }
 .score-divider {
   width: 1px;
@@ -362,6 +386,7 @@ h1 span {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 16px;
   margin-top: 22px;
   color: var(--muted);
@@ -404,6 +429,44 @@ kbd {
 }
 .network-hint {
   white-space: nowrap;
+}
+.sound-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.sound-controls button {
+  min-height: 32px;
+  padding: 4px 9px;
+  border: 1px solid #456278;
+  border-radius: 7px;
+  background: #203448;
+  color: #daebf1;
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+.sound-controls button:hover {
+  background: #2a4458;
+}
+.sound-controls button[aria-pressed="false"] {
+  color: var(--muted);
+}
+.sound-controls label {
+  color: #b5c5d5;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.sound-controls input[type="range"] {
+  width: 86px;
+  min-width: 72px;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--cyan);
+  cursor: pointer;
 }
 .touch-controls {
   display: none;
@@ -881,6 +944,15 @@ button:disabled {
   .keyboard-hint {
     font-size: 10px;
   }
+  .arena-footer {
+    gap: 12px;
+  }
+  .sound-controls {
+    gap: 6px;
+  }
+  .sound-controls input[type="range"] {
+    width: 72px;
+  }
 }
 @media (pointer: coarse) {
   .touch-controls {
@@ -888,6 +960,9 @@ button:disabled {
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .score-side.is-scored strong {
+    animation: none;
+  }
   *,
   *::before,
   *::after {

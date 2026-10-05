@@ -3,6 +3,15 @@ import { Decoder, encode } from "@msgpack/msgpack";
 export type PeerRole = "none" | "host" | "guest";
 export type ConnectionState = "idle" | "waiting" | "connecting" | "connected" | "disconnected";
 export type GamePhase = "waiting" | "countdown" | "playing" | "gameover";
+export type GameEventKind = "serve" | "paddle" | "wall" | "goal" | "match";
+
+export interface GameEvent {
+  id: string;
+  kind: GameEventKind;
+  tick: number;
+  x: number;
+  y: number;
+}
 
 export interface PongSnapshot {
   role: PeerRole;
@@ -24,16 +33,18 @@ export interface PongSnapshot {
   tick: number;
   roundId: number;
   pingMs: number | null;
+  events: GameEvent[];
 }
 
 // The WebSocket array layout is independent of the JSON HTTP response shape.
 // Change the version whenever indices or enum ordinals change.
-const VERSION = 1;
-const SNAPSHOT_FIELDS = 20;
+const VERSION = 2;
+const SNAPSHOT_FIELDS = 21;
 const MAX_SNAPSHOT_BYTES = 16 * 1024;
 const ROLES = ["none", "host", "guest"] as const;
 const CONNECTIONS = ["idle", "waiting", "connecting", "connected"] as const;
 const PHASES = ["waiting", "countdown", "playing", "gameover"] as const;
+const EVENT_KINDS = ["serve", "paddle", "wall", "goal", "match"] as const;
 const decoder = new Decoder({
   maxArrayLength: 64,
   maxMapLength: 0,
@@ -98,6 +109,7 @@ export function decodeWsSnapshot(bytes: ArrayBuffer): PongSnapshot | null {
     tick,
     roundId,
     pingMs,
+    events,
   ]: unknown[] = frame;
 
   if (
@@ -121,7 +133,27 @@ export function decodeWsSnapshot(bytes: ArrayBuffer): PongSnapshot | null {
     !isNonnegativeInteger(rightScore) ||
     !isNonnegativeInteger(tick) ||
     !isNonnegativeInteger(roundId) ||
-    (pingMs !== null && !isFiniteNumber(pingMs))
+    (pingMs !== null && !isFiniteNumber(pingMs)) ||
+    !Array.isArray(events) ||
+    events.length > 12 ||
+    !events.every(
+      (event) =>
+        Array.isArray(event) &&
+        event.length === 5 &&
+        typeof event[0] === "string" &&
+        event[0].length > 0 &&
+        event[0].length <= 80 &&
+        Number.isInteger(event[1]) &&
+        event[1] >= 1 &&
+        event[1] <= EVENT_KINDS.length &&
+        isNonnegativeInteger(event[2]) &&
+        isFiniteNumber(event[3]) &&
+        isFiniteNumber(event[4]) &&
+        event[3] >= 0 &&
+        event[3] <= 1 &&
+        event[4] >= 0 &&
+        event[4] <= 1,
+    )
   )
     return null;
 
@@ -145,5 +177,12 @@ export function decodeWsSnapshot(bytes: ArrayBuffer): PongSnapshot | null {
     tick,
     roundId,
     pingMs,
+    events: events.map((event) => ({
+      id: event[0],
+      kind: EVENT_KINDS[event[1] - 1],
+      tick: event[2],
+      x: event[3],
+      y: event[4],
+    })),
   };
 }

@@ -37,6 +37,56 @@ public sealed class GameEngineLifecycleTests
     }
 
     [Test]
+    public async Task GameEvents_DescribeMatchServeContactsAndGoalWithDistinctReplayIds()
+    {
+        var match = new GameEngine();
+        match.StartMatch();
+        await Assert.That(match.RecentEvents.Single().Kind).IsEqualTo(GameEventKind.MatchStart);
+        await Assert.That(match.RecentEvents.Single().Id).IsEqualTo("0:0:5");
+
+        match.Advance(1.6, 0, 0);
+        await Assert.That(match.RecentEvents[^1].Kind).IsEqualTo(GameEventKind.Serve);
+        await Assert.That(match.RecentEvents[^1].Id).IsEqualTo("1:0:1");
+
+        var paddle = Playing(GameConstants.LeftContactX + 0.005, 0.5, -1, 0);
+        paddle.Advance(0.01, 0, 0);
+        var paddleEvent = paddle.RecentEvents.Single();
+        await Assert.That(paddleEvent.Kind).IsEqualTo(GameEventKind.Paddle);
+        await Assert.That(paddleEvent.Id).IsEqualTo("1:0:2");
+
+        var wall = Playing(0.5, GameConstants.TopContactY + 0.005, 0.1, -1);
+        wall.Advance(0.01, 0, 0);
+        var wallEvent = wall.RecentEvents.Single();
+        await Assert.That(wallEvent.Kind).IsEqualTo(GameEventKind.Wall);
+        await Assert.That(wallEvent.Id).IsEqualTo("1:0:3");
+
+        var goal = Playing(0.001, 0.9, -1, 0);
+        goal.Advance(0.02, 0, 0);
+        var goalEvent = goal.RecentEvents.Single();
+        await Assert.That(goalEvent.Kind).IsEqualTo(GameEventKind.Goal);
+        await Assert.That(goalEvent.Id).IsEqualTo("1:0:4");
+        await Assert.That(goalEvent.X).IsEqualTo(0);
+        await Assert.That(goal.RightScore).IsEqualTo(1);
+
+        await Assert.That(new[] { paddleEvent.Id, wallEvent.Id, goalEvent.Id }.Distinct().Count()).IsEqualTo(3);
+    }
+
+    [Test]
+    public async Task RestoreCheckpoint_ReplaysEventIdsAndRecentHistory()
+    {
+        var game = Playing(0.5, GameConstants.TopContactY + 0.005, 0.1, -1);
+        var checkpoint = game.CaptureCheckpoint();
+        game.Advance(0.01, 0, 0);
+
+        var replay = new GameEngine();
+        replay.RestoreCheckpoint(checkpoint);
+        replay.Advance(0.01, 0, 0);
+
+        await Assert.That(replay.RecentEvents.SequenceEqual(game.RecentEvents)).IsTrue();
+        await Assert.That(replay.CaptureCheckpoint()).IsEqualTo(game.CaptureCheckpoint());
+    }
+
+    [Test]
     public async Task Advance_WhenBallCrossesGoalInsideStep_AppliesRemainingTimeToNextCountdown()
     {
         var game = Playing(0.01, 0.9, -1, 0);

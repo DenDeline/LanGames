@@ -6,7 +6,7 @@ namespace LanPong;
 [JsonConverter(typeof(JsonStringEnumConverter<PeerRole>))]
 public enum PeerRole
 {
-    // These values are carried by browser WebSocket MessagePack v1.
+    // These values are carried by browser WebSocket MessagePack v2.
     // Changing one requires a browser protocol version change.
     [JsonStringEnumMemberName("none")]
     None = 0,
@@ -20,7 +20,7 @@ public enum PeerRole
 [JsonConverter(typeof(JsonStringEnumConverter<ConnectionState>))]
 public enum ConnectionState
 {
-    // These values are carried by browser WebSocket MessagePack v1.
+    // These values are carried by browser WebSocket MessagePack v2.
     [JsonStringEnumMemberName("idle")]
     Idle = 0,
     [JsonStringEnumMemberName("waiting")]

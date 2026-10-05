@@ -23,11 +23,14 @@ public sealed class RollbackTimelineTests
         await Assert.That(onTimeGame.LeftScore).IsEqualTo(0);
         await Assert.That(onTimeGame.BallVx < 0).IsTrue();
         await Assert.That(lateGame.LeftScore).IsEqualTo(1);
+        await Assert.That(lateGame.RecentEvents.Any(item => item.Kind == GameEventKind.Goal)).IsTrue();
 
         var changed = late.Receive(Input(4, 4, [1, 1, 1, 1]));
 
         await Assert.That(changed).IsTrue();
         await Assert.That(lateGame.CaptureCheckpoint()).IsEqualTo(onTimeGame.CaptureCheckpoint());
+        await Assert.That(lateGame.RecentEvents.Any(item => item.Kind == GameEventKind.Goal)).IsFalse();
+        await Assert.That(lateGame.RecentEvents.Any(item => item.Kind == GameEventKind.Paddle)).IsTrue();
     }
 
     [Test]

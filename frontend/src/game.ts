@@ -1,4 +1,10 @@
-import { decodeWsSnapshot, encodeWsAxis, type PongSnapshot } from "./wsProtocol";
+import {
+  decodeWsSnapshot,
+  encodeWsAxis,
+  type GameEvent,
+  type GameEventKind,
+  type PongSnapshot,
+} from "./wsProtocol";
 
 interface MotionSample {
   tick: number;
@@ -37,6 +43,20 @@ interface ArenaCache {
 interface DiscoveredHost {
   address: string;
   port?: number | string | null;
+}
+
+interface TrailPoint {
+  x: number;
+  y: number;
+  at: number;
+}
+
+interface FeedbackPulse {
+  kind: GameEventKind;
+  x: number;
+  y: number;
+  startedAt: number;
+  scorer: "left" | "right" | null;
 }
 
 function element<T extends HTMLElement>(id: string): T {
@@ -86,6 +106,8 @@ const ui = {
   leaveButton: element<HTMLButtonElement>("leave-button"),
   moveUp: element<HTMLButtonElement>("move-up"),
   moveDown: element<HTMLButtonElement>("move-down"),
+  soundToggle: element<HTMLButtonElement>("sound-toggle"),
+  volumeRange: element<HTMLInputElement>("volume-range"),
   toast: element("toast"),
 };
 
@@ -111,6 +133,7 @@ const defaultSnapshot: PongSnapshot = {
   tick: 0,
   roundId: 0,
   pingMs: null,
+  events: [],
 };
 
 let snapshot = { ...defaultSnapshot };
@@ -157,16 +180,37 @@ const MAX_CANVAS_DPR = 3;
 const SOCKET_RECONNECT_MS = 1500;
 const CONTROL_SEND_INTERVAL_MS = 33;
 const STATUS_POLL_INTERVAL_MS = 4000;
+const EVENT_KINDS: GameEventKind[] = ["serve", "paddle", "wall", "goal", "match"];
+const MAX_SEEN_EVENTS = 128;
+const TRAIL_LIFETIME_MS = 150;
+const TRAIL_SAMPLE_INTERVAL_MS = 16;
+const SOUND_VOLUME_KEY = "lanpong-volume";
+const SOUND_ENABLED_KEY = "lanpong-sound-enabled";
 const motionSamples: MotionSample[] = [];
+const trail: TrailPoint[] = [];
+const seenEventIds = new Set<string>();
+const seenEventOrder: string[] = [];
 let motionCorrection: MotionCorrection | null = null;
 let localPaddle: LocalPaddle | null = null;
 let arenaCache: ArenaCache | null = null;
+let feedbackPulse: FeedbackPulse | null = null;
+let seenEventRound: number | null = null;
+let lastTrailSampleAt = 0;
+let scoreFlashTimer: number | undefined;
+let audioContext: AudioContext | null = null;
+let masterGain: GainNode | null = null;
+let soundEnabled = true;
+let soundVolume = 0.45;
 let webSocketSnapshotVersion = 0;
+let resyncFeedbackOnNextSnapshot = false;
 
 function resetMotionHistory(): void {
   motionSamples.length = 0;
   motionCorrection = null;
   localPaddle = null;
+  trail.length = 0;
+  lastTrailSampleAt = 0;
+  feedbackPulse = null;
 }
 
 function clamp(value: unknown, min: number, max: number): number {
@@ -221,7 +265,37 @@ function snapshotNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function parseGameEvent(value: unknown): GameEvent | null {
+  if (!isRecord(value) || typeof value.id !== "string" || !value.id) return null;
+  const kind =
+    typeof value.kind === "number" && Number.isInteger(value.kind)
+      ? EVENT_KINDS[value.kind - 1]
+      : typeof value.kind === "string"
+        ? value.kind.toLowerCase()
+        : value.kind;
+  if (!isOneOf(kind, EVENT_KINDS)) return null;
+  const tick = value.tick;
+  const x = value.x;
+  const y = value.y;
+  if (
+    typeof tick !== "number" ||
+    !Number.isSafeInteger(tick) ||
+    tick < 0 ||
+    typeof x !== "number" ||
+    !Number.isFinite(x) ||
+    x < 0 ||
+    x > 1 ||
+    typeof y !== "number" ||
+    !Number.isFinite(y) ||
+    y < 0 ||
+    y > 1
+  )
+    return null;
+  return { id: value.id, kind, tick, x, y };
+}
+
 function parseSnapshot(data: Record<string, unknown>): PongSnapshot {
+  const rawEvents = data.recentEvents ?? data.events;
   return {
     role: isOneOf(data.role, ["none", "host", "guest"]) ? data.role : defaultSnapshot.role,
     connection: isOneOf(data.connection, [
@@ -256,12 +330,184 @@ function parseSnapshot(data: Record<string, unknown>): PongSnapshot {
     tick: snapshotNumber(data.tick, defaultSnapshot.tick),
     roundId: snapshotNumber(data.roundId, defaultSnapshot.roundId),
     pingMs: typeof data.pingMs === "number" && Number.isFinite(data.pingMs) ? data.pingMs : null,
+    events: Array.isArray(rawEvents)
+      ? rawEvents.map(parseGameEvent).filter((event): event is GameEvent => event !== null)
+      : [],
   };
+}
+
+function updateSoundControls(): void {
+  ui.soundToggle.setAttribute("aria-pressed", String(soundEnabled));
+  writeText(ui.soundToggle, soundEnabled ? "Звук: вкл." : "Звук: выкл.");
+  ui.volumeRange.value = String(Math.round(soundVolume * 100));
+  ui.volumeRange.disabled = !soundEnabled;
+  if (audioContext && masterGain)
+    masterGain.gain.setTargetAtTime(
+      soundEnabled ? soundVolume : 0,
+      audioContext.currentTime,
+      0.015,
+    );
+}
+
+function saveSoundSettings(): void {
+  try {
+    window.localStorage.setItem(SOUND_VOLUME_KEY, String(Math.round(soundVolume * 100)));
+    window.localStorage.setItem(SOUND_ENABLED_KEY, String(soundEnabled));
+  } catch {
+    // Private browsing can make localStorage unavailable.
+  }
+}
+
+function loadSoundSettings(): void {
+  try {
+    const storedVolume = window.localStorage.getItem(SOUND_VOLUME_KEY);
+    const storedEnabled = window.localStorage.getItem(SOUND_ENABLED_KEY);
+    if (storedVolume !== null) soundVolume = clamp(storedVolume, 0, 100) / 100;
+    if (storedEnabled !== null) soundEnabled = storedEnabled === "true";
+  } catch {
+    // The controls still work for this page when settings cannot be saved.
+  }
+  updateSoundControls();
+}
+
+function unlockAudio(): void {
+  if (!soundEnabled || !window.AudioContext) return;
+  try {
+    if (!audioContext) {
+      audioContext = new window.AudioContext();
+      masterGain = audioContext.createGain();
+      masterGain.gain.value = soundVolume;
+      masterGain.connect(audioContext.destination);
+    }
+    if (audioContext.state !== "running") void audioContext.resume().catch(() => {});
+  } catch {
+    // Gameplay stays usable when the browser has no audio output.
+  }
+}
+
+function playTone(
+  frequency: number,
+  endFrequency: number,
+  delay: number,
+  duration: number,
+  gainLevel: number,
+  wave: OscillatorType = "sine",
+): void {
+  if (!audioContext || !masterGain || audioContext.state !== "running") return;
+  const start = audioContext.currentTime + delay;
+  const oscillator = audioContext.createOscillator();
+  const envelope = audioContext.createGain();
+  oscillator.type = wave;
+  oscillator.frequency.setValueAtTime(frequency, start);
+  oscillator.frequency.exponentialRampToValueAtTime(Math.max(1, endFrequency), start + duration);
+  envelope.gain.setValueAtTime(0.0001, start);
+  envelope.gain.exponentialRampToValueAtTime(gainLevel, start + 0.008);
+  envelope.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+  oscillator.connect(envelope);
+  envelope.connect(masterGain);
+  oscillator.onended = () => {
+    oscillator.disconnect();
+    envelope.disconnect();
+  };
+  oscillator.start(start);
+  oscillator.stop(start + duration + 0.01);
+}
+
+function playFeedbackSound(kind: GameEventKind, localScored = false, gameOver = false): void {
+  if (!soundEnabled || soundVolume <= 0) return;
+  unlockAudio();
+  switch (kind) {
+    case "paddle":
+      playTone(480, 290, 0, 0.075, 0.16, "triangle");
+      break;
+    case "wall":
+      playTone(310, 220, 0, 0.055, 0.09, "sine");
+      break;
+    case "serve":
+      playTone(450, 580, 0, 0.12, 0.08);
+      break;
+    case "match":
+      playTone(320, 420, 0, 0.12, 0.08);
+      playTone(480, 580, 0.11, 0.13, 0.08);
+      break;
+    case "goal":
+      if (localScored) {
+        playTone(440, 520, 0, 0.14, 0.12, "triangle");
+        playTone(660, gameOver ? 880 : 720, 0.14, 0.22, 0.12, "triangle");
+      } else {
+        playTone(440, 340, 0, 0.15, 0.1, "triangle");
+        playTone(300, gameOver ? 180 : 250, 0.14, 0.2, 0.1, "triangle");
+      }
+      break;
+  }
+}
+
+function flashScore(side: "left" | "right"): void {
+  const scoreSide = (side === "left" ? ui.leftScore : ui.rightScore).parentElement;
+  if (!scoreSide) return;
+  scoreSide.classList.remove("is-scored");
+  void scoreSide.offsetWidth;
+  scoreSide.classList.add("is-scored");
+  clearTimeout(scoreFlashTimer);
+  scoreFlashTimer = setTimeout(() => scoreSide.classList.remove("is-scored"), 450);
+}
+
+function rememberEvent(id: string): void {
+  if (seenEventIds.has(id)) return;
+  seenEventIds.add(id);
+  seenEventOrder.push(id);
+  if (seenEventOrder.length > MAX_SEEN_EVENTS) seenEventIds.delete(seenEventOrder.shift()!);
+}
+
+function showFeedback(event: GameEvent, next: PongSnapshot): void {
+  const scorer = event.kind === "goal" ? (event.x < 0.5 ? "right" : "left") : null;
+  feedbackPulse = {
+    kind: event.kind,
+    x: event.x,
+    y: event.y,
+    startedAt: performance.now(),
+    scorer,
+  };
+  if (scorer) flashScore(scorer);
+  const localScored =
+    scorer !== null &&
+    ((scorer === "left" && next.role === "host") || (scorer === "right" && next.role === "guest"));
+  playFeedbackSound(event.kind, localScored, next.phase === "gameover");
+}
+
+function processFeedbackEvents(next: PongSnapshot, previous: PongSnapshot): void {
+  if (next.connection !== "connected" || next.role === "none") {
+    seenEventRound = null;
+    seenEventIds.clear();
+    seenEventOrder.length = 0;
+    return;
+  }
+  const enteringSession =
+    resyncFeedbackOnNextSnapshot ||
+    seenEventRound === null ||
+    previous.role !== next.role ||
+    previous.connection !== "connected";
+  resyncFeedbackOnNextSnapshot = false;
+  if (enteringSession || next.roundId !== seenEventRound) {
+    seenEventRound = next.roundId;
+    seenEventIds.clear();
+    seenEventOrder.length = 0;
+    if (enteringSession) {
+      for (const event of next.events) rememberEvent(event.id);
+      return;
+    }
+  }
+  for (const event of next.events) {
+    if (seenEventIds.has(event.id)) continue;
+    rememberEvent(event.id);
+    showFeedback(event, next);
+  }
 }
 
 function applySnapshot(data: unknown, source: "websocket" | "http" = "http"): void {
   if (!isRecord(data)) return;
   const next = parseSnapshot(data);
+  const previous = snapshot;
 
   const changedRound =
     next.role !== snapshot.role ||
@@ -280,6 +526,7 @@ function applySnapshot(data: unknown, source: "websocket" | "http" = "http"): vo
 
   if (changedRound || backwardsTick) resetMotionHistory();
   snapshot = next;
+  processFeedbackEvents(next, previous);
 
   if (
     next.connection === "connected" &&
@@ -455,6 +702,16 @@ function render(): void {
   ui.roleBadge.dataset.role = snapshot.role;
   writeText(ui.roleBadge, roleText());
   writeText(ui.roleDetail, roleText());
+  writeText(
+    ui.leftPlayer,
+    snapshot.role === "host" ? "Вы" : snapshot.role === "guest" ? "Соперник" : "Игрок 1",
+  );
+  writeText(
+    ui.rightPlayer,
+    snapshot.role === "guest" ? "Вы" : snapshot.role === "host" ? "Соперник" : "Игрок 2",
+  );
+  ui.leftScore.parentElement?.classList.toggle("is-local", snapshot.role === "host");
+  ui.rightScore.parentElement?.classList.toggle("is-local", snapshot.role === "guest");
   writeText(ui.peerDetail, snapshot.peerAddress || (inGame ? "Ожидаем подключения" : "—"));
   ui.pingRow.hidden = !connected;
   const ping = snapshot.pingMs;
@@ -619,6 +876,80 @@ function displayedLocalPaddle(now: number): number | null {
   return localPaddle.y;
 }
 
+function drawBallTrail(
+  context: CanvasRenderingContext2D,
+  motion: Pick<PongSnapshot, "ballX" | "ballY">,
+  now: number,
+  width: number,
+  height: number,
+  ballRadius: number,
+): void {
+  if (snapshot.connection !== "connected" || snapshot.phase !== "playing") {
+    trail.length = 0;
+    return;
+  }
+  const last = trail.at(-1);
+  if (last && Math.hypot(motion.ballX - last.x, motion.ballY - last.y) > 0.08) trail.length = 0;
+  if (now - lastTrailSampleAt >= TRAIL_SAMPLE_INTERVAL_MS) {
+    trail.push({ x: motion.ballX, y: motion.ballY, at: now });
+    lastTrailSampleAt = now;
+  }
+  while (trail.length > 0 && now - trail[0].at > TRAIL_LIFETIME_MS) trail.shift();
+  for (const point of trail) {
+    const fade = 1 - (now - point.at) / TRAIL_LIFETIME_MS;
+    context.fillStyle = `rgba(255, 247, 232, ${Math.max(0, fade * 0.2)})`;
+    context.beginPath();
+    context.arc(
+      point.x * width,
+      point.y * height,
+      ballRadius * (0.45 + fade * 0.3),
+      0,
+      Math.PI * 2,
+    );
+    context.fill();
+  }
+}
+
+function drawFeedbackBackground(
+  context: CanvasRenderingContext2D,
+  now: number,
+  width: number,
+  height: number,
+): void {
+  const pulse = feedbackPulse;
+  if (!pulse || pulse.kind !== "goal" || !pulse.scorer) return;
+  const elapsed = now - pulse.startedAt;
+  if (elapsed >= 500) return;
+  const opacity = (1 - elapsed / 500) * 0.16;
+  context.fillStyle =
+    pulse.scorer === "left" ? `rgba(102, 232, 223, ${opacity})` : `rgba(255, 159, 145, ${opacity})`;
+  context.fillRect(0, 0, width, height);
+}
+
+function drawFeedbackRing(
+  context: CanvasRenderingContext2D,
+  now: number,
+  width: number,
+  height: number,
+): void {
+  const pulse = feedbackPulse;
+  if (!pulse || pulse.kind === "goal") return;
+  const elapsed = now - pulse.startedAt;
+  if (elapsed >= 260) return;
+  const progress = elapsed / 260;
+  context.strokeStyle = `rgba(255, 247, 232, ${(1 - progress) * 0.55})`;
+  context.lineWidth = Math.max(1, height * 0.004 * (1 - progress));
+  context.beginPath();
+  context.arc(
+    pulse.x * width,
+    pulse.y * height,
+    height * (0.016 + progress * 0.045),
+    0,
+    Math.PI * 2,
+  );
+  context.stroke();
+}
+
 function resizeArenaCache(
   width: number,
   height: number,
@@ -707,6 +1038,8 @@ function drawArena(now: number = performance.now()): void {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.drawImage(backgroundCanvas, 0, 0, pixelWidth, pixelHeight);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  if (!reducedMotion) drawFeedbackBackground(ctx, now, width, height);
 
   const paddleWidth = width * PADDLE_HALF_WIDTH * 2;
   const paddleHeight = height * PADDLE_HALF_HEIGHT * 2;
@@ -734,6 +1067,7 @@ function drawArena(now: number = performance.now()): void {
   const ballX = clamp(motion.ballX, 0, 1) * width;
   const ballY = clamp(motion.ballY, 0, 1) * height;
   const ballRadius = Math.max(4, height * BALL_RADIUS_Y);
+  if (!reducedMotion) drawBallTrail(ctx, motion, now, width, height, ballRadius);
   ctx.save();
   ctx.shadowColor = "#fff6df";
   ctx.shadowBlur = ballRadius * 3;
@@ -742,6 +1076,7 @@ function drawArena(now: number = performance.now()): void {
   ctx.arc(ballX, ballY, ballRadius, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
+  if (!reducedMotion) drawFeedbackRing(ctx, now, width, height);
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.drawImage(vignetteCanvas, 0, 0, pixelWidth, pixelHeight);
@@ -940,6 +1275,7 @@ function connectSocket(): void {
   });
   currentSocket.addEventListener("close", () => {
     if (socket !== currentSocket) return;
+    resyncFeedbackOnNextSnapshot = true;
     clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(connectSocket, SOCKET_RECONNECT_MS);
   });
@@ -947,6 +1283,20 @@ function connectSocket(): void {
 }
 
 export function startGame(): void {
+  loadSoundSettings();
+  window.addEventListener("pointerdown", unlockAudio, { capture: true });
+  window.addEventListener("keydown", unlockAudio, { capture: true });
+  ui.soundToggle.addEventListener("click", () => {
+    soundEnabled = !soundEnabled;
+    updateSoundControls();
+    saveSoundSettings();
+    if (soundEnabled) unlockAudio();
+  });
+  ui.volumeRange.addEventListener("input", () => {
+    soundVolume = clamp(ui.volumeRange.value, 0, 100) / 100;
+    updateSoundControls();
+    saveSoundSettings();
+  });
   ui.hostTab.addEventListener("click", () => setTab("host"));
   ui.joinTab.addEventListener("click", () => setTab("join"));
   ui.hostForm.addEventListener("submit", (event) => {

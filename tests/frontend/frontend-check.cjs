@@ -15,6 +15,7 @@ const core = source.slice(0, startup).replace(/^import .*;\r?\n/gm, "");
 let now = 1000;
 let gradients = 0;
 let imageDraws = 0;
+const scoreFlashes = { left: 0, right: 0 };
 const drawingContext = () => ({
   setTransform() {},
   clearRect() {},
@@ -62,6 +63,19 @@ function element(id = "") {
       return drawingContext();
     },
   };
+  if (id === "left-score" || id === "right-score") {
+    const side = id === "left-score" ? "left" : "right";
+    item.parentElement = {
+      classList: {
+        toggle() {},
+        remove() {},
+        add(name) {
+          if (name === "is-scored") scoreFlashes[side]++;
+        },
+      },
+      offsetWidth: 100,
+    };
+  }
   elements.set(id, item);
   return item;
 }
@@ -198,6 +212,149 @@ assert.equal(imageDraws, 4);
 run("resizeArenaCache(1200, 675, 2)");
 assert.equal(gradients, initialGradients + 2);
 
+// HTTP snapshots retain only valid event records, including numeric enum kinds.
+const parsedEvents = JSON.parse(
+  run(
+    `JSON.stringify(parseSnapshot({recentEvents:[
+      {id:"valid-goal",kind:"goal",tick:120,x:0,y:0.4},
+      {id:"valid-paddle",kind:2,tick:121,x:0.05,y:0.5},
+      {id:"invalid-kind",kind:6,tick:122,x:0.5,y:0.5},
+      {id:"invalid-position",kind:"wall",tick:122,x:-0.01,y:0.5}
+    ]}).events)`,
+  ),
+);
+assert.deepEqual(parsedEvents, [
+  { id: "valid-goal", kind: "goal", tick: 120, x: 0, y: 0.4 },
+  { id: "valid-paddle", kind: "paddle", tick: 121, x: 0.05, y: 0.5 },
+]);
+
+// Reconnecting into a live match must not replay its recent event history.
+apply({ role: "none", connection: "idle", events: [] });
+const historicPaddle = { id: "20:4:2", kind: "paddle", tick: 1, x: 0.05, y: 0.5 };
+const newGoal = { id: "20:5:4", kind: "goal", tick: 2, x: 1, y: 0.4 };
+apply({ roundId: 20, tick: 1, events: [historicPaddle] });
+assert.equal(run("feedbackPulse"), null);
+assert.equal(scoreFlashes.left, 0);
+assert.equal(element("left-player").textContent, "Вы");
+assert.equal(element("right-player").textContent, "Соперник");
+
+// A new event gives one local score flash. Repeated snapshots and a same-tick
+// correction must leave the event feedback unchanged.
+now += 10;
+apply({ roundId: 20, tick: 2, leftScore: 1, events: [historicPaddle, newGoal] });
+assert.equal(run("feedbackPulse.kind"), "goal");
+assert.equal(run("feedbackPulse.scorer"), "left");
+assert.equal(scoreFlashes.left, 1);
+const pulseAt = run("feedbackPulse.startedAt");
+now += 10;
+apply({ roundId: 20, tick: 3, leftScore: 1, events: [historicPaddle, newGoal] });
+assert.equal(run("feedbackPulse.startedAt"), pulseAt);
+assert.equal(scoreFlashes.left, 1);
+now += 10;
+apply({ roundId: 20, tick: 3, leftScore: 1, ballX: 0.205, events: [historicPaddle, newGoal] });
+assert.equal(run("feedbackPulse.startedAt"), pulseAt);
+assert.equal(scoreFlashes.left, 1);
+
+// A lower authoritative WebSocket tick resets visual motion, but an already
+// heard or flashed event is still remembered across the rollback.
+now += 10;
+apply({ roundId: 20, tick: 2, leftScore: 1, events: [historicPaddle, newGoal] });
+assert.equal(run("feedbackPulse"), null);
+assert.equal(scoreFlashes.left, 1);
+now += 10;
+apply({ roundId: 20, tick: 3, leftScore: 1, events: [historicPaddle, newGoal] });
+assert.equal(run("feedbackPulse"), null);
+assert.equal(scoreFlashes.left, 1);
+
+const laterWall = { id: "20:6:3", kind: "wall", tick: 4, x: 0.4, y: 0.012 };
+apply({ roundId: 20, tick: 2, leftScore: 1, events: [historicPaddle, newGoal, laterWall] }, "http");
+assert.equal(run("feedbackPulse"), null);
+assert.equal(run("seenEventIds.has('20:6:3')"), false);
+apply({ roundId: 20, tick: 4, leftScore: 1, events: [historicPaddle, newGoal, laterWall] });
+assert.equal(run("feedbackPulse.kind"), "wall");
+assert.equal(scoreFlashes.left, 1);
+
+// A browser socket reconnect baselines its history instead of playing every
+// event that happened while the browser was offline.
+const reconnectEvent = { id: "20:7:2", kind: "paddle", tick: 5, x: 0.05, y: 0.4 };
+const beforeReconnectPulse = run("feedbackPulse.startedAt");
+run("resyncFeedbackOnNextSnapshot = true");
+now += 10;
+apply({ roundId: 20, tick: 5, leftScore: 1, events: [reconnectEvent] });
+assert.equal(run("feedbackPulse.startedAt"), beforeReconnectPulse);
+assert.equal(run("seenEventIds.has('20:7:2')"), true);
+const afterReconnectEvent = { id: "20:8:3", kind: "wall", tick: 6, x: 0.4, y: 0.012 };
+now += 10;
+apply({ roundId: 20, tick: 6, leftScore: 1, events: [reconnectEvent, afterReconnectEvent] });
+assert.equal(run("feedbackPulse.kind"), "wall");
+assert.equal(run("feedbackPulse.startedAt"), now);
+
+// The guest's local score sits on the right; the goal coordinate identifies
+// the side that conceded, independent of snapshot score transitions.
+apply({ role: "none", connection: "idle", events: [] });
+apply({ role: "guest", roundId: 21, tick: 1, events: [historicPaddle] });
+assert.equal(element("left-player").textContent, "Соперник");
+assert.equal(element("right-player").textContent, "Вы");
+const guestGoal = { id: "21:5:4", kind: "goal", tick: 2, x: 0, y: 0.6 };
+apply({ role: "guest", roundId: 21, tick: 2, rightScore: 1, events: [guestGoal] });
+assert.equal(run("feedbackPulse.scorer"), "right");
+assert.equal(scoreFlashes.right, 1);
+
+// Feedback is safe without Web Audio (all events above), and audible when the
+// browser provides it. Muting prevents new tones without hiding visual feedback.
+let playedTones = 0;
+class AudioContextStub {
+  state = "running";
+  currentTime = 0;
+  destination = {};
+  createGain() {
+    return {
+      gain: {
+        value: 0,
+        setTargetAtTime() {},
+        setValueAtTime() {},
+        exponentialRampToValueAtTime() {},
+      },
+      connect() {},
+    };
+  }
+  createOscillator() {
+    return {
+      frequency: { setValueAtTime() {}, exponentialRampToValueAtTime() {} },
+      connect() {},
+      start() {
+        playedTones++;
+      },
+      stop() {},
+    };
+  }
+}
+context.window.AudioContext = AudioContextStub;
+const guestPaddle = { id: "21:6:2", kind: "paddle", tick: 3, x: 0.95, y: 0.6 };
+apply({ role: "guest", roundId: 21, tick: 3, rightScore: 1, events: [guestGoal, guestPaddle] });
+assert.equal(playedTones, 1);
+run("soundEnabled = false");
+const mutedWall = { id: "21:7:3", kind: "wall", tick: 4, x: 0.5, y: 0.012 };
+apply({ role: "guest", roundId: 21, tick: 4, rightScore: 1, events: [mutedWall] });
+assert.equal(playedTones, 1);
+assert.equal(run("feedbackPulse.kind"), "wall");
+run("soundEnabled = true");
+for (const [kind, tick, tones] of [
+  ["serve", 5, 2],
+  ["wall", 6, 3],
+  ["match", 7, 5],
+]) {
+  apply({
+    role: "guest",
+    roundId: 21,
+    tick,
+    rightScore: 1,
+    events: [{ id: `21:${tick}:${kind}`, kind, tick, x: 0.5, y: 0.5 }],
+  });
+  assert.equal(run("feedbackPulse.kind"), kind);
+  assert.equal(playedTones, tones);
+}
+
 console.log(
-  "Frontend behavior checks passed: present-time rendering, correction, collision stop, prediction, gap reset, canvas caching.",
+  "Frontend behavior checks passed: motion, prediction, canvas caching, event parsing, score feedback, and replay deduplication.",
 );
