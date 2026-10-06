@@ -77,6 +77,13 @@ export class FeedbackController {
   }
 
   process(next: PongSnapshot, previous: PongSnapshot): void {
+    if (
+      next.role === "host" &&
+      next.connection === "incomingChallenge" &&
+      (previous.role !== "host" || previous.connection !== "incomingChallenge")
+    )
+      this.sound.playChallengeSound();
+
     if (next.connection !== "connected" || next.role === "none") {
       this.seenEventRound = null;
       this.seenEventIds.clear();

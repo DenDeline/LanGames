@@ -97,6 +97,13 @@ export class SoundController {
     oscillator.stop(start + duration + 0.01);
   }
 
+  playChallengeSound(): void {
+    if (!this.soundEnabled || this.soundVolume <= 0) return;
+    this.unlockAudio();
+    this.playTone(660, 880, 0, 0.13, 0.1);
+    this.playTone(880, 1175, 0.17, 0.18, 0.1);
+  }
+
   playFeedbackSound(kind: GameEventKind, localScored = false, gameOver = false): void {
     if (!this.soundEnabled || this.soundVolume <= 0) return;
     this.unlockAudio();

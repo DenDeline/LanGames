@@ -401,6 +401,27 @@ async function main() {
     assert.equal(playedTones, tones);
   }
 
+  // The host hears one alert per incoming challenge, not on every snapshot.
+  const applyChallenge = (connection, role = "host", source = "websocket") =>
+    apply({ role, connection, phase: "waiting", roundId: 22, tick: 0, events: [] }, source);
+  applyChallenge("waiting");
+  applyChallenge("incomingChallenge");
+  assert.equal(playedTones, 7);
+  applyChallenge("incomingChallenge", "host", "http");
+  applyChallenge("incomingChallenge");
+  assert.equal(playedTones, 7);
+  applyChallenge("waiting");
+  applyChallenge("incomingChallenge", "guest");
+  assert.equal(playedTones, 7);
+  applyChallenge("waiting");
+  soundToggle.dispatch("click");
+  applyChallenge("incomingChallenge");
+  assert.equal(playedTones, 7);
+  soundToggle.dispatch("click");
+  applyChallenge("waiting");
+  applyChallenge("incomingChallenge");
+  assert.equal(playedTones, 9);
+
   // The view presents the local player on the side selected by the snapshot.
   const { render: renderView, setTab, ui } = await import("../../.artifacts/frontend-test/view.js");
   renderView({ ...session.snapshot, role: "host" }, false, false);
