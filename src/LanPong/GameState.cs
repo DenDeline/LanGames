@@ -49,7 +49,7 @@ internal sealed class GameEventHistory : IEquatable<GameEventHistory>
     internal static GameEventHistory FromArray(GameEvent[] items) =>
         items.Length == 0 ? Empty : new GameEventHistory((GameEvent[])items.Clone());
 
-    internal GameEvent[] ToArray() => (GameEvent[])_items.Clone();
+    internal GameEvent[] ToArray() => _items.Length == 0 ? Array.Empty<GameEvent>() : (GameEvent[])_items.Clone();
 
     internal GameEventHistory Append(GameEvent item)
     {

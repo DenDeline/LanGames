@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 using MessagePack;
 using MessagePack.Resolvers;
 
@@ -183,7 +184,7 @@ internal static class WirePacketCodec
     internal static void Serialize(WirePacket packet, IBufferWriter<byte> writer) =>
         MessagePackSerializer.Serialize(writer, packet, Options);
 
-    internal static bool TryDeserialize(ReadOnlyMemory<byte> data, out WirePacket? packet)
+    internal static bool TryDeserialize(ReadOnlyMemory<byte> data, [NotNullWhen(true)] out WirePacket? packet)
     {
         packet = null;
         if (data.IsEmpty || data.Length > MaxPacketBytes) return false;
