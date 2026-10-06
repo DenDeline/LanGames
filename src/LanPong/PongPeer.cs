@@ -1,13 +1,13 @@
-using System.Buffers;
-using System.Diagnostics;
 using System.Net;
-using System.Net.NetworkInformation;
 using System.Net.Sockets;
 
 namespace LanPong;
 
-/// <summary>One local player and one remote player, connected directly over UDP.</summary>
-internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
+/// <summary>
+/// Coordinates one local and one remote player. The partial files share one lock for
+/// connection and game state; input, ping, and rejected challenges own their policies.
+/// </summary>
+internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposable
 {
     private readonly ILogger<PongPeer> _logger;
     private readonly Lock _gate = new();
@@ -18,9 +18,10 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
     private readonly HostRollbackTimeline _hostTimeline;
     private readonly GuestPredictionTimeline _guestTimeline;
     private readonly MdnsDiscovery _mdns;
+    private readonly LocalControllerInputs _controllers = new();
+    private readonly RejectedChallengeCache _rejectedChallenges = new();
+    private readonly PeerPingTracker _ping = new();
     private GameEvent[] _confirmedGuestEvents = [];
-    private readonly Dictionary<Guid, (int Axis, DateTime Updated)> _controllers = [];
-    private readonly List<(SocketAddress Address, Guid RequestId, DateTime RejectedAt)> _rejectedChallenges = [];
     private readonly string[] _localAddresses = GetLocalAddresses();
     private readonly Task _clockTask;
     private Task? _shutdownTask;
@@ -52,17 +53,11 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
     private int _lastHostAxis;
     private long _lastStateSequence = -1;
     private long _lastStateSentTick;
-    private long _pingSequence;
-    private long _pendingPingSequence;
-    private long _pingSentTimestamp;
-    private double? _pingMs;
     private DateTime _lastPeerSeen = DateTime.MinValue;
     private DateTime _challengeStartedAt = DateTime.MinValue;
     private DateTime _lastChallengeSeen = DateTime.MinValue;
     private DateTime _lastHelloSent = DateTime.MinValue;
     private DateTime _lastRestartSent = DateTime.MinValue;
-    private DateTime _lastPingSent = DateTime.MinValue;
-    private DateTime _lastPongSeen = DateTime.MinValue;
 
     public PongPeer(ILogger<PongPeer> logger)
     {
@@ -88,14 +83,14 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                 state.LeftY, state.RightY, state.BallX, state.BallY,
                 state.BallVx, state.BallVy,
                 state.LeftScore, state.RightScore, state.Phase,
-                state.Countdown, state.TickNumber, state.RoundId, _pingMs, events);
+                state.Countdown, state.TickNumber, state.RoundId, _ping.PingMs, events);
         }
     }
 
     public void SetInput(Guid controllerId, int axis)
     {
         lock (_gate)
-            if (!_stopping) _controllers[controllerId] = (Math.Clamp(axis, -1, 1), DateTime.UtcNow);
+            if (!_stopping) _controllers.Set(controllerId, axis, DateTime.UtcNow);
     }
 
     public void RemoveController(Guid controllerId)
@@ -127,9 +122,9 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                 _connection = ConnectionState.Waiting;
                 _message = "Ожидание второго игрока. Передайте ему ваш IP-адрес.";
                 _udpPort = port;
+                _mdns.SetHostPort(port);
+                _receiveTask = Task.Run(() => ReceiveAsync(socket, stop));
             }
-            _mdns.SetHostPort(port);
-            _receiveTask = Task.Run(() => ReceiveAsync(socket, stop));
         }
         finally { _transition.Release(); }
     }
@@ -192,8 +187,8 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                 _connection = ConnectionState.Connecting;
                 _message = "Подключаемся к игроку…";
                 _udpPort = ((IPEndPoint)socket.Client.LocalEndPoint!).Port;
+                _receiveTask = Task.Run(() => ReceiveAsync(socket, stop));
             }
-            _receiveTask = Task.Run(() => ReceiveAsync(socket, stop));
         }
         finally { _transition.Release(); }
     }
@@ -244,7 +239,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
             _lastPeerSeen = DateTime.UtcNow;
             _lastStateSentTick = 0;
             _lastRestartRequestId = null;
-            ResetPing();
+            _ping.Reset();
             _game.StartMatch();
             _hostTimeline.Reset();
             _mdns.SetHostPort(null);
@@ -306,684 +301,10 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
     public Task<IReadOnlyList<DiscoveredHost>> DiscoverAsync(CancellationToken cancellationToken) =>
         _mdns.DiscoverAsync(cancellationToken);
 
-    private async Task StopSocketAsync()
-    {
-        (UdpClient? Socket, CancellationTokenSource? Stop, Task? Receiver) detached;
-        lock (_gate)
-            detached = ResetSocketLocked();
-        _mdns.SetHostPort(null);
-        detached.Stop?.Cancel();
-        detached.Socket?.Dispose();
-        if (detached.Receiver is not null)
-        {
-            try { await detached.Receiver; }
-            catch (OperationCanceledException) { }
-        }
-        if (detached.Receiver is null) detached.Stop?.Dispose();
-    }
-
-    // The receive loop may call this without awaiting its own completion.
-    private (UdpClient? Socket, CancellationTokenSource? Stop, Task? Receiver) ResetSocketLocked(
-        string message = "Создайте игру или подключитесь к другу.")
-    {
-        var detached = (_socket, _socketStop, _receiveTask);
-        _socket = null;
-        _socketStop = null;
-        _receiveTask = null;
-        _peerEndpoint = _targetEndpoint = null;
-        _incomingChallengeEndpoint = null;
-        _peerSocketAddress = _targetSocketAddress = null;
-        _incomingChallengeSocketAddress = null;
-        _sessionId = _lastRestartRequestId = _pendingRestartRequestId = null;
-        _outgoingChallengeId = _incomingChallengeId = _acceptedChallengeId = null;
-        _rejectedChallenges.Clear();
-        _confirmedGuestEvents = [];
-        _restartAfterRound = 0;
-        _role = PeerRole.None;
-        _connection = ConnectionState.Idle;
-        _message = message;
-        _udpPort = 0;
-        _controllers.Clear();
-        _outSequence = 0;
-        _lastInputSentTick = 0;
-        _lastHostAxis = 0;
-        _lastStateSequence = -1;
-        _lastStateSentTick = 0;
-        _lastPeerSeen = _lastHelloSent = _lastRestartSent = DateTime.MinValue;
-        _challengeStartedAt = _lastChallengeSeen = DateTime.MinValue;
-        ResetPing();
-        _game.ResetWaiting();
-        _hostTimeline.Reset();
-        _guestTimeline.Reset();
-        return detached;
-    }
-
-    private static void CloseDetachedSocket(UdpClient? socket, CancellationTokenSource? stop)
-    {
-        stop?.Cancel();
-        socket?.Dispose();
-    }
-
-    private struct ClockActions
-    {
-        public UdpClient? Socket;
-        public IPEndPoint? Destination;
-        public WirePacket? Packet;
-        public InputPacket? Input;
-        public WirePacket? Ping;
-        public UdpClient? SocketToClose;
-        public CancellationTokenSource? StopToClose;
-    }
-
-    private async Task ClockAsync(CancellationToken cancellationToken)
-    {
-        const double fixedStep = GameConstants.FixedStepSeconds;
-        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(fixedStep));
-        // Only this loop uses the buffer; each send completes before it is cleared and reused.
-        var sendBuffer = new ArrayBufferWriter<byte>();
-        var previousTimestamp = Stopwatch.GetTimestamp();
-        var accumulatedTime = 0.0;
-        try
-        {
-            while (await timer.WaitForNextTickAsync(cancellationToken))
-            {
-                var timestamp = Stopwatch.GetTimestamp();
-                var elapsed = Stopwatch.GetElapsedTime(previousTimestamp, timestamp).TotalSeconds;
-                previousTimestamp = timestamp;
-                ClockActions actions;
-                var now = DateTime.UtcNow;
-                lock (_gate)
-                {
-                    actions = new ClockActions { Socket = _socket };
-                    if (actions.Socket is null)
-                    {
-                        accumulatedTime = 0;
-                        continue;
-                    }
-
-                    if (_role == PeerRole.Host)
-                        TickHostLocked(now, elapsed, ref accumulatedTime, ref actions);
-                    else if (_role == PeerRole.Guest && _targetEndpoint is not null)
-                        TickGuestLocked(now, elapsed, ref accumulatedTime, ref actions);
-                    if (_connection == ConnectionState.Connected && _sessionId is not null &&
-                        actions.Destination is not null && now - _lastPingSent >= NetworkConstants.PingInterval)
-                    {
-                        _lastPingSent = now;
-                        _pendingPingSequence = ++_pingSequence;
-                        _pingSentTimestamp = Stopwatch.GetTimestamp();
-                        actions.Ping = new PingPacket { SessionId = _sessionId.Value, Sequence = _pendingPingSequence };
-                    }
-                    if (_pingMs is not null && now - _lastPongSeen > NetworkConstants.PingStaleAfter)
-                        _pingMs = null;
-                }
-                if (actions.Socket is { } socket && actions.Destination is { } destination)
-                {
-                    if (actions.Packet is not null)
-                        await SendQuietlyAsync(socket, destination, actions.Packet, cancellationToken, sendBuffer);
-                    if (actions.Input is not null)
-                        await SendQuietlyAsync(socket, destination, actions.Input, cancellationToken, sendBuffer);
-                    if (actions.Ping is not null)
-                        await SendQuietlyAsync(socket, destination, actions.Ping, cancellationToken, sendBuffer);
-                }
-                CloseDetachedSocket(actions.SocketToClose, actions.StopToClose);
-            }
-        }
-        catch (OperationCanceledException) { }
-    }
-
-    // Called under _gate; the clock owns accumulatedTime and its send buffer.
-    private void TickHostLocked(DateTime now, double elapsed, ref double accumulatedTime, ref ClockActions actions)
-    {
-        if (_connection == ConnectionState.IncomingChallenge &&
-            (now - _challengeStartedAt >= NetworkConstants.ChallengeLifetime ||
-             now - _lastChallengeSeen >= NetworkConstants.PeerIdleTimeout) &&
-            _incomingChallengeEndpoint is not null && _incomingChallengeId is not null)
-        {
-            actions.Destination = _incomingChallengeEndpoint;
-            actions.Packet = new ChallengeDeclinedPacket { RequestId = _incomingChallengeId.Value };
-            ClearIncomingChallengeLocked("Вызов истёк. Ожидание другого игрока…");
-        }
-
-        var peer = _peerEndpoint;
-        if (peer is null)
-        {
-            accumulatedTime = 0;
-            return;
-        }
-        if (now - _lastPeerSeen > NetworkConstants.PeerIdleTimeout)
-        {
-            ReturnHostToWaitingLocked("Связь потеряна. Ожидание второго игрока…");
-            accumulatedTime = 0;
-            return;
-        }
-
-        actions.Destination = peer;
-        var localAxis = LocalAxis(now);
-        // PeriodicTimer coalesces missed wakes; catch up a bounded number of fixed physics steps.
-        accumulatedTime = Math.Min(accumulatedTime + elapsed,
-            GameConstants.FixedStepSeconds * NetworkConstants.MaximumSimulationCatchUpSteps);
-        for (var step = 0; step < NetworkConstants.MaximumSimulationCatchUpSteps &&
-                           accumulatedTime >= GameConstants.FixedStepSeconds; step++)
-        {
-            _lastHostAxis = localAxis;
-            _hostTimeline.Advance(localAxis);
-            accumulatedTime -= GameConstants.FixedStepSeconds;
-        }
-        if (_game.TickNumber - _lastStateSentTick >= NetworkConstants.StateSendIntervalTicks)
-        {
-            actions.Packet = CreateStatePacket();
-            _lastStateSentTick = _game.TickNumber;
-        }
-    }
-
-    // Called under _gate. A timed-out challenge still sends Cancel before closing its socket.
-    private void TickGuestLocked(DateTime now, double elapsed, ref double accumulatedTime, ref ClockActions actions)
-    {
-        actions.Destination = _targetEndpoint;
-        if (_connection == ConnectionState.Connected && now - _lastPeerSeen > NetworkConstants.PeerIdleTimeout)
-        {
-            (actions.SocketToClose, actions.StopToClose, _) = ResetSocketLocked(
-                "Связь потеряна. Подключитесь к игре заново.");
-            actions.Socket = null;
-            actions.Destination = null;
-            accumulatedTime = 0;
-            return;
-        }
-        if ((_connection == ConnectionState.Connecting &&
-             now - _challengeStartedAt >= NetworkConstants.ChallengeConnectTimeout) ||
-            (_connection == ConnectionState.AwaitingAcceptance &&
-             (now - _challengeStartedAt >= NetworkConstants.ChallengeLifetime ||
-              now - _lastPeerSeen >= NetworkConstants.PeerIdleTimeout)))
-        {
-            if (_outgoingChallengeId is { } challengeId)
-                actions.Packet = new CancelChallengePacket { RequestId = challengeId };
-            (actions.SocketToClose, actions.StopToClose, _) = ResetSocketLocked(
-                "Вызов истёк или связь с соперником потеряна.");
-            accumulatedTime = 0;
-            return;
-        }
-        if (_connection is ConnectionState.Connecting or ConnectionState.AwaitingAcceptance)
-        {
-            if (now - _lastHelloSent >= NetworkConstants.HelloRetryInterval &&
-                _outgoingChallengeId is { } challengeId)
-            {
-                _lastHelloSent = now;
-                actions.Packet = new HelloPacket { RequestId = challengeId };
-            }
-            accumulatedTime = 0;
-            return;
-        }
-        if (_connection != ConnectionState.Connected || _sessionId is not { } sessionId)
-        {
-            accumulatedTime = 0;
-            return;
-        }
-
-        if (_pendingRestartRequestId is { } restartId &&
-            now - _lastRestartSent >= NetworkConstants.RestartRetryInterval)
-        {
-            _lastRestartSent = now;
-            actions.Packet = new RestartPacket { SessionId = sessionId, RequestId = restartId };
-        }
-        if (!_guestTimeline.Started)
-        {
-            accumulatedTime = 0;
-            return;
-        }
-
-        var axis = LocalAxis(now);
-        accumulatedTime = Math.Min(accumulatedTime + elapsed,
-            GameConstants.FixedStepSeconds * NetworkConstants.MaximumSimulationCatchUpSteps);
-        for (var step = 0; step < NetworkConstants.MaximumSimulationCatchUpSteps &&
-                           accumulatedTime >= GameConstants.FixedStepSeconds; step++)
-        {
-            _guestTimeline.Advance(axis);
-            accumulatedTime -= GameConstants.FixedStepSeconds;
-        }
-        if (_game.TickNumber > _lastInputSentTick && _guestTimeline.HasCurrentInput)
-        {
-            actions.Input = _guestTimeline.CreateInputPacket(sessionId, ++_outSequence);
-            _lastInputSentTick = _game.TickNumber;
-        }
-    }
-
-    private StatePacket CreateStatePacket()
-    {
-        var state = _game.Capture();
-        return new StatePacket
-        {
-            SessionId = _sessionId!.Value, Sequence = state.TickNumber,
-            LeftY = state.LeftY, RightY = state.RightY,
-            BallX = state.BallX, BallY = state.BallY,
-            BallVx = state.BallVx, BallVy = state.BallVy,
-            LeftScore = state.LeftScore, RightScore = state.RightScore,
-            Phase = state.Phase, Countdown = state.Countdown, RoundId = state.RoundId,
-            ServeDirection = state.ServeDirection, Hits = state.Hits, HostAxis = _lastHostAxis,
-            RecentEvents = state.RecentEvents.ToArray(),
-            LastEventTick = state.LastEventTick, EventOrdinal = state.EventOrdinal
-        };
-    }
-
-    // Called while holding _gate. Ping and pong use the same authenticated UDP path as gameplay.
-    private void ObservePong(PongPacket packet)
-    {
-        if (_pendingPingSequence == 0 || packet.Sequence != _pendingPingSequence) return;
-        var sample = Stopwatch.GetElapsedTime(_pingSentTimestamp).TotalMilliseconds;
-        if (sample >= 0 && sample < NetworkConstants.MaximumPingRoundTrip.TotalMilliseconds)
-        {
-            _pingMs = _pingMs is { } previous
-                ? previous * (1 - NetworkConstants.PingSmoothingAlpha) + sample * NetworkConstants.PingSmoothingAlpha
-                : sample;
-            _lastPongSeen = DateTime.UtcNow;
-        }
-        _pendingPingSequence = 0;
-    }
-
-    private void ResetPing()
-    {
-        _pingSequence = _pendingPingSequence = _pingSentTimestamp = 0;
-        _pingMs = null;
-        _lastPingSent = DateTime.MinValue;
-        _lastPongSeen = DateTime.MinValue;
-    }
-
-    // Preserve rejected IDs so delayed/retried Hello packets cannot reopen those challenges.
-    private void ClearIncomingChallengeLocked(string message)
-    {
-        if (_incomingChallengeSocketAddress is not null && _incomingChallengeId is not null)
-            RememberRejectedChallengeLocked(
-                _incomingChallengeSocketAddress, _incomingChallengeId.Value, DateTime.UtcNow);
-        _incomingChallengeEndpoint = null;
-        _incomingChallengeSocketAddress = null;
-        _incomingChallengeId = null;
-        _challengeStartedAt = _lastChallengeSeen = DateTime.MinValue;
-        _connection = ConnectionState.Waiting;
-        _message = message;
-        _mdns.SetHostPort(_udpPort);
-    }
-
-    private bool IsRejectedChallengeLocked(SocketAddress address, Guid requestId, DateTime now)
-    {
-        var rejected = false;
-        var retained = 0;
-        var count = _rejectedChallenges.Count;
-        for (var index = 0; index < count; index++)
-        {
-            var item = _rejectedChallenges[index];
-            if (now - item.RejectedAt >= NetworkConstants.ChallengeLifetime)
-                continue;
-            if (retained != index)
-                _rejectedChallenges[retained] = item;
-            retained++;
-            if (item.RequestId == requestId && item.Address.Equals(address))
-                rejected = true;
-        }
-        if (retained < count)
-            _rejectedChallenges.RemoveRange(retained, count - retained);
-        return rejected;
-    }
-
-    private void RememberRejectedChallengeLocked(SocketAddress address, Guid requestId, DateTime now)
-    {
-        if (IsRejectedChallengeLocked(address, requestId, now)) return;
-        const int maximumRememberedChallenges = 32;
-        if (_rejectedChallenges.Count == maximumRememberedChallenges)
-            _rejectedChallenges.RemoveAt(0);
-        _rejectedChallenges.Add((address, requestId, now));
-    }
-
-    private void ReturnHostToWaitingLocked(string message)
-    {
-        _peerEndpoint = null;
-        _peerSocketAddress = null;
-        _sessionId = null;
-        _acceptedChallengeId = null;
-        _lastRestartRequestId = null;
-        _lastPeerSeen = DateTime.MinValue;
-        _connection = ConnectionState.Waiting;
-        _message = message;
-        _mdns.SetHostPort(_udpPort);
-        _lastHostAxis = 0;
-        _lastStateSentTick = 0;
-        ResetPing();
-        _game.ResetWaiting();
-        _hostTimeline.Reset();
-    }
-
-    // Called while holding _gate. A passive tab sends zero, so it cannot override a tab being played.
-    private int LocalAxis(DateTime now)
-    {
-        var newest = DateTime.MinValue;
-        var axis = 0;
-        foreach (var control in _controllers.Values)
-        {
-            if (control.Axis == 0 || now - control.Updated > NetworkConstants.InputStaleAfter || control.Updated <= newest)
-                continue;
-            newest = control.Updated;
-            axis = control.Axis;
-        }
-        return axis;
-    }
-
-    private async Task ReceiveAsync(UdpClient socket, CancellationTokenSource stop)
-    {
-        using var ownedStop = stop;
-        var cancellationToken = ownedStop.Token;
-        // One receive is outstanding at a time, so the datagram and remote address
-        // can be handled before the next receive overwrites either buffer.
-        var receiveBuffer = new byte[WirePacketCodec.MaxPacketBytes + 1];
-        var anyEndpoint = socket.Client.AddressFamily == AddressFamily.InterNetworkV6
-            ? NetworkConstants.AnyIpv6Endpoint
-            : NetworkConstants.AnyIpv4Endpoint;
-        var receiveFrom = anyEndpoint.Serialize();
-        var replyBuffer = new ArrayBufferWriter<byte>();
-        while (!cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                var receivedBytes = await socket.Client.ReceiveFromAsync(
-                    receiveBuffer.AsMemory(), SocketFlags.None, receiveFrom, cancellationToken);
-                if (receivedBytes > WirePacketCodec.MaxPacketBytes || !MayReceiveFrom(socket, receiveFrom)) continue;
-                if (!WirePacketCodec.TryDeserialize(receiveBuffer.AsMemory(0, receivedBytes), out var packet))
-                    continue;
-                await HandlePacketAsync(socket, anyEndpoint, receiveFrom, packet, cancellationToken, replyBuffer);
-            }
-            catch (OperationCanceledException) { break; }
-            catch (ObjectDisposedException) { break; }
-            catch (SocketException ex) when (ex.SocketErrorCode == SocketError.MessageSize)
-            {
-                // Windows reports an oversized datagram as MessageSize rather than truncating it.
-                continue;
-            }
-            catch (SocketException ex)
-            {
-                _logger.LogDebug(ex, "UDP receive failed");
-                try { await Task.Delay(NetworkConstants.UdpReceiveRetryDelay, cancellationToken); }
-                catch (OperationCanceledException) { break; }
-            }
-        }
-    }
-
-    private bool MayReceiveFrom(UdpClient socket, SocketAddress remote)
-    {
-        lock (_gate)
-        {
-            if (_socket != socket) return false;
-            return _role switch
-            {
-                PeerRole.Host => _peerSocketAddress is null || _peerSocketAddress.Equals(remote),
-                PeerRole.Guest => _targetSocketAddress?.Equals(remote) == true,
-                _ => false
-            };
-        }
-    }
-
-    private async Task HandlePacketAsync(
-        UdpClient socket, IPEndPoint anyEndpoint, SocketAddress remote, WirePacket packet,
-        CancellationToken cancellationToken, ArrayBufferWriter<byte> replyBuffer)
-    {
-        WirePacket? reply = null;
-        IPEndPoint? replyDestination = null;
-        UdpClient? socketToClose = null;
-        CancellationTokenSource? stopToClose = null;
-        var now = DateTime.UtcNow;
-        lock (_gate)
-        {
-            if (_socket != socket) return;
-            if (_role == PeerRole.Host)
-            {
-                if (packet is HelloPacket hello)
-                {
-                    if (_peerEndpoint is not null)
-                    {
-                        if (_peerSocketAddress?.Equals(remote) == true &&
-                            hello.RequestId == _acceptedChallengeId)
-                        {
-                            _lastPeerSeen = now;
-                            reply = new WelcomePacket
-                            {
-                                SessionId = _sessionId!.Value, RequestId = _acceptedChallengeId!.Value
-                            };
-                        }
-                    }
-                    else if (IsRejectedChallengeLocked(remote, hello.RequestId, now))
-                    {
-                        reply = new ChallengeDeclinedPacket { RequestId = hello.RequestId };
-                        replyDestination = (IPEndPoint)anyEndpoint.Create(remote);
-                    }
-                    else if (_incomingChallengeEndpoint is null)
-                    {
-                        _incomingChallengeEndpoint = (IPEndPoint)anyEndpoint.Create(remote);
-                        _incomingChallengeSocketAddress = _incomingChallengeEndpoint.Serialize();
-                        _incomingChallengeId = hello.RequestId;
-                        _challengeStartedAt = now;
-                        _lastChallengeSeen = now;
-                        _connection = ConnectionState.IncomingChallenge;
-                        _message = "Входящий вызов. Примите или отклоните его.";
-                        _mdns.SetHostPort(null);
-                        reply = new ChallengePendingPacket { RequestId = hello.RequestId };
-                    }
-                    else if (_incomingChallengeSocketAddress?.Equals(remote) == true &&
-                             hello.RequestId == _incomingChallengeId)
-                    {
-                        _lastChallengeSeen = now;
-                        reply = new ChallengePendingPacket { RequestId = hello.RequestId };
-                    }
-                    else
-                    {
-                        reply = new ChallengeDeclinedPacket { RequestId = hello.RequestId };
-                        replyDestination = (IPEndPoint)anyEndpoint.Create(remote);
-                        RememberRejectedChallengeLocked(replyDestination.Serialize(), hello.RequestId, now);
-                    }
-                }
-                else if (packet is CancelChallengePacket cancel)
-                {
-                    var canceledEndpoint = (IPEndPoint)anyEndpoint.Create(remote);
-                    RememberRejectedChallengeLocked(canceledEndpoint.Serialize(), cancel.RequestId, now);
-                    if (_connection == ConnectionState.IncomingChallenge &&
-                        _incomingChallengeSocketAddress?.Equals(remote) == true &&
-                        cancel.RequestId == _incomingChallengeId)
-                        ClearIncomingChallengeLocked("Соперник отменил вызов. Ожидание другого игрока…");
-                    else if (_connection == ConnectionState.Connected &&
-                             _peerSocketAddress?.Equals(remote) == true &&
-                             cancel.RequestId == _acceptedChallengeId)
-                        ReturnHostToWaitingLocked("Соперник отменил вызов. Ожидание другого игрока…");
-                }
-                else if (_peerSocketAddress?.Equals(remote) == true && _sessionId is not null)
-                {
-                    switch (packet)
-                    {
-                        case PingPacket ping when ping.SessionId == _sessionId:
-                            _lastPeerSeen = now;
-                            reply = new PongPacket { SessionId = _sessionId.Value, Sequence = ping.Sequence };
-                            break;
-                        case PongPacket pong when pong.SessionId == _sessionId:
-                            _lastPeerSeen = now;
-                            ObservePong(pong);
-                            break;
-                        case InputPacket input when input.SessionId == _sessionId &&
-                                                    input.RoundId == _game.RoundId:
-                            _lastPeerSeen = now;
-                            if (_hostTimeline.Receive(input))
-                                _lastStateSentTick = Math.Min(_lastStateSentTick,
-                                    _game.TickNumber - NetworkConstants.StateSendIntervalTicks);
-                            break;
-                        case RestartPacket restart when restart.SessionId == _sessionId:
-                            _lastPeerSeen = now;
-                            if (restart.RequestId != _lastRestartRequestId)
-                            {
-                                _lastRestartRequestId = restart.RequestId;
-                                _game.StartMatch();
-                                _hostTimeline.Reset();
-                            }
-                            break;
-                        case ByePacket bye when bye.SessionId == _sessionId:
-                            ReturnHostToWaitingLocked("Соперник вышел. Ожидание нового игрока…");
-                            break;
-                    }
-                }
-            }
-            else if (_role == PeerRole.Guest && _targetSocketAddress?.Equals(remote) == true)
-            {
-                switch (packet)
-                {
-                    case ChallengePendingPacket pending when pending.RequestId == _outgoingChallengeId &&
-                                                             _connection is (ConnectionState.Connecting or ConnectionState.AwaitingAcceptance):
-                        _connection = ConnectionState.AwaitingAcceptance;
-                        _message = "Вызов отправлен. Ждём решения соперника…";
-                        _lastPeerSeen = now;
-                        break;
-                    case ChallengeDeclinedPacket declined when declined.RequestId == _outgoingChallengeId &&
-                                                               _connection is (ConnectionState.Connecting or ConnectionState.AwaitingAcceptance):
-                        (socketToClose, stopToClose, _) = ResetSocketLocked(
-                            "Вызов отклонён. Выберите другую игру или попробуйте позже.");
-                        break;
-                    case WelcomePacket welcome when welcome.RequestId == _outgoingChallengeId &&
-                                                    _connection is (ConnectionState.Connecting or ConnectionState.AwaitingAcceptance):
-                        _sessionId = welcome.SessionId;
-                        _lastStateSequence = -1;
-                        _pendingRestartRequestId = null;
-                        _restartAfterRound = 0;
-                        ResetPing();
-                        _game.ResetWaiting();
-                        _guestTimeline.Reset();
-                        _lastInputSentTick = 0;
-                        _connection = ConnectionState.Connected;
-                        _message = "Вы подключились. Игра началась!";
-                        _outgoingChallengeId = null;
-                        _lastPeerSeen = now;
-                        break;
-                    case PingPacket ping when _sessionId is not null && ping.SessionId == _sessionId:
-                        _lastPeerSeen = now;
-                        reply = new PongPacket { SessionId = _sessionId.Value, Sequence = ping.Sequence };
-                        break;
-                    case PongPacket pong when _sessionId is not null && pong.SessionId == _sessionId:
-                        _lastPeerSeen = now;
-                        ObservePong(pong);
-                        break;
-                    case StatePacket state when _sessionId is not null && state.SessionId == _sessionId &&
-                                                state.Sequence > _lastStateSequence:
-                        _lastStateSequence = state.Sequence;
-                        _lastPeerSeen = now;
-                        _confirmedGuestEvents = state.RecentEvents!;
-                        _guestTimeline.Reconcile(state.ToGameState(), state.HostAxis, _pingMs, LocalAxis(now));
-                        if (_game.TickNumber < _lastInputSentTick)
-                            _lastInputSentTick = _game.TickNumber - 1;
-                        if (_game.TickNumber > _lastInputSentTick && _guestTimeline.HasCurrentInput)
-                        {
-                            _lastInputSentTick = _game.TickNumber;
-                            reply = _guestTimeline.CreateInputPacket(_sessionId.Value, ++_outSequence);
-                        }
-                        if (_pendingRestartRequestId is not null && state.RoundId > _restartAfterRound)
-                            _pendingRestartRequestId = null;
-                        break;
-                    // Welcome and Bye can arrive out of order while the first handshake is in flight.
-                    case ByePacket bye when bye.SessionId == _sessionId ||
-                                              _connection is (ConnectionState.Connecting or ConnectionState.AwaitingAcceptance) &&
-                                              _sessionId is null:
-                        (socketToClose, stopToClose, _) = ResetSocketLocked(
-                            "Соперник вышел. Подключитесь к новой игре вручную.");
-                        break;
-                }
-            }
-            if (reply is not null && replyDestination is null)
-                replyDestination = _role == PeerRole.Host
-                    ? _peerEndpoint ?? _incomingChallengeEndpoint
-                    : _targetEndpoint;
-        }
-        CloseDetachedSocket(socketToClose, stopToClose);
-        if (reply is not null && replyDestination is not null)
-            await SendQuietlyAsync(socket, replyDestination, reply, cancellationToken, replyBuffer);
-    }
-
-    private async Task SendQuietlyAsync(
-        UdpClient socket, IPEndPoint destination, WirePacket packet, CancellationToken cancellationToken,
-        ArrayBufferWriter<byte>? sendBuffer = null)
-    {
-        try
-        {
-            if (sendBuffer is null)
-            {
-                var bytes = WirePacketCodec.Serialize(packet);
-                await socket.SendAsync(bytes, destination, cancellationToken);
-            }
-            else
-            {
-                WirePacketCodec.Serialize(packet, sendBuffer);
-                await socket.SendAsync(sendBuffer.WrittenMemory, destination, cancellationToken);
-            }
-        }
-        catch (OperationCanceledException) { }
-        catch (ObjectDisposedException) { }
-        catch (SocketException ex) { _logger.LogDebug(ex, "UDP send failed to {Destination}", destination); }
-        finally { sendBuffer?.Clear(); }
-    }
-
-    private static void ValidatePort(int port)
-    {
-        if (port is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(port), "Порт должен быть от 1 до 65535.");
-    }
-
-    private static UdpClient CreateUdpSocket(int port)
-    {
-        if (!Socket.OSSupportsIPv6)
-            return new UdpClient(new IPEndPoint(IPAddress.Any, port));
-
-        var socket = new UdpClient(AddressFamily.InterNetworkV6);
-        try
-        {
-            // Set this before binding so one socket can receive both address families.
-            socket.Client.DualMode = true;
-        }
-        catch (SocketException)
-        {
-            socket.Dispose();
-            return new UdpClient(new IPEndPoint(IPAddress.Any, port));
-        }
-
-        try
-        {
-            socket.Client.Bind(new IPEndPoint(IPAddress.IPv6Any, port));
-            return socket;
-        }
-        catch
-        {
-            socket.Dispose();
-            throw;
-        }
-    }
-
-    private static string? FormatEndpoint(IPEndPoint? endpoint)
-    {
-        if (endpoint is null) return null;
-        return endpoint.Address.IsIPv4MappedToIPv6
-            ? $"{endpoint.Address.MapToIPv4()}:{endpoint.Port}"
-            : endpoint.ToString();
-    }
-
     private void ThrowIfStopping()
     {
         lock (_gate)
             if (_stopping) throw new InvalidOperationException("Приложение завершает работу.");
-    }
-
-    private static string[] GetLocalAddresses()
-    {
-        string[] loopbacks = Socket.OSSupportsIPv6 ? ["127.0.0.1", "::1"] : ["127.0.0.1"];
-        try
-        {
-            return NetworkInterface.GetAllNetworkInterfaces()
-                .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
-                .SelectMany(n => n.GetIPProperties().UnicastAddresses)
-                .Select(a => a.Address)
-                .Where(a => (a.AddressFamily is AddressFamily.InterNetwork or AddressFamily.InterNetworkV6) &&
-                            !IPAddress.IsLoopback(a))
-                .Select(a => a.ToString())
-                .Distinct()
-                .Concat(loopbacks)
-                .ToArray();
-        }
-        catch (NetworkInformationException) { return loopbacks; }
     }
 
     public Task StartingAsync(CancellationToken cancellationToken) => Task.CompletedTask;
