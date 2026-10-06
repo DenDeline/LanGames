@@ -12,11 +12,18 @@ export type {
 
 // The WebSocket array layout is independent of the JSON HTTP response shape.
 // Change the version whenever indices or enum ordinals change.
-const VERSION = 2;
+const VERSION = 3;
 const SNAPSHOT_FIELDS = 21;
 const MAX_SNAPSHOT_BYTES = 16 * 1024;
 const ROLES = ["none", "host", "guest"] as const;
-const CONNECTIONS = ["idle", "waiting", "connecting", "connected"] as const;
+const CONNECTIONS = [
+  "idle",
+  "waiting",
+  "connecting",
+  "connected",
+  "incomingChallenge",
+  "awaitingAcceptance",
+] as const;
 const PHASES = ["waiting", "countdown", "playing", "gameover"] as const;
 const EVENT_KINDS = ["serve", "paddle", "wall", "goal", "match"] as const;
 const decoder = new Decoder({

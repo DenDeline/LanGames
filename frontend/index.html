@@ -220,6 +220,22 @@
                 <dd id="ping-value">— мс</dd>
               </div>
             </dl>
+            <div
+              class="challenge-request"
+              id="challenge-request"
+              role="group"
+              aria-label="Вызов на матч"
+              hidden
+            >
+              <span class="challenge-label">НОВЫЙ ВЫЗОВ</span>
+              <p><strong id="challenge-peer">Соперник</strong> хочет сыграть с вами.</p>
+              <div class="challenge-actions">
+                <button class="primary-button" type="button" id="accept-button">Принять</button>
+                <button class="secondary-button" type="button" id="decline-button">
+                  Отклонить
+                </button>
+              </div>
+            </div>
             <div class="session-actions">
               <button class="secondary-button" type="button" id="restart-button" disabled>
                 Новый матч

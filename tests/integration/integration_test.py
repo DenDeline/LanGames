@@ -21,9 +21,23 @@ SNAPSHOT_FIELDS = (
     "recentEvents",
 )
 ROLES = ("none", "host", "guest")
-CONNECTIONS = ("idle", "waiting", "connecting", "connected")
+CONNECTIONS = (
+    "idle", "waiting", "connecting", "connected", "incomingChallenge", "awaitingAcceptance",
+)
 PHASES = ("waiting", "countdown", "playing", "gameover")
 EVENT_KINDS = ("serve", "paddle", "wall", "goal", "match")
+CHALLENGE_ID = "0123456789abcdef0123456789abcdef"
+OTHER_CHALLENGE_ID = "fedcba9876543210fedcba9876543210"
+CANCELED_CHALLENGE_ID = "00112233445566778899aabbccddeeff"
+
+
+def wire_challenge_packet(tag, request_id):
+    # [union tag, [UDP version, GUID N request ID]]
+    assert len(request_id) == 32 and all(char in "0123456789abcdef" for char in request_id)
+    return b"\x92" + bytes([tag]) + b"\x92\x06\xd9\x20" + request_id.encode("ascii")
+
+
+HELLO_PACKET = wire_challenge_packet(2, CHALLENGE_ID)
 
 
 def msgpack_helper(operation, payload=b""):
@@ -32,6 +46,12 @@ def msgpack_helper(operation, payload=b""):
         input=base64.b64encode(payload), capture_output=True, check=True, cwd=ROOT,
     )
     return json.loads(result.stdout)
+
+
+def expect_challenge_reply(sock, tag, request_id):
+    sock.settimeout(2)
+    packet, _ = sock.recvfrom(1201)
+    assert msgpack_helper("decode", packet) == [tag, [6, request_id]], packet
 
 
 def control_packets():
@@ -44,7 +64,7 @@ def decode_snapshot(frame):
     values = msgpack_helper("decode", frame[1])
     assert isinstance(values, list) and len(values) == len(SNAPSHOT_FIELDS), values
     snapshot = dict(zip(SNAPSHOT_FIELDS, values))
-    assert snapshot["version"] == 2, snapshot
+    assert snapshot["version"] == 3, snapshot
     snapshot["role"] = ROLES[snapshot["role"]]
     snapshot["connection"] = CONNECTIONS[snapshot["connection"]]
     snapshot["phase"] = PHASES[snapshot["phase"]]
@@ -124,6 +144,24 @@ def wait_until(label, check, seconds=8):
             pass
         time.sleep(0.1)
     raise AssertionError(f"Timed out: {label}")
+
+
+def wait_for_challenge():
+    def pending():
+        host = request(5180, "/api/status")
+        guest = request(5181, "/api/status")
+        return (host, guest) if (host["connection"] == "incomingChallenge"
+                                 and guest["connection"] == "awaitingAcceptance") else None
+
+    return wait_until("incoming challenge and outgoing pending request", pending)
+
+
+def accept_challenge():
+    wait_for_challenge()
+    request(5180, "/api/accept", {})
+    wait_until("challenge accepted and UDP handshake complete", lambda:
+               request(5180, "/api/status")["connection"] == "connected"
+               and request(5181, "/api/status")["connection"] == "connected")
 
 
 def websocket(port):
@@ -389,7 +427,7 @@ try:
     # A datagram with a valid Hello prefix must still be rejected in full when
     # the receive buffer truncates it at the packet-size boundary.
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
-        hello_prefix = bytes([0x92, 0x02, 0x91, 0x05])
+        hello_prefix = HELLO_PACKET
         payload = hello_prefix + bytes(1201 - len(hello_prefix))
         assert sender.sendto(payload, ("127.0.0.1", 47888)) == len(payload)
     time.sleep(0.2)
@@ -401,12 +439,64 @@ try:
         mdns_hosts = wait_until("mDNS finds waiting host",
                                 discover_waiting_host, seconds=10)
         print(f"PASS: mDNS found host on 47888: {mdns_hosts}")
+
+    # UDP may reorder a guest's cancellation ahead of its initial Hello.
+    # A late Hello with the same source and request ID must stay rejected.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as challenger:
+        challenger.bind(("127.0.0.1", 0))
+        challenger.sendto(wire_challenge_packet(12, CANCELED_CHALLENGE_ID),
+                          ("127.0.0.1", 47888))
+        time.sleep(0.1)
+        challenger.sendto(wire_challenge_packet(2, CANCELED_CHALLENGE_ID),
+                          ("127.0.0.1", 47888))
+        expect_challenge_reply(challenger, 11, CANCELED_CHALLENGE_ID)
+        assert request(5180, "/api/status")["connection"] == "waiting"
+
+    # A second decline must not cause a retry of the first challenge to reopen it.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as challenger:
+        challenger.bind(("127.0.0.1", 0))
+        for request_id in (CHALLENGE_ID, OTHER_CHALLENGE_ID):
+            challenger.sendto(wire_challenge_packet(2, request_id),
+                              ("127.0.0.1", 47888))
+            expect_challenge_reply(challenger, 10, request_id)
+            wait_until("host sees raw incoming challenge", lambda:
+                       request(5180, "/api/status")["connection"] == "incomingChallenge")
+            declined_raw = request(5180, "/api/decline", {})
+            assert declined_raw["connection"] == "waiting", declined_raw
+            expect_challenge_reply(challenger, 11, request_id)
+        challenger.sendto(wire_challenge_packet(2, CHALLENGE_ID),
+                          ("127.0.0.1", 47888))
+        expect_challenge_reply(challenger, 11, CHALLENGE_ID)
+        assert request(5180, "/api/status")["connection"] == "waiting"
+
     guest = request(5181, "/api/join", {"address": "127.0.0.1", "port": 47888})
     assert guest["role"] == "guest" and guest["connection"] == "connecting", guest
+    pending_host, pending_guest = wait_for_challenge()
+    assert pending_host["phase"] == "waiting" and pending_guest["phase"] == "waiting"
+    assert pending_host["tick"] == 0 and pending_guest["tick"] == 0
+    time.sleep(0.2)
+    still_pending_host, still_pending_guest = wait_for_challenge()
+    assert still_pending_host["tick"] == 0 and still_pending_guest["tick"] == 0
+    assert still_pending_host["phase"] == "waiting" and still_pending_guest["phase"] == "waiting"
+    with websocket(5180) as incoming_ws, websocket(5181) as outgoing_ws:
+        assert decode_snapshot(recv_frame(incoming_ws))["connection"] == "incomingChallenge"
+        assert decode_snapshot(recv_frame(outgoing_ws))["connection"] == "awaitingAcceptance"
 
-    wait_until("UDP handshake", lambda:
-               request(5180, "/api/status")["connection"] == "connected"
-               and request(5181, "/api/status")["connection"] == "connected")
+    # A guest can withdraw an unanswered request; the host remains available.
+    cancelled = request(5181, "/api/leave", {})
+    assert cancelled["role"] == "none" and cancelled["connection"] == "idle", cancelled
+    wait_until("cancelled challenge leaves host waiting", lambda:
+               request(5180, "/api/status")["connection"] == "waiting")
+
+    request(5181, "/api/join", {"address": "127.0.0.1", "port": 47888})
+    wait_for_challenge()
+    declined = request(5180, "/api/decline", {})
+    assert declined["role"] == "host" and declined["connection"] == "waiting", declined
+    wait_until("declined challenge returns guest to idle", lambda:
+               request(5181, "/api/status")["connection"] == "idle")
+
+    request(5181, "/api/join", {"address": "127.0.0.1", "port": 47888})
+    accept_challenge()
     if require_mdns_loopback:
         wait_for_mdns_host_absence()
     # Once connected, a datagram from a third socket must not be treated as the peer.
@@ -414,7 +504,7 @@ try:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as stranger:
         stranger.bind(("127.0.0.1", 0))
         stranger.settimeout(0.2)
-        stranger.sendto(bytes([0x92, 0x02, 0x91, 0x05]), ("127.0.0.1", 47888))
+        stranger.sendto(HELLO_PACKET, ("127.0.0.1", 47888))
         try:
             stranger.recvfrom(1201)
             raise AssertionError("connected host replied to an unknown UDP sender")
@@ -445,9 +535,9 @@ try:
 
         send_text(host_ws, '{"axis":1}')
         send_binary(host_ws, b"\x90")  # Wrong array shape.
-        send_binary(host_ws, b"\x92\x01\x01")  # Wrong protocol version.
-        send_binary(host_ws, b"\x92\x02\xa2up")  # Non-numeric axis.
-        send_binary(host_ws, b"\x92\x02\x02")  # Axis outside -1..1.
+        send_binary(host_ws, b"\x92\x02\x01")  # Wrong protocol version.
+        send_binary(host_ws, b"\x92\x03\xa2up")  # Non-numeric axis.
+        send_binary(host_ws, b"\x92\x03\x02")  # Axis outside -1..1.
         send_binary(host_ws, b"\xc1")  # Reserved MessagePack prefix.
         send_binary(host_ws, controls[1] + b"\x00")  # A second packed value.
         send_binary(host_ws, controls[1] + bytes(257 - len(controls[1])))
@@ -496,9 +586,7 @@ try:
     with UdpRelay(47888) as relay:
         rejoining = request(5181, "/api/join", {"address": "127.0.0.1", "port": relay.port})
         assert rejoining["role"] == "guest" and rejoining["connection"] == "connecting", rejoining
-        wait_until("UDP reconnect after receiver cancellation", lambda:
-                   request(5180, "/api/status")["connection"] == "connected"
-                   and request(5181, "/api/status")["connection"] == "connected")
+        accept_challenge()
         rejoined_tick = request(5181, "/api/status")["tick"]
         wait_until("state sync after reconnect", lambda:
                    request(5181, "/api/status")["tick"] >= rejoined_tick + 10)
@@ -585,9 +673,7 @@ try:
 
         manual_rejoin = request(5181, "/api/join", {"address": "127.0.0.1", "port": relay.port})
         assert manual_rejoin["role"] == "guest", manual_rejoin
-        wait_until("manual join after host leave", lambda:
-                   request(5180, "/api/status")["connection"] == "connected"
-                   and request(5181, "/api/status")["connection"] == "connected")
+        accept_challenge()
 
         # Simulate a lost Bye: the guest must also leave after peer timeout,
         # rather than automatically joining the next game on the same port.
@@ -603,16 +689,18 @@ try:
         assert still_waiting["connection"] == "waiting", still_waiting
         assert still_idle["role"] == "none" and still_idle["connection"] == "idle", still_idle
 
-        # The host may accept Hello while every Welcome is lost. Its Bye must
-        # still end the guest's pending connection, without a session ID.
+        # If every Welcome is lost after acceptance, the host's Bye must still
+        # end the guest's pending connection, without a session ID.
         relay.drop_welcome.set()
         pending_join = request(5181, "/api/join", {"address": "127.0.0.1", "port": relay.port})
         assert pending_join["role"] == "guest", pending_join
-        wait_until("host accepts Hello without delivering Welcome", lambda:
+        wait_for_challenge()
+        request(5180, "/api/accept", {})
+        wait_until("host accepts challenge without delivering Welcome", lambda:
                    request(5180, "/api/status")["connection"] == "connected"
                    and relay.dropped_welcome_packets >= 1)
         pending_guest = request(5181, "/api/status")
-        assert pending_guest["role"] == "guest" and pending_guest["connection"] == "connecting", pending_guest
+        assert pending_guest["role"] == "guest" and pending_guest["connection"] == "awaitingAcceptance", pending_guest
         request(5180, "/api/leave", {})
         pending_guest_left = wait_until("pending guest leaves after host Bye", guest_has_left)
         assert pending_guest_left["phase"] == "waiting", pending_guest_left
@@ -630,9 +718,7 @@ try:
         assert "::1" in ipv6_host["localAddresses"], ipv6_host
         ipv6_guest = request(5181, "/api/join", {"address": "::1", "port": 47888})
         assert ipv6_guest["role"] == "guest", ipv6_guest
-        wait_until("IPv6 UDP handshake", lambda:
-                   request(5180, "/api/status")["connection"] == "connected"
-                   and request(5181, "/api/status")["connection"] == "connected")
+        accept_challenge()
         wait_until("IPv6 UDP state and RTT", lambda:
                    request(5181, "/api/status")["tick"] >= 10
                    and request(5180, "/api/status").get("pingMs") is not None
@@ -647,20 +733,16 @@ try:
         request(5180, "/api/leave", {})
     request(5180, "/api/host", {"port": 47888})
     request(5181, "/api/join", {"address": "127.0.0.1", "port": 47888})
-    wait_until("connected before guest SIGTERM", lambda:
-               request(5180, "/api/status")["connection"] == "connected"
-               and request(5181, "/api/status")["connection"] == "connected")
+    accept_challenge()
     terminate_connected_process(processes[1], 5181, 5180, "waiting", "host", "guest")
 
     processes[1] = launch(5181, logs[1])
     wait_until("restarted guest web server", lambda: request(5181, "/api/status"))
     request(5181, "/api/join", {"address": "127.0.0.1", "port": 47888})
-    wait_until("connected before host SIGTERM", lambda:
-               request(5180, "/api/status")["connection"] == "connected"
-               and request(5181, "/api/status")["connection"] == "connected")
+    accept_challenge()
     terminate_connected_process(processes[0], 5180, 5181, "idle", "none", "host")
 
-    print("PASS: static UI, discovery, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, binary MessagePack WebSocket snapshots, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, and graceful host/guest shutdown")
+    print("PASS: static UI, discovery, pending challenge acceptance/decline/cancel, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, binary MessagePack WebSocket snapshots, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, and graceful host/guest shutdown")
 finally:
     for process in processes:
         if process.poll() is None:

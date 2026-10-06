@@ -11,24 +11,54 @@ namespace LanPong;
 [Union(7, typeof(PingPacket))]
 [Union(8, typeof(PongPacket))]
 [Union(9, typeof(ByePacket))]
+[Union(10, typeof(ChallengePendingPacket))]
+[Union(11, typeof(ChallengeDeclinedPacket))]
+[Union(12, typeof(CancelChallengePacket))]
 [MessagePackObject]
 public abstract record WirePacket
 {
-    // Version 5 includes replayable game events in authoritative state packets.
-    public const int CurrentVersion = 5;
+    // Version 6 requires explicit acceptance before a challenge starts a match.
+    public const int CurrentVersion = 6;
 
     [Key(0)]
     public int Version { get; set; } = CurrentVersion;
 }
 
 [MessagePackObject]
-public sealed record HelloPacket : WirePacket;
+public sealed record HelloPacket : WirePacket
+{
+    [Key(1)]
+    public string? RequestId { get; init; }
+}
 
 [MessagePackObject]
 public sealed record WelcomePacket : WirePacket
 {
     [Key(1)]
     public string? SessionId { get; init; }
+    [Key(2)]
+    public string? RequestId { get; init; }
+}
+
+[MessagePackObject]
+public sealed record ChallengePendingPacket : WirePacket
+{
+    [Key(1)]
+    public string? RequestId { get; init; }
+}
+
+[MessagePackObject]
+public sealed record ChallengeDeclinedPacket : WirePacket
+{
+    [Key(1)]
+    public string? RequestId { get; init; }
+}
+
+[MessagePackObject]
+public sealed record CancelChallengePacket : WirePacket
+{
+    [Key(1)]
+    public string? RequestId { get; init; }
 }
 
 [MessagePackObject]
@@ -158,6 +188,12 @@ internal static class WirePacketCodec
         {
             var decoded = MessagePackSerializer.Deserialize<WirePacket>(data, Options);
             if (decoded is not { Version: WirePacket.CurrentVersion } ||
+                decoded is HelloPacket hello && !ValidRequestId(hello.RequestId) ||
+                decoded is WelcomePacket welcome &&
+                (string.IsNullOrEmpty(welcome.SessionId) || !ValidRequestId(welcome.RequestId)) ||
+                decoded is ChallengePendingPacket pending && !ValidRequestId(pending.RequestId) ||
+                decoded is ChallengeDeclinedPacket declined && !ValidRequestId(declined.RequestId) ||
+                decoded is CancelChallengePacket cancel && !ValidRequestId(cancel.RequestId) ||
                 decoded is InputPacket input &&
                 (input.Sequence < 0 || input.Tick <= 0 || input.RoundId < 0 ||
                  input.Axes is not { Length: >= 1 and <= NetworkConstants.InputRedundancyTicks } ||
@@ -179,6 +215,9 @@ internal static class WirePacketCodec
             return false;
         }
     }
+
+    private static bool ValidRequestId(string? requestId) =>
+        requestId is { Length: 32 } && Guid.TryParseExact(requestId, "N", out _);
 
     private static bool ValidEvents(GameEvent[] events, long sequence)
     {

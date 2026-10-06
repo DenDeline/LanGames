@@ -25,6 +25,8 @@ internal static class NetworkConstants
     public static readonly TimeSpan InputStaleAfter = TimeSpan.FromMilliseconds(350);
     public static readonly TimeSpan PeerIdleTimeout = TimeSpan.FromSeconds(5);
     public static readonly TimeSpan HelloRetryInterval = TimeSpan.FromMilliseconds(500);
+    public static readonly TimeSpan ChallengeLifetime = TimeSpan.FromMinutes(2);
+    public static readonly TimeSpan ChallengeConnectTimeout = TimeSpan.FromSeconds(10);
     public static readonly TimeSpan RestartRetryInterval = TimeSpan.FromMilliseconds(250);
 
     // Ping is the process-to-process UDP round trip shown in the UI, not input-to-screen latency.

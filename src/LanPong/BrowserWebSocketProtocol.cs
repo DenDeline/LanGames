@@ -6,7 +6,7 @@ namespace LanPong;
 /// <summary>The local browser WebSocket protocol, independent of the UDP wire protocol.</summary>
 internal static class BrowserWebSocketProtocol
 {
-    internal const int Version = 2;
+    internal const int Version = 3;
     internal const int SnapshotFieldCount = 21;
 
     // [version, role, connection, message, udpPort, localAddresses, peerAddress,

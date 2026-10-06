@@ -409,6 +409,35 @@ async function main() {
   renderView({ ...session.snapshot, role: "guest" }, false, false);
   assert.equal(ui.leftPlayer.textContent, "Соперник");
   assert.equal(ui.rightPlayer.textContent, "Вы");
+  renderView(
+    {
+      ...session.snapshot,
+      role: "host",
+      connection: "incomingChallenge",
+      peerAddress: "192.168.1.43:47777",
+      phase: "waiting",
+    },
+    false,
+    false,
+  );
+  assert.equal(ui.challengeRequest.hidden, false);
+  assert.equal(ui.challengePeer.textContent, "192.168.1.43:47777");
+  assert.equal(ui.acceptButton.disabled, false);
+  assert.equal(ui.declineButton.disabled, false);
+  assert.equal(ui.overlayTitle.textContent, "Примите вызов");
+  renderView(
+    { ...session.snapshot, role: "guest", connection: "awaitingAcceptance", phase: "waiting" },
+    false,
+    false,
+  );
+  assert.equal(ui.challengeRequest.hidden, true);
+  assert.equal(ui.leaveButton.textContent, "Отменить вызов");
+  assert.equal(ui.overlayTitle.textContent, "Ждём согласия");
+  assert.equal(parseSnapshot({ connection: "incomingChallenge" }).connection, "incomingChallenge");
+  assert.equal(
+    parseSnapshot({ connection: "awaitingAcceptance" }).connection,
+    "awaitingAcceptance",
+  );
   setTab("join");
   assert.equal(ui.hostPanel.hidden, true);
   assert.equal(ui.joinPanel.hidden, false);

@@ -110,7 +110,9 @@ h1 span {
     0 0 12px #66e8df99;
 }
 .connection-pill[data-state="waiting"] .status-dot,
-.connection-pill[data-state="connecting"] .status-dot {
+.connection-pill[data-state="connecting"] .status-dot,
+.connection-pill[data-state="incomingChallenge"] .status-dot,
+.connection-pill[data-state="awaitingAcceptance"] .status-dot {
   background: #f7c989;
   box-shadow: 0 0 0 4px #f7c98924;
 }

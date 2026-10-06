@@ -231,6 +231,8 @@ export function startGame(): void {
     if (port !== null && address) postAction("/api/join", { address, port });
   });
   ui.discoverButton.addEventListener("click", discoverHosts);
+  ui.acceptButton.addEventListener("click", () => postAction("/api/accept"));
+  ui.declineButton.addEventListener("click", () => postAction("/api/decline"));
   ui.restartButton.addEventListener("click", () => postAction("/api/restart"));
   ui.leaveButton.addEventListener("click", () => {
     input.clear();

@@ -1,5 +1,12 @@
 export type PeerRole = "none" | "host" | "guest";
-export type ConnectionState = "idle" | "waiting" | "connecting" | "connected" | "disconnected";
+export type ConnectionState =
+  | "idle"
+  | "waiting"
+  | "connecting"
+  | "connected"
+  | "incomingChallenge"
+  | "awaitingAcceptance"
+  | "disconnected";
 export type GamePhase = "waiting" | "countdown" | "playing" | "gameover";
 export type GameEventKind = "serve" | "paddle" | "wall" | "goal" | "match";
 
@@ -111,6 +118,8 @@ export function parseSnapshot(data: Record<string, unknown>): PongSnapshot {
       "waiting",
       "connecting",
       "connected",
+      "incomingChallenge",
+      "awaitingAcceptance",
       "disconnected",
     ])
       ? data.connection

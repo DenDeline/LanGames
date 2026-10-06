@@ -5,6 +5,8 @@ namespace LanPong.Tests;
 
 public sealed class WirePacketCodecTests
 {
+    private const string ChallengeId = "0123456789abcdef0123456789abcdef";
+
     [Test]
     public async Task EveryPacketType_RoundTripsWithItsStableUnionTag()
     {
@@ -46,7 +48,10 @@ public sealed class WirePacketCodecTests
     [Test]
     public async Task TryDeserialize_RejectsPreviousProtocolAndJson()
     {
-        var oldBinary = WirePacketCodec.Serialize(new HelloPacket { Version = WirePacket.CurrentVersion - 1 });
+        var oldBinary = WirePacketCodec.Serialize(new HelloPacket
+        {
+            Version = WirePacket.CurrentVersion - 1, RequestId = ChallengeId
+        });
         var oldJson = "{\"version\":1,\"type\":\"hello\"}"u8.ToArray();
         var oldFlatMessagePack = new byte[] { 0x92, 0x02, 0xa5, (byte)'h', (byte)'e', (byte)'l', (byte)'l', (byte)'o' };
 
@@ -67,11 +72,28 @@ public sealed class WirePacketCodecTests
     }
 
     [Test]
+    public async Task TryDeserialize_RejectsMissingOrMalformedChallengeRequestIds()
+    {
+        WirePacket[] invalid =
+        [
+            new HelloPacket(),
+            new HelloPacket { RequestId = "short" },
+            new WelcomePacket { SessionId = "session" },
+            new ChallengePendingPacket(),
+            new ChallengeDeclinedPacket(),
+            new CancelChallengePacket()
+        ];
+
+        foreach (var packet in invalid)
+            await Assert.That(WirePacketCodec.TryDeserialize(WirePacketCodec.Serialize(packet), out _)).IsFalse();
+    }
+
+    [Test]
     public async Task TryDeserialize_RejectsOversizedMalformedAndUnknownUnionTag()
     {
         var oversized = new byte[WirePacketCodec.MaxPacketBytes + 1];
         var malformed = new byte[] { 0x92, 0x05 };
-        var unknownTag = new byte[] { 0x92, 0x0a, 0x90 };
+        var unknownTag = new byte[] { 0x92, 0x0d, 0x90 };
 
         await Assert.That(WirePacketCodec.TryDeserialize(oversized, out _)).IsFalse();
         await Assert.That(WirePacketCodec.TryDeserialize(malformed, out _)).IsFalse();
@@ -184,8 +206,8 @@ public sealed class WirePacketCodecTests
 
     private static WirePacket[] CreatePackets() =>
     [
-        new HelloPacket(),
-        new WelcomePacket { SessionId = "session" },
+        new HelloPacket { RequestId = ChallengeId },
+        new WelcomePacket { SessionId = "session", RequestId = ChallengeId },
         new InputPacket
         {
             SessionId = "session", Sequence = 42, Tick = 123456,
@@ -205,7 +227,10 @@ public sealed class WirePacketCodecTests
         new RestartPacket { SessionId = "session", RequestId = "restart" },
         new PingPacket { SessionId = "session", Sequence = 43 },
         new PongPacket { SessionId = "session", Sequence = 43 },
-        new ByePacket { SessionId = "session" }
+        new ByePacket { SessionId = "session" },
+        new ChallengePendingPacket { RequestId = ChallengeId },
+        new ChallengeDeclinedPacket { RequestId = ChallengeId },
+        new CancelChallengePacket { RequestId = ChallengeId }
     ];
 
     private static async Task AssertPacketEquivalent(WirePacket original, WirePacket? decoded)

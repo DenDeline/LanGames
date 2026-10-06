@@ -20,10 +20,12 @@
   border-radius: 50%;
   background: #8594a6;
 }
-.live-indicator[data-state="connected"] {
+.live-indicator[data-state="connected"],
+.live-indicator[data-state="incomingChallenge"] {
   color: var(--cyan);
 }
-.live-indicator[data-state="connected"] i {
+.live-indicator[data-state="connected"] i,
+.live-indicator[data-state="incomingChallenge"] i {
   background: var(--cyan);
   box-shadow: 0 0 8px #66e8df;
 }
@@ -73,6 +75,36 @@
 }
 #ping-value {
   font-variant-numeric: tabular-nums;
+}
+.challenge-request {
+  margin: 0 0 17px;
+  padding: 15px;
+  border: 1px solid #537473;
+  border-radius: 10px;
+  background: #17373d77;
+}
+.challenge-request[hidden] {
+  display: none;
+}
+.challenge-label {
+  color: var(--cyan);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+.challenge-request p {
+  margin: 8px 0 13px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.challenge-actions {
+  display: flex;
+  gap: 8px;
+}
+.challenge-actions button {
+  flex: 1;
 }
 .session-actions {
   display: flex;

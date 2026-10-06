@@ -27,7 +27,9 @@ public sealed class PeerEnumWireTests
                      (ConnectionState.Idle, "idle"),
                      (ConnectionState.Waiting, "waiting"),
                      (ConnectionState.Connecting, "connecting"),
-                     (ConnectionState.Connected, "connected")
+                     (ConnectionState.Connected, "connected"),
+                     (ConnectionState.IncomingChallenge, "incomingChallenge"),
+                     (ConnectionState.AwaitingAcceptance, "awaitingAcceptance")
                  })
         {
             using var json = JsonDocument.Parse(JsonSerializer.Serialize(Snapshot(PeerRole.Host, connection, GamePhase.Waiting), WebJsonOptions));

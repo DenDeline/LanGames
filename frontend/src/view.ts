@@ -25,6 +25,10 @@ export const ui = {
   pingRow: element("ping-row"),
   pingValue: element("ping-value"),
   sessionMessage: element("session-message"),
+  challengeRequest: element("challenge-request"),
+  challengePeer: element("challenge-peer"),
+  acceptButton: element<HTMLButtonElement>("accept-button"),
+  declineButton: element<HTMLButtonElement>("decline-button"),
   liveIndicator: element("live-indicator"),
   liveLabel: element("live-label"),
   hostTab: element<HTMLButtonElement>("tab-host"),
@@ -98,6 +102,10 @@ function connectionText(snapshot: PongSnapshot): string {
       return "Ожидаем соперника";
     case "connecting":
       return "Подключаемся";
+    case "incomingChallenge":
+      return "Вызов получен";
+    case "awaitingAcceptance":
+      return "Ждём согласия";
     case "connected":
       return "Игроки на связи";
     case "disconnected":
@@ -145,6 +153,12 @@ function overlayContent(snapshot: PongSnapshot): [string, string, string] | null
   if (snapshot.connection === "connecting") {
     return ["Подключение", "Подключаемся", "Ждём ответ друга…"];
   }
+  if (snapshot.connection === "incomingChallenge") {
+    return ["Вызов на матч", "Примите вызов", "Решите, хотите ли сыграть с этим соперником."];
+  }
+  if (snapshot.connection === "awaitingAcceptance") {
+    return ["Вызов отправлен", "Ждём согласия", "Матч начнётся, когда друг примет вызов."];
+  }
   return ["Ожидание", "Ждём друга", "Передайте другу адрес и порт."];
 }
 
@@ -191,6 +205,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   lastUiSignature = uiSignature;
   const inGame = snapshot.role === "host" || snapshot.role === "guest";
   const connected = snapshot.connection === "connected";
+  const incomingChallenge = snapshot.role === "host" && snapshot.connection === "incomingChallenge";
   const status = connectionText(snapshot);
 
   ui.connectionPill.dataset.state = snapshot.connection;
@@ -223,6 +238,10 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
     ui.sessionMessage,
     snapshot.message || (inGame ? status + "." : "Создайте игру или присоединитесь к сопернику."),
   );
+  ui.challengeRequest.hidden = !incomingChallenge;
+  if (incomingChallenge) writeText(ui.challengePeer, snapshot.peerAddress || "Соперник");
+  ui.acceptButton.disabled = busy || !incomingChallenge;
+  ui.declineButton.disabled = busy || !incomingChallenge;
   writeText(ui.leftScore, Math.max(0, Math.trunc(Number(snapshot.leftScore) || 0)));
   writeText(ui.rightScore, Math.max(0, Math.trunc(Number(snapshot.rightScore) || 0)));
   writeText(
@@ -252,6 +271,12 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   ui.peerAddress.disabled = busy || inGame;
   ui.restartButton.disabled = busy || !connected || snapshot.phase !== "gameover";
   ui.leaveButton.disabled = busy || !inGame;
+  writeText(
+    ui.leaveButton,
+    snapshot.connection === "awaitingAcceptance" || snapshot.connection === "connecting"
+      ? "Отменить вызов"
+      : "Покинуть игру",
+  );
   ui.shareBox.hidden = snapshot.role !== "host";
   writeText(ui.sharePort, snapshot.udpPort || Number(ui.hostPort.value) || DEFAULT_UDP_PORT);
   if (snapshot.role === "host") renderAddresses(snapshot);

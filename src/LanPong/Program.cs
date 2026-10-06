@@ -51,6 +51,32 @@ app.MapPost("/api/leave", async () =>
     return Results.Ok(peer.Snapshot());
 });
 
+app.MapPost("/api/accept", async () =>
+{
+    try
+    {
+        await peer.AcceptChallengeAsync();
+        return Results.Ok(peer.Snapshot());
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
+app.MapPost("/api/decline", async () =>
+{
+    try
+    {
+        await peer.DeclineChallengeAsync();
+        return Results.Ok(peer.Snapshot());
+    }
+    catch (InvalidOperationException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
 app.MapPost("/api/restart", () =>
 {
     try

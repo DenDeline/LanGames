@@ -28,5 +28,9 @@ public enum ConnectionState
     [JsonStringEnumMemberName("connecting")]
     Connecting = 2,
     [JsonStringEnumMemberName("connected")]
-    Connected = 3
+    Connected = 3,
+    [JsonStringEnumMemberName("incomingChallenge")]
+    IncomingChallenge = 4,
+    [JsonStringEnumMemberName("awaitingAcceptance")]
+    AwaitingAcceptance = 5
 }
