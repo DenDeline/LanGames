@@ -44,12 +44,16 @@
   color: var(--text);
   box-shadow: 0 2px 8px #03091140;
 }
-.tab-panel label {
+.tab-panel label,
+.nickname-field label {
   display: block;
   margin-bottom: 8px;
   color: #cdd8e5;
   font-size: 12px;
   font-weight: 700;
+}
+.nickname-field {
+  margin-bottom: 20px;
 }
 .input-row,
 .discover-row {
@@ -138,6 +142,7 @@ button:disabled {
 }
 .share-box[hidden],
 .discovery-results[hidden],
+.selected-host[hidden],
 .tab-panel[hidden] {
   display: none;
 }
@@ -149,6 +154,24 @@ button:disabled {
   font-weight: 800;
   letter-spacing: 0.11em;
   text-transform: uppercase;
+}
+.share-nickname {
+  display: block;
+  overflow-wrap: anywhere;
+  font-size: 18px;
+}
+.manual-share {
+  margin-top: 12px;
+  border-top: 1px solid #396066;
+  padding-top: 10px;
+  color: #b5dcdb;
+  font-size: 11px;
+}
+.manual-share summary {
+  cursor: pointer;
+}
+.manual-share .address-list {
+  margin-top: 10px;
 }
 .address-list {
   display: flex;
@@ -190,8 +213,38 @@ button:disabled {
 .discovery-result:hover {
   background: #214351;
 }
+.discovery-result.is-selected {
+  border-color: var(--cyan);
+  background: #214351;
+}
 .discovery-result strong {
   color: var(--cyan);
+}
+.selected-host {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: -7px 0 16px;
+  padding: 9px 10px;
+  border: 1px solid #396066;
+  border-radius: 7px;
+  background: #17373d77;
+  color: #b5dcdb;
+  font-size: 11px;
+}
+.selected-host strong {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.selected-host button {
+  flex: none;
+  padding: 4px 0 4px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--cyan);
+  font: inherit;
+  font-weight: 700;
 }
 .discovery-empty {
   margin: 0;

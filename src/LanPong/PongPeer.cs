@@ -47,6 +47,8 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
     private PeerRole _role = PeerRole.None;
     private ConnectionState _connection = ConnectionState.Idle;
     private string _message = "Создайте игру или подключитесь к другу.";
+    private string _localNickname = $"Игрок {Random.Shared.Next(1000, 10000)}";
+    private string? _peerNickname;
     private int _udpPort;
     private long _outSequence;
     private long _lastInputSentTick;
@@ -83,7 +85,8 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
                 state.LeftY, state.RightY, state.BallX, state.BallY,
                 state.BallVx, state.BallVy,
                 state.LeftScore, state.RightScore, state.Phase,
-                state.Countdown, state.TickNumber, state.RoundId, _ping.PingMs, events);
+                state.Countdown, state.TickNumber, state.RoundId, _ping.PingMs, events,
+                _localNickname, _peerNickname);
         }
     }
 
@@ -98,9 +101,10 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
         lock (_gate) _controllers.Remove(controllerId);
     }
 
-    public async Task HostAsync(int port)
+    public async Task HostAsync(int port, string nickname)
     {
         ValidatePort(port);
+        var selectedNickname = PlayerNickname.Normalize(nickname);
         await _transition.WaitAsync();
         try
         {
@@ -118,20 +122,23 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
                 }
                 _socket = socket;
                 _socketStop = stop;
+                _localNickname = selectedNickname;
                 _role = PeerRole.Host;
                 _connection = ConnectionState.Waiting;
-                _message = "Ожидание второго игрока. Передайте ему ваш IP-адрес.";
+                _message = "Ожидание второго игрока. Он может найти вашу игру в сети по нику.";
                 _udpPort = port;
-                _mdns.SetHostPort(port);
+                _mdns.SetHostPort(port, _localNickname);
                 _receiveTask = Task.Run(() => ReceiveAsync(socket, stop));
             }
         }
         finally { _transition.Release(); }
     }
 
-    public async Task JoinAsync(string address, int port, CancellationToken cancellationToken = default)
+    public async Task JoinAsync(string address, int port, string nickname,
+        CancellationToken cancellationToken = default)
     {
         ValidatePort(port);
+        var selectedNickname = PlayerNickname.Normalize(nickname);
         if (string.IsNullOrWhiteSpace(address)) throw new ArgumentException("Введите IP-адрес создателя игры.");
         cancellationToken.ThrowIfCancellationRequested();
         ThrowIfStopping();
@@ -179,6 +186,7 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
                 }
                 _socket = socket;
                 _socketStop = stop;
+                _localNickname = selectedNickname;
                 _targetEndpoint = new IPEndPoint(targetAddress, port);
                 _targetSocketAddress = _targetEndpoint.Serialize();
                 _outgoingChallengeId = Guid.NewGuid();
@@ -243,7 +251,11 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
             _game.StartMatch();
             _hostTimeline.Reset();
             _mdns.SetHostPort(null);
-            welcome = new WelcomePacket { SessionId = _sessionId.Value, RequestId = _acceptedChallengeId.Value };
+            welcome = new WelcomePacket
+            {
+                SessionId = _sessionId.Value, RequestId = _acceptedChallengeId.Value,
+                Nickname = _localNickname
+            };
         }
         await SendQuietlyAsync(socket, destination, welcome, _lifetime.Token);
     }

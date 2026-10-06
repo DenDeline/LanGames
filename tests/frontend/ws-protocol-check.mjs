@@ -3,7 +3,7 @@ import { encode } from "@msgpack/msgpack";
 import { decodeWsSnapshot, encodeWsAxis } from "../../.artifacts/frontend-test/wsProtocol.js";
 
 const snapshot = [
-  3,
+  4,
   1,
   3,
   "Игра началась!",
@@ -30,16 +30,18 @@ const snapshot = [
     ["123454:0:4", 4, 123454, 1, 0.45],
     ["123455:0:5", 5, 123455, 0.5, 0.5],
   ],
+  "Лиса",
+  "Кот",
 ];
 
 function frame(value) {
   return Uint8Array.from(encode(value)).buffer;
 }
 
-assert.equal(snapshot.length, 21);
-assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(-1))), [0x92, 3, 0xff]);
-assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(0))), [0x92, 3, 0]);
-assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(1))), [0x92, 3, 1]);
+assert.equal(snapshot.length, 23);
+assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(-1))), [0x92, 4, 0xff]);
+assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(0))), [0x92, 4, 0]);
+assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(1))), [0x92, 4, 1]);
 assert.throws(() => encodeWsAxis(2), RangeError);
 assert.throws(() => encodeWsAxis(0.5), RangeError);
 
@@ -51,6 +53,8 @@ assert.deepEqual(decoded, {
   udpPort: 47777,
   localAddresses: ["192.168.1.42"],
   peerAddress: "192.168.1.43:47777",
+  localNickname: "Лиса",
+  peerNickname: "Кот",
   leftY: 0.425,
   rightY: 0.563,
   ballX: 0.712375,
@@ -85,8 +89,10 @@ idle[2] = 0;
 idle[6] = null;
 idle[15] = 0;
 idle[19] = null;
+idle[22] = null;
 assert.equal(decodeWsSnapshot(frame(idle))?.role, "none");
 assert.equal(decodeWsSnapshot(frame(idle))?.peerAddress, null);
+assert.equal(decodeWsSnapshot(frame(idle))?.peerNickname, null);
 assert.equal(decodeWsSnapshot(frame(idle))?.pingMs, null);
 
 for (const [ordinal, name] of [
@@ -105,7 +111,7 @@ function reject(index, value) {
   assert.equal(decodeWsSnapshot(frame(changed)), null);
 }
 
-reject(0, 2); // Unsupported previous protocol version.
+reject(0, 3); // Unsupported previous protocol version.
 reject(1, 3); // Unknown role enum.
 reject(2, "connected"); // JSON enum is not valid on the binary socket.
 reject(2, 6); // Unknown connection state.
@@ -114,6 +120,9 @@ reject(5, ["127.0.0.1", 5]); // Invalid address element.
 reject(7, "0.5"); // Invalid coordinate.
 reject(17, -1); // Invalid tick.
 reject(20, null); // Events must be an array.
+reject(21, ""); // The local nickname is required.
+reject(21, "x".repeat(25)); // Nicknames are bounded.
+reject(22, 42); // The peer nickname is a string or null.
 reject(
   20,
   Array.from({ length: 13 }, (_, index) => [`event-${index}`, 1, 1, 0.5, 0.5]),

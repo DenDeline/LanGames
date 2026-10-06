@@ -145,7 +145,7 @@ internal sealed partial class PongPeer
                 _outgoingChallengeId is { } challengeId)
             {
                 _lastHelloSent = now;
-                actions.Packet = new HelloPacket { RequestId = challengeId };
+                actions.Packet = new HelloPacket { RequestId = challengeId, Nickname = _localNickname };
             }
             accumulatedTime = 0;
             return;

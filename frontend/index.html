@@ -96,6 +96,18 @@
               <p>Оба устройства — в одной сети.</p>
             </div>
 
+            <div class="nickname-field">
+              <label for="player-nickname">Ваш ник</label>
+              <input
+                id="player-nickname"
+                type="text"
+                maxlength="24"
+                placeholder="Как вас назвать?"
+                autocomplete="nickname"
+                required
+              />
+            </div>
+
             <div class="tab-list" role="tablist" aria-label="Способ подключения">
               <button
                 class="tab is-active"
@@ -137,9 +149,13 @@
                 </div>
               </form>
               <div class="share-box" id="share-box" hidden>
-                <span class="share-label">Адрес для друга</span>
-                <div id="share-addresses" class="address-list"></div>
-                <small>Порт: <strong id="share-port">47777</strong></small>
+                <span class="share-label">Вашу игру найдут по нику</span>
+                <strong id="share-nickname" class="share-nickname">—</strong>
+                <details class="manual-share">
+                  <summary>Адрес и порт для ручного подключения</summary>
+                  <div id="share-addresses" class="address-list"></div>
+                  <small>Порт: <strong id="share-port">47777</strong></small>
+                </details>
               </div>
             </div>
 
@@ -151,14 +167,13 @@
               hidden
             >
               <form id="join-form">
-                <label for="peer-address">Адрес друга</label>
+                <label for="peer-address">Адрес друга (вручную)</label>
                 <div class="discover-row">
                   <input
                     id="peer-address"
                     name="address"
                     type="text"
-                    placeholder="IPv4 или IPv6"
-                    required
+                    placeholder="IP-адрес или имя компьютера"
                     autocomplete="off"
                     spellcheck="false"
                   />
@@ -172,6 +187,12 @@
                   </button>
                 </div>
                 <div id="discovery-results" class="discovery-results" hidden></div>
+                <div id="selected-host" class="selected-host" hidden>
+                  <span>Выбрана игра: <strong id="selected-host-name"></strong></span>
+                  <button id="clear-selected-host" type="button" aria-label="Выбрать другую игру">
+                    Изменить
+                  </button>
+                </div>
                 <label for="join-port">Порт</label>
                 <div class="input-row">
                   <input

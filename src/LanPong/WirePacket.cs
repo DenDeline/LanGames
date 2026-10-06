@@ -19,8 +19,8 @@ namespace LanPong;
 [MessagePackObject]
 public abstract record WirePacket
 {
-    // Version 7 encodes peer IDs as native 16-byte GUID values.
-    public const int CurrentVersion = 7;
+    // Version 8 includes bounded player nicknames in the handshake.
+    public const int CurrentVersion = 8;
 
     [Key(0)]
     public int Version { get; set; } = CurrentVersion;
@@ -31,6 +31,8 @@ public sealed record HelloPacket : WirePacket
 {
     [Key(1)]
     public Guid RequestId { get; init; }
+    [Key(2)]
+    public required string Nickname { get; init; }
 }
 
 [MessagePackObject]
@@ -40,6 +42,8 @@ public sealed record WelcomePacket : WirePacket
     public Guid SessionId { get; init; }
     [Key(2)]
     public Guid RequestId { get; init; }
+    [Key(3)]
+    public required string Nickname { get; init; }
 }
 
 [MessagePackObject]
@@ -47,6 +51,8 @@ public sealed record ChallengePendingPacket : WirePacket
 {
     [Key(1)]
     public Guid RequestId { get; init; }
+    [Key(2)]
+    public required string Nickname { get; init; }
 }
 
 [MessagePackObject]
@@ -193,10 +199,13 @@ internal static class WirePacketCodec
         {
             var decoded = MessagePackSerializer.Deserialize<WirePacket>(data, Options);
             if (decoded is not { Version: WirePacket.CurrentVersion } ||
-                decoded is HelloPacket hello && hello.RequestId == Guid.Empty ||
+                decoded is HelloPacket hello &&
+                (hello.RequestId == Guid.Empty || !PlayerNickname.IsValid(hello.Nickname)) ||
                 decoded is WelcomePacket welcome &&
-                (welcome.SessionId == Guid.Empty || welcome.RequestId == Guid.Empty) ||
-                decoded is ChallengePendingPacket pending && pending.RequestId == Guid.Empty ||
+                (welcome.SessionId == Guid.Empty || welcome.RequestId == Guid.Empty ||
+                 !PlayerNickname.IsValid(welcome.Nickname)) ||
+                decoded is ChallengePendingPacket pending &&
+                (pending.RequestId == Guid.Empty || !PlayerNickname.IsValid(pending.Nickname)) ||
                 decoded is ChallengeDeclinedPacket declined && declined.RequestId == Guid.Empty ||
                 decoded is CancelChallengePacket cancel && cancel.RequestId == Guid.Empty ||
                 decoded is InputPacket input &&
@@ -264,6 +273,8 @@ public sealed record PongSnapshot(
     long Tick,
     int RoundId,
     double? PingMs,
-    GameEvent[] RecentEvents);
+    GameEvent[] RecentEvents,
+    string LocalNickname,
+    string? PeerNickname);
 
-public sealed record DiscoveredHost(string Address, int Port);
+public sealed record DiscoveredHost(string Address, int Port, string Nickname);

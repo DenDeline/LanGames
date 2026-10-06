@@ -10,7 +10,7 @@ switch (process.argv[2]) {
   }
   case "encode-controls": {
     const controls = Object.fromEntries(
-      [-1, 0, 1].map((axis) => [axis, Buffer.from(encode([3, axis])).toString("base64")]),
+      [-1, 0, 1].map((axis) => [axis, Buffer.from(encode([4, axis])).toString("base64")]),
     );
     process.stdout.write(JSON.stringify(controls));
     break;

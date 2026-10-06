@@ -28,6 +28,7 @@ public sealed class MdnsPacketCodecTests
         var txt = message.Records.Single(record => record.Type == MdnsPacketCodec.Txt);
         await Assert.That(txt.Name).IsEqualTo(ptr.Target);
         await Assert.That(txt.Version).IsEqualTo(5);
+        await Assert.That(txt.Nickname).IsNull();
 
         var address = message.Records.Single(record => record.Type == MdnsPacketCodec.A);
         await Assert.That(address.Name).IsEqualTo(srv.Target);
@@ -40,7 +41,7 @@ public sealed class MdnsPacketCodecTests
     {
         var bytes = MdnsPacketCodec.Advertisement("_lanpong._udp.local.",
             "Game._lanpong._udp.local.", "host.local.", 47888,
-            [IPAddress.Parse("192.0.2.44")], ttl: 0);
+            [IPAddress.Parse("192.0.2.44")], ttl: 0, nickname: "Хозяин");
 
         await Assert.That(MdnsPacketCodec.TryParse(bytes, out var message)).IsTrue();
         await Assert.That(message.IsResponse).IsTrue();
@@ -50,6 +51,8 @@ public sealed class MdnsPacketCodecTests
             .IsEqualTo(47888);
         await Assert.That(message.Records.Single(record => record.Type == MdnsPacketCodec.Txt).Version)
             .IsEqualTo(WirePacket.CurrentVersion);
+        await Assert.That(message.Records.Single(record => record.Type == MdnsPacketCodec.Txt).Nickname)
+            .IsEqualTo("Хозяин");
     }
 
     [Test]
@@ -58,7 +61,8 @@ public sealed class MdnsPacketCodecTests
         var ipv4 = IPAddress.Parse("192.0.2.44");
         var ipv6 = IPAddress.Parse("2001:db8::44");
         var bytes = MdnsPacketCodec.Advertisement("_lanpong._udp.local.",
-            "Game._lanpong._udp.local.", "host.local.", 47888, [ipv4, ipv6], ttl: 120);
+            "Game._lanpong._udp.local.", "host.local.", 47888, [ipv4, ipv6], ttl: 120,
+            nickname: "Игрок 😀");
 
         await Assert.That(MdnsPacketCodec.TryParse(bytes, out var message)).IsTrue();
         await Assert.That(message.Records.Count).IsEqualTo(5);
@@ -66,6 +70,8 @@ public sealed class MdnsPacketCodecTests
             .IsEqualTo(ipv4);
         await Assert.That(message.Records.Single(record => record.Type == MdnsPacketCodec.Aaaa).Address)
             .IsEqualTo(ipv6);
+        await Assert.That(message.Records.Single(record => record.Type == MdnsPacketCodec.Txt).Nickname)
+            .IsEqualTo("Игрок 😀");
         await Assert.That(message.Records.All(record => record.Ttl == 120)).IsTrue();
     }
 

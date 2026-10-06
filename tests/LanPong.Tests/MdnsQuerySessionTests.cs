@@ -8,6 +8,7 @@ public sealed class MdnsQuerySessionTests
     private const string OwnInstance = "Own._lanpong._udp.local.";
     private const string PeerInstance = "Peer._lanpong._udp.local.";
     private const string PeerHost = "peer.local.";
+    private const string PeerNickname = "Друг";
     private static readonly IPAddress Source = IPAddress.Parse("192.168.1.44");
 
     [Test]
@@ -34,7 +35,7 @@ public sealed class MdnsQuerySessionTests
 
         var hosts = session.GetResults();
         await Assert.That(hosts.Count).IsEqualTo(1);
-        await Assert.That(hosts[0]).IsEqualTo(new DiscoveredHost(address.ToString(), 47888));
+        await Assert.That(hosts[0]).IsEqualTo(new DiscoveredHost(address.ToString(), 47888, PeerNickname));
     }
 
     [Test]
@@ -73,7 +74,26 @@ public sealed class MdnsQuerySessionTests
 
         var hosts = session.GetResults();
         await Assert.That(hosts.Count).IsEqualTo(1);
-        await Assert.That(hosts[0]).IsEqualTo(new DiscoveredHost(Source.ToString(), 47888));
+        await Assert.That(hosts[0]).IsEqualTo(new DiscoveredHost(Source.ToString(), 47888, PeerNickname));
+    }
+
+    [Test]
+    public async Task GetResults_KeepsNicknameWithItsOwnAddressAndPort()
+    {
+        const string secondInstance = "Second._lanpong._udp.local.";
+        const string secondHost = "second.local.";
+        var secondAddress = IPAddress.Parse("192.168.1.45");
+        var session = NewSession(_ => true);
+
+        AddInstance(session, PeerInstance, PeerHost, 47888, nickname: "Первый");
+        AddInstance(session, secondInstance, secondHost, 47889, nickname: "Второй");
+        session.Observe(Address(PeerHost, Source), Source);
+        session.Observe(Address(secondHost, secondAddress), secondAddress);
+
+        var hosts = session.GetResults();
+        await Assert.That(hosts.Count).IsEqualTo(2);
+        await Assert.That(hosts.Contains(new DiscoveredHost(Source.ToString(), 47888, "Первый"))).IsTrue();
+        await Assert.That(hosts.Contains(new DiscoveredHost(secondAddress.ToString(), 47889, "Второй"))).IsTrue();
     }
 
     [Test]
@@ -112,7 +132,7 @@ public sealed class MdnsQuerySessionTests
 
         var hosts = session.GetResults();
         await Assert.That(hosts.Count).IsEqualTo(1);
-        await Assert.That(hosts[0]).IsEqualTo(new DiscoveredHost(source.ToString(), 47888));
+        await Assert.That(hosts[0]).IsEqualTo(new DiscoveredHost(source.ToString(), 47888, PeerNickname));
     }
 
     [Test]
@@ -128,7 +148,7 @@ public sealed class MdnsQuerySessionTests
 
         session.Observe(Address(PeerHost, IPAddress.Parse("fe80::44")), source);
         await Assert.That(session.GetResults().Single())
-            .IsEqualTo(new DiscoveredHost(source.ToString(), 47888));
+            .IsEqualTo(new DiscoveredHost(source.ToString(), 47888, PeerNickname));
     }
 
     [Test]
@@ -164,12 +184,12 @@ public sealed class MdnsQuerySessionTests
         new(Service, OwnInstance, isOnLocalSubnet);
 
     private static void AddInstance(MdnsQuerySession session, string instance, string host, int port,
-        int version = WirePacket.CurrentVersion, IPAddress? source = null)
+        int version = WirePacket.CurrentVersion, IPAddress? source = null, string nickname = PeerNickname)
     {
         var sender = source ?? Source;
         session.Observe(Ptr(instance), sender);
         session.Observe(Srv(instance, host, port), sender);
-        session.Observe(Txt(instance, version), sender);
+        session.Observe(Txt(instance, version, nickname), sender);
     }
 
     private static MdnsPacketCodec.Record Ptr(string instance, uint ttl = 120) =>
@@ -178,8 +198,9 @@ public sealed class MdnsQuerySessionTests
     private static MdnsPacketCodec.Record Srv(string instance, string host, int port) =>
         new(instance, MdnsPacketCodec.Srv, 120, Target: host, Port: port);
 
-    private static MdnsPacketCodec.Record Txt(string instance, int version = WirePacket.CurrentVersion) =>
-        new(instance, MdnsPacketCodec.Txt, 120, Version: version);
+    private static MdnsPacketCodec.Record Txt(string instance, int version = WirePacket.CurrentVersion,
+        string nickname = PeerNickname) =>
+        new(instance, MdnsPacketCodec.Txt, 120, Version: version, Nickname: nickname);
 
     private static MdnsPacketCodec.Record Address(string host, IPAddress address) =>
         new(host, address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork

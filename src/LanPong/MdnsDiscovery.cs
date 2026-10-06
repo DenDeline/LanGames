@@ -20,7 +20,9 @@ internal sealed class MdnsDiscovery : IAsyncDisposable
     private readonly Task[] _receiveTasks;
     private readonly Task _advertiseTask;
     private int? _desiredPort;
+    private string _desiredNickname = "Игрок";
     private int? _publishedPort;
+    private string? _publishedNickname;
     private bool _disposed;
 
     private string FullInstanceName => $"{_instanceName}.{MdnsConstants.ServiceType}";
@@ -113,12 +115,15 @@ internal sealed class MdnsDiscovery : IAsyncDisposable
     }
 
     /// <summary>Called while the peer's own lock may be held. It never performs socket I/O.</summary>
-    public void SetHostPort(int? port)
+    public void SetHostPort(int? port, string? nickname = null)
     {
+        if (nickname is not null && !PlayerNickname.IsValid(nickname))
+            throw new ArgumentException("Invalid nickname", nameof(nickname));
         lock (_gate)
         {
-            if (_disposed || _desiredPort == port) return;
+            if (_disposed || _desiredPort == port && (nickname is null || nickname == _desiredNickname)) return;
             _desiredPort = port;
+            if (nickname is not null) _desiredNickname = nickname;
         }
         if (_advertiseSignal.CurrentCount == 0)
             try { _advertiseSignal.Release(); }
@@ -196,7 +201,12 @@ internal sealed class MdnsDiscovery : IAsyncDisposable
             }
 
             int? port;
-            lock (_gate) port = _desiredPort;
+            string nickname;
+            lock (_gate)
+            {
+                port = _desiredPort;
+                nickname = _desiredNickname;
+            }
             if (port is null) continue;
             var matchingQuestions = message.Questions.Where(q =>
                     (q.Type is MdnsPacketCodec.Ptr or MdnsPacketCodec.Any && SameName(q.Name, MdnsConstants.ServiceType)) ||
@@ -210,7 +220,7 @@ internal sealed class MdnsDiscovery : IAsyncDisposable
             var response = MdnsPacketCodec.Advertisement(MdnsConstants.ServiceType, FullInstanceName,
                 HostName, port.Value, AdvertisedAddresses(),
                 legacy ? MdnsConstants.LegacyResponseTtl : MdnsConstants.ServiceRecordTtl,
-                legacy ? message.Id : (ushort)0, legacy ? message.Questions : null, legacy);
+                nickname, legacy ? message.Id : (ushort)0, legacy ? message.Questions : null, legacy);
             if (unicast)
                 await SendUnicastAsync(socket, response, datagram.RemoteEndPoint, cancellationToken);
             else
@@ -226,20 +236,28 @@ internal sealed class MdnsDiscovery : IAsyncDisposable
             catch (OperationCanceledException) { break; }
 
             int? desired;
-            lock (_gate) desired = _desiredPort;
-            if (_publishedPort is { } oldPort && oldPort != desired)
+            string desiredNickname;
+            lock (_gate)
+            {
+                desired = _desiredPort;
+                desiredNickname = _desiredNickname;
+            }
+            if (_publishedPort is { } oldPort &&
+                (oldPort != desired || _publishedNickname != desiredNickname))
             {
                 await SendMulticastAsync(MdnsPacketCodec.Advertisement(MdnsConstants.ServiceType, FullInstanceName,
                     HostName, oldPort, AdvertisedAddresses(),
-                    MdnsConstants.GoodbyeTtl), cancellationToken);
+                    MdnsConstants.GoodbyeTtl, _publishedNickname!), cancellationToken);
                 _publishedPort = null;
+                _publishedNickname = null;
             }
             if (desired is { } newPort)
             {
                 await SendMulticastAsync(MdnsPacketCodec.Advertisement(MdnsConstants.ServiceType, FullInstanceName,
                     HostName, newPort, AdvertisedAddresses(),
-                    MdnsConstants.ServiceRecordTtl), cancellationToken);
+                    MdnsConstants.ServiceRecordTtl, desiredNickname), cancellationToken);
                 _publishedPort = newPort;
+                _publishedNickname = desiredNickname;
             }
         }
     }
@@ -331,6 +349,7 @@ internal sealed class MdnsDiscovery : IAsyncDisposable
             _desiredPort = null;
         }
         var lastPublishedPort = _publishedPort;
+        var lastPublishedNickname = _publishedNickname;
         _stop.Cancel();
         try { await Task.WhenAll([.. _receiveTasks, _advertiseTask]); }
         catch (OperationCanceledException) { }
@@ -340,7 +359,7 @@ internal sealed class MdnsDiscovery : IAsyncDisposable
                      .Where(value => value is not null).Select(value => value!.Value).Distinct())
             await SendMulticastAsync(MdnsPacketCodec.Advertisement(MdnsConstants.ServiceType, FullInstanceName,
                 HostName, port, AdvertisedAddresses(),
-                MdnsConstants.GoodbyeTtl), CancellationToken.None);
+                MdnsConstants.GoodbyeTtl, lastPublishedNickname ?? _publishedNickname ?? _desiredNickname), CancellationToken.None);
         _ipv4Socket?.Dispose();
         _ipv6Socket?.Dispose();
         _advertiseSignal.Dispose();

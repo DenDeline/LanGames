@@ -30,6 +30,7 @@ internal sealed partial class PongPeer
         _receiveTask = null;
         _peerEndpoint = _targetEndpoint = null;
         _incomingChallengeEndpoint = null;
+        _peerNickname = null;
         _peerSocketAddress = _targetSocketAddress = null;
         _incomingChallengeSocketAddress = null;
         _sessionId = _lastRestartRequestId = _pendingRestartRequestId = null;
@@ -69,6 +70,7 @@ internal sealed partial class PongPeer
             _rejectedChallenges.Remember(
                 _incomingChallengeSocketAddress, _incomingChallengeId.Value, DateTime.UtcNow);
         _incomingChallengeEndpoint = null;
+        _peerNickname = null;
         _incomingChallengeSocketAddress = null;
         _incomingChallengeId = null;
         _challengeStartedAt = _lastChallengeSeen = DateTime.MinValue;
@@ -80,6 +82,7 @@ internal sealed partial class PongPeer
     private void ReturnHostToWaitingLocked(string message)
     {
         _peerEndpoint = null;
+        _peerNickname = null;
         _peerSocketAddress = null;
         _sessionId = null;
         _acceptedChallengeId = null;

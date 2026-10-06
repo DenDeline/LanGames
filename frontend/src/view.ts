@@ -37,6 +37,7 @@ export const ui = {
   joinPanel: element("join-panel"),
   hostForm: element<HTMLFormElement>("host-form"),
   joinForm: element<HTMLFormElement>("join-form"),
+  playerNickname: element<HTMLInputElement>("player-nickname"),
   hostPort: element<HTMLInputElement>("host-port"),
   joinPort: element<HTMLInputElement>("join-port"),
   peerAddress: element<HTMLInputElement>("peer-address"),
@@ -44,7 +45,11 @@ export const ui = {
   joinButton: element<HTMLButtonElement>("join-button"),
   discoverButton: element<HTMLButtonElement>("discover-button"),
   discoveryResults: element("discovery-results"),
+  selectedHost: element("selected-host"),
+  selectedHostName: element("selected-host-name"),
+  clearSelectedHost: element<HTMLButtonElement>("clear-selected-host"),
   shareBox: element("share-box"),
+  shareNickname: element("share-nickname"),
   shareAddresses: element("share-addresses"),
   sharePort: element("share-port"),
   restartButton: element<HTMLButtonElement>("restart-button"),
@@ -57,9 +62,58 @@ export const ui = {
 };
 
 const TOAST_DURATION_MS = 5000;
+const NICKNAME_STORAGE_KEY = "lanpong-nickname";
+const MAX_NICKNAME_LENGTH = 24;
 let lastAddressKey: string | null = null;
 let lastUiSignature: string | null = null;
 let toastTimer: number | undefined;
+let nicknameWasEdited = false;
+let preferredNickname: string | null = null;
+let wasInGame = false;
+
+function validNickname(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value.length <= MAX_NICKNAME_LENGTH &&
+    !/[\u0000-\u001f\u007f-\u009f]/.test(value)
+  );
+}
+
+export function loadNickname(): void {
+  try {
+    const stored = window.localStorage.getItem(NICKNAME_STORAGE_KEY)?.trim();
+    if (stored && validNickname(stored)) {
+      ui.playerNickname.value = stored;
+      preferredNickname = stored;
+      nicknameWasEdited = true;
+    }
+  } catch {
+    // Private browsing can make localStorage unavailable.
+  }
+}
+
+export function saveNickname(): void {
+  nicknameWasEdited = true;
+  preferredNickname = ui.playerNickname.value.trim();
+  try {
+    window.localStorage.setItem(NICKNAME_STORAGE_KEY, preferredNickname);
+  } catch {
+    // The nickname still works for this page when storage is unavailable.
+  }
+}
+
+export function getNickname(): string | null {
+  const nickname = ui.playerNickname.value.trim();
+  if (!validNickname(nickname)) {
+    ui.playerNickname.setCustomValidity("Введите ник до 24 символов без управляющих знаков.");
+    ui.playerNickname.reportValidity();
+    ui.playerNickname.setCustomValidity("");
+    return null;
+  }
+  ui.playerNickname.value = nickname;
+  saveNickname();
+  return nickname;
+}
 
 export function getPort(input: HTMLInputElement): number | null {
   const port = Number(input.value);
@@ -134,12 +188,16 @@ function overlayContent(snapshot: PongSnapshot): [string, string, string] | null
     return ["Сеть", "Связь потеряна", "Проверьте сеть или покиньте игру, чтобы начать заново."];
   }
   if (snapshot.phase === "gameover") {
+    const leftName =
+      snapshot.role === "host" ? localDisplayName(snapshot) : peerDisplayName(snapshot);
+    const rightName =
+      snapshot.role === "guest" ? localDisplayName(snapshot) : peerDisplayName(snapshot);
     const winner =
       snapshot.leftScore === snapshot.rightScore
         ? "Ничья"
         : snapshot.leftScore > snapshot.rightScore
-          ? "Игрок 1 победил"
-          : "Игрок 2 победил";
+          ? `Победа: ${leftName}`
+          : `Победа: ${rightName}`;
     return ["Матч завершён", winner, "Нажмите «Новый матч», чтобы сыграть ещё раз."];
   }
   if (snapshot.phase === "countdown") {
@@ -159,7 +217,15 @@ function overlayContent(snapshot: PongSnapshot): [string, string, string] | null
   if (snapshot.connection === "awaitingAcceptance") {
     return ["Вызов отправлен", "Ждём согласия", "Матч начнётся, когда друг примет вызов."];
   }
-  return ["Ожидание", "Ждём друга", "Передайте другу адрес и порт."];
+  return ["Ожидание", "Ждём друга", "Друг найдёт вашу игру по нику в сети."];
+}
+
+function localDisplayName(snapshot: PongSnapshot): string {
+  return snapshot.localNickname.trim() || "Вы";
+}
+
+function peerDisplayName(snapshot: PongSnapshot): string {
+  return snapshot.peerNickname?.trim() || "Соперник";
 }
 
 function renderAddresses(snapshot: PongSnapshot): void {
@@ -185,6 +251,13 @@ function renderAddresses(snapshot: PongSnapshot): void {
 }
 
 export function render(snapshot: PongSnapshot, busy: boolean, discovering: boolean): void {
+  const inGame = snapshot.role === "host" || snapshot.role === "guest";
+  if (inGame && snapshot.localNickname && ui.playerNickname.value !== snapshot.localNickname)
+    ui.playerNickname.value = snapshot.localNickname;
+  else if (!inGame && wasInGame && preferredNickname) ui.playerNickname.value = preferredNickname;
+  else if (!nicknameWasEdited && !ui.playerNickname.value && snapshot.localNickname)
+    ui.playerNickname.value = snapshot.localNickname;
+  wasInGame = inGame;
   // Network snapshots arrive much more often than score, ping text, or controls change.
   const uiSignature = JSON.stringify([
     snapshot.role,
@@ -193,6 +266,8 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
     snapshot.udpPort,
     snapshot.role === "host" ? snapshot.localAddresses : null,
     snapshot.peerAddress,
+    snapshot.localNickname,
+    snapshot.peerNickname,
     snapshot.leftScore,
     snapshot.rightScore,
     snapshot.phase,
@@ -203,7 +278,6 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   ]);
   if (uiSignature === lastUiSignature) return;
   lastUiSignature = uiSignature;
-  const inGame = snapshot.role === "host" || snapshot.role === "guest";
   const connected = snapshot.connection === "connected";
   const incomingChallenge = snapshot.role === "host" && snapshot.connection === "incomingChallenge";
   const status = connectionText(snapshot);
@@ -217,15 +291,27 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   writeText(ui.roleDetail, roleText(snapshot));
   writeText(
     ui.leftPlayer,
-    snapshot.role === "host" ? "Вы" : snapshot.role === "guest" ? "Соперник" : "Игрок 1",
+    snapshot.role === "host"
+      ? localDisplayName(snapshot)
+      : snapshot.role === "guest"
+        ? peerDisplayName(snapshot)
+        : "Игрок 1",
   );
   writeText(
     ui.rightPlayer,
-    snapshot.role === "guest" ? "Вы" : snapshot.role === "host" ? "Соперник" : "Игрок 2",
+    snapshot.role === "guest"
+      ? localDisplayName(snapshot)
+      : snapshot.role === "host"
+        ? peerDisplayName(snapshot)
+        : "Игрок 2",
   );
   ui.leftScore.parentElement?.classList.toggle("is-local", snapshot.role === "host");
   ui.rightScore.parentElement?.classList.toggle("is-local", snapshot.role === "guest");
-  writeText(ui.peerDetail, snapshot.peerAddress || (inGame ? "Ожидаем подключения" : "—"));
+  writeText(
+    ui.peerDetail,
+    snapshot.peerNickname ||
+      (snapshot.peerAddress ? "Соперник" : inGame ? "Ожидаем подключения" : "—"),
+  );
   ui.pingRow.hidden = !connected;
   const ping = snapshot.pingMs;
   writeText(
@@ -239,7 +325,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
     snapshot.message || (inGame ? status + "." : "Создайте игру или присоединитесь к сопернику."),
   );
   ui.challengeRequest.hidden = !incomingChallenge;
-  if (incomingChallenge) writeText(ui.challengePeer, snapshot.peerAddress || "Соперник");
+  if (incomingChallenge) writeText(ui.challengePeer, peerDisplayName(snapshot));
   ui.acceptButton.disabled = busy || !incomingChallenge;
   ui.declineButton.disabled = busy || !incomingChallenge;
   writeText(ui.leftScore, Math.max(0, Math.trunc(Number(snapshot.leftScore) || 0)));
@@ -268,6 +354,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   ui.discoverButton.disabled = busy || discovering || inGame;
   ui.hostPort.disabled = busy || inGame;
   ui.joinPort.disabled = busy || inGame;
+  ui.playerNickname.disabled = busy || inGame;
   ui.peerAddress.disabled = busy || inGame;
   ui.restartButton.disabled = busy || !connected || snapshot.phase !== "gameover";
   ui.leaveButton.disabled = busy || !inGame;
@@ -278,6 +365,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
       : "Покинуть игру",
   );
   ui.shareBox.hidden = snapshot.role !== "host";
+  writeText(ui.shareNickname, localDisplayName(snapshot));
   writeText(ui.sharePort, snapshot.udpPort || Number(ui.hostPort.value) || DEFAULT_UDP_PORT);
   if (snapshot.role === "host") renderAddresses(snapshot);
 }

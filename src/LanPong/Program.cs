@@ -17,7 +17,7 @@ app.MapPost("/api/host", async (HostRequest request) =>
 {
     try
     {
-        await peer.HostAsync(request.Port);
+        await peer.HostAsync(request.Port, request.Nickname);
         return Results.Ok(peer.Snapshot());
     }
     catch (Exception ex) when (ex is ArgumentException or SocketException or InvalidOperationException)
@@ -32,7 +32,7 @@ app.MapPost("/api/join", async (JoinRequest request, CancellationToken cancellat
         cancellationToken, app.Lifetime.ApplicationStopping);
     try
     {
-        await peer.JoinAsync(request.Address, request.Port, stop.Token);
+        await peer.JoinAsync(request.Address, request.Port, request.Nickname, stop.Token);
         return Results.Ok(peer.Snapshot());
     }
     catch (OperationCanceledException) when (app.Lifetime.ApplicationStopping.IsCancellationRequested)
@@ -109,5 +109,5 @@ app.Map("/ws", context => PongWebSocketEndpoint.HandleAsync(context, peer, app.L
 
 app.Run();
 
-internal sealed record HostRequest(int Port);
-internal sealed record JoinRequest(string Address, int Port);
+internal sealed record HostRequest(int Port, string Nickname);
+internal sealed record JoinRequest(string Address, int Port, string Nickname);

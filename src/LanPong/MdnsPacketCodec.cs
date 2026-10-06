@@ -32,13 +32,14 @@ internal static class MdnsPacketCodec
     private const byte CompressionMarker = 0xc0;
     private const byte CompressionPointerOffsetMask = 0x3f;
     private const string VersionProperty = "version=";
+    private const string NicknameProperty = "nickname=";
 
     public sealed record Question(string Name, ushort Type, ushort Class = InternetClass)
     {
         public bool UnicastResponse => (Class & UnicastResponseFlag) != 0;
     }
     public sealed record Record(string Name, ushort Type, uint Ttl, string? Target = null,
-        int Port = 0, int? Version = null, IPAddress? Address = null);
+        int Port = 0, int? Version = null, IPAddress? Address = null, string? Nickname = null);
     public sealed record Message(ushort Id, bool IsResponse, IReadOnlyList<Question> Questions,
         IReadOnlyList<Record> Records);
 
@@ -53,9 +54,10 @@ internal static class MdnsPacketCodec
     }
 
     public static byte[] Advertisement(string serviceType, string instanceName, string hostName,
-        int port, IReadOnlyList<IPAddress> addresses, uint ttl, ushort id = 0,
+        int port, IReadOnlyList<IPAddress> addresses, uint ttl, string nickname, ushort id = 0,
         IReadOnlyList<Question>? questions = null, bool legacy = false)
     {
+        if (!PlayerNickname.IsValid(nickname)) throw new ArgumentException("Invalid nickname", nameof(nickname));
         using var stream = new MemoryStream();
         WriteHeader(stream, id, response: true, questionCount: checked((ushort)(questions?.Count ?? 0)),
             answerCount: checked((ushort)(3 + addresses.Count)));
@@ -77,6 +79,9 @@ internal static class MdnsPacketCodec
         WriteRecord(stream, instanceName, Txt, ttl, data =>
         {
             var property = Encoding.ASCII.GetBytes($"{VersionProperty}{WirePacket.CurrentVersion}");
+            data.WriteByte(checked((byte)property.Length));
+            data.Write(property);
+            property = Encoding.UTF8.GetBytes($"{NicknameProperty}{nickname}");
             data.WriteByte(checked((byte)property.Length));
             data.Write(property);
         }, unique: !legacy);
@@ -132,6 +137,7 @@ internal static class MdnsPacketCodec
             var port = 0;
             int? version = null;
             IPAddress? address = null;
+            string? nickname = null;
             switch (type)
             {
                 case Ptr:
@@ -151,6 +157,8 @@ internal static class MdnsPacketCodec
                         var item = Encoding.UTF8.GetString(bytes, offset, itemLength);
                         if (item.StartsWith(VersionProperty, StringComparison.OrdinalIgnoreCase) &&
                             int.TryParse(item.AsSpan(VersionProperty.Length), out var parsed)) version = parsed;
+                        else if (item.StartsWith(NicknameProperty, StringComparison.OrdinalIgnoreCase))
+                            nickname = item[NicknameProperty.Length..];
                         offset += itemLength;
                     }
                     break;
@@ -164,7 +172,7 @@ internal static class MdnsPacketCodec
                     break;
             }
             offset = end;
-            records.Add(new Record(name, type, ttl, target, port, version, address));
+            records.Add(new Record(name, type, ttl, target, port, version, address, nickname));
         }
         message = new Message(id, (flags & UnicastResponseFlag) != 0, questions, records);
         return true;

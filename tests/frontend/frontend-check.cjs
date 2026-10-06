@@ -423,29 +423,66 @@ async function main() {
   assert.equal(playedTones, 9);
 
   // The view presents the local player on the side selected by the snapshot.
-  const { render: renderView, setTab, ui } = await import("../../.artifacts/frontend-test/view.js");
-  renderView({ ...session.snapshot, role: "host" }, false, false);
-  assert.equal(ui.leftPlayer.textContent, "Вы");
-  assert.equal(ui.rightPlayer.textContent, "Соперник");
-  renderView({ ...session.snapshot, role: "guest" }, false, false);
-  assert.equal(ui.leftPlayer.textContent, "Соперник");
-  assert.equal(ui.rightPlayer.textContent, "Вы");
+  const {
+    render: renderView,
+    saveNickname,
+    setTab,
+    ui,
+  } = await import("../../.artifacts/frontend-test/view.js");
+  ui.playerNickname.value = "Мой ник";
+  saveNickname();
+  renderView(
+    { ...session.snapshot, role: "host", localNickname: "Лиса", peerNickname: "Кот" },
+    false,
+    false,
+  );
+  assert.equal(ui.leftPlayer.textContent, "Лиса");
+  assert.equal(ui.rightPlayer.textContent, "Кот");
+  assert.equal(ui.shareNickname.textContent, "Лиса");
+  assert.equal(ui.playerNickname.value, "Лиса");
+  assert.equal(ui.playerNickname.disabled, true);
+  renderView(
+    { ...session.snapshot, role: "guest", localNickname: "Кот", peerNickname: "Лиса" },
+    false,
+    false,
+  );
+  assert.equal(ui.leftPlayer.textContent, "Лиса");
+  assert.equal(ui.rightPlayer.textContent, "Кот");
+  assert.equal(ui.playerNickname.value, "Кот");
   renderView(
     {
       ...session.snapshot,
       role: "host",
       connection: "incomingChallenge",
       peerAddress: "192.168.1.43:47777",
+      localNickname: "Лиса",
+      peerNickname: "Кот",
       phase: "waiting",
     },
     false,
     false,
   );
   assert.equal(ui.challengeRequest.hidden, false);
-  assert.equal(ui.challengePeer.textContent, "192.168.1.43:47777");
+  assert.equal(ui.challengePeer.textContent, "Кот");
+  assert.equal(ui.peerDetail.textContent, "Кот");
   assert.equal(ui.acceptButton.disabled, false);
   assert.equal(ui.declineButton.disabled, false);
   assert.equal(ui.overlayTitle.textContent, "Примите вызов");
+  renderView(
+    {
+      ...session.snapshot,
+      role: "host",
+      connection: "connected",
+      phase: "gameover",
+      leftScore: 5,
+      rightScore: 3,
+      localNickname: "Лиса",
+      peerNickname: "Кот",
+    },
+    false,
+    false,
+  );
+  assert.equal(ui.overlayTitle.textContent, "Победа: Лиса");
   renderView(
     { ...session.snapshot, role: "guest", connection: "awaitingAcceptance", phase: "waiting" },
     false,
@@ -455,10 +492,14 @@ async function main() {
   assert.equal(ui.leaveButton.textContent, "Отменить вызов");
   assert.equal(ui.overlayTitle.textContent, "Ждём согласия");
   assert.equal(parseSnapshot({ connection: "incomingChallenge" }).connection, "incomingChallenge");
+  assert.equal(parseSnapshot({ localNickname: "Лиса", peerNickname: "Кот" }).peerNickname, "Кот");
   assert.equal(
     parseSnapshot({ connection: "awaitingAcceptance" }).connection,
     "awaitingAcceptance",
   );
+  renderView({ ...session.snapshot, role: "none", connection: "idle" }, false, false);
+  assert.equal(ui.playerNickname.value, "Мой ник");
+  assert.equal(ui.playerNickname.disabled, false);
   setTab("join");
   assert.equal(ui.hostPanel.hidden, true);
   assert.equal(ui.joinPanel.hidden, false);

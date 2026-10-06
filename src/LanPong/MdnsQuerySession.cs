@@ -58,6 +58,7 @@ internal sealed class MdnsQuerySession(string serviceType, string ownInstanceNam
                 if (!_instances.TryGetValue(record.Name, out var instance))
                     _instances[record.Name] = instance = new FoundInstance();
                 instance.Version = record.Version;
+                instance.Nickname = record.Nickname;
                 break;
             }
             case MdnsPacketCodec.A or MdnsPacketCodec.Aaaa when record.Address is { } ip &&
@@ -85,6 +86,7 @@ internal sealed class MdnsQuerySession(string serviceType, string ownInstanceNam
         {
             if (!instance.SeenPtr || _withdrawn.Contains(name) || SameName(name, ownInstanceName) ||
                 instance.Version != WirePacket.CurrentVersion ||
+                !PlayerNickname.IsValid(instance.Nickname) ||
                 instance.Port is < 1 or > ushort.MaxValue || instance.Target is null ||
                 !_addresses.TryGetValue(instance.Target, out var candidates)) continue;
 
@@ -98,7 +100,7 @@ internal sealed class MdnsQuerySession(string serviceType, string ownInstanceNam
                                                  isOnLocalSubnet(item.Address)).Address
                 ?? usable.Select(item => item.Address).FirstOrDefault(isOnLocalSubnet);
             if (chosen is null) continue;
-            var host = new DiscoveredHost(chosen.ToString(), instance.Port);
+            var host = new DiscoveredHost(chosen.ToString(), instance.Port, instance.Nickname!);
             results[$"{host.Address}:{host.Port}"] = host;
         }
         return [.. results.Values];
@@ -113,5 +115,6 @@ internal sealed class MdnsQuerySession(string serviceType, string ownInstanceNam
         public int Port { get; set; }
         public string? Target { get; set; }
         public int? Version { get; set; }
+        public string? Nickname { get; set; }
     }
 }

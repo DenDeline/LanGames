@@ -12,8 +12,8 @@ export type {
 
 // The WebSocket array layout is independent of the JSON HTTP response shape.
 // Change the version whenever indices or enum ordinals change.
-const VERSION = 3;
-const SNAPSHOT_FIELDS = 21;
+const VERSION = 4;
+const SNAPSHOT_FIELDS = 23;
 const MAX_SNAPSHOT_BYTES = 16 * 1024;
 const ROLES = ["none", "host", "guest"] as const;
 const CONNECTIONS = [
@@ -91,6 +91,8 @@ export function decodeWsSnapshot(bytes: ArrayBuffer): PongSnapshot | null {
     roundId,
     pingMs,
     events,
+    localNickname,
+    peerNickname,
   ]: unknown[] = frame;
 
   if (
@@ -103,6 +105,13 @@ export function decodeWsSnapshot(bytes: ArrayBuffer): PongSnapshot | null {
     !Array.isArray(localAddresses) ||
     !localAddresses.every((address) => typeof address === "string") ||
     (peerAddress !== null && typeof peerAddress !== "string") ||
+    typeof localNickname !== "string" ||
+    localNickname.length === 0 ||
+    localNickname.length > 24 ||
+    (peerNickname !== null &&
+      (typeof peerNickname !== "string" ||
+        peerNickname.length === 0 ||
+        peerNickname.length > 24)) ||
     !isFiniteNumber(leftY) ||
     !isFiniteNumber(rightY) ||
     !isFiniteNumber(ballX) ||
@@ -145,6 +154,8 @@ export function decodeWsSnapshot(bytes: ArrayBuffer): PongSnapshot | null {
     udpPort,
     localAddresses,
     peerAddress,
+    localNickname,
+    peerNickname,
     leftY,
     rightY,
     ballX,

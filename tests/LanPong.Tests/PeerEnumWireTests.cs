@@ -90,7 +90,8 @@ public sealed class PeerEnumWireTests
         LocalAddresses: [], PeerAddress: null,
         LeftY: 0.5, RightY: 0.5, BallX: 0.5, BallY: 0.5,
         BallVx: 0, BallVy: 0, LeftScore: 0, RightScore: 0,
-        Phase: phase, Countdown: 0, Tick: 0, RoundId: 0, PingMs: null, RecentEvents: []);
+        Phase: phase, Countdown: 0, Tick: 0, RoundId: 0, PingMs: null, RecentEvents: [],
+        LocalNickname: "Игрок", PeerNickname: null);
 
     private static (bool IsInteger, int Value) ReadPackedPhase(byte[] bytes)
     {

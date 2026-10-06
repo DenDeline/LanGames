@@ -8,6 +8,8 @@ public sealed class WirePacketCodecTests
     private static readonly Guid ChallengeId = Guid.ParseExact("00112233445566778899aabbccddeeff", "N");
     private static readonly Guid SessionId = Guid.ParseExact("ffeeddccbbaa99887766554433221100", "N");
     private static readonly Guid RestartId = Guid.ParseExact("0123456789abcdef0123456789abcdef", "N");
+    private const string GuestNickname = "Guest";
+    private const string HostNickname = "Хозяин";
 
     [Test]
     public async Task EveryPacketType_RoundTripsWithItsStableUnionTag()
@@ -32,21 +34,27 @@ public sealed class WirePacketCodecTests
     [Test]
     public async Task HelloPacket_WritesGuidAsNativeSixteenByteBinary()
     {
-        var bytes = WirePacketCodec.Serialize(new HelloPacket { RequestId = ChallengeId });
-        var expected = Convert.FromHexString("92029207C41033221100554477668899AABBCCDDEEFF");
+        var bytes = WirePacketCodec.Serialize(new HelloPacket
+        {
+            RequestId = ChallengeId, Nickname = GuestNickname
+        });
+        var expected = Convert.FromHexString("92029308C41033221100554477668899AABBCCDDEEFFA54775657374");
 
         await Assert.That(bytes.SequenceEqual(expected)).IsTrue();
         await Assert.That(WirePacketCodec.TryDeserialize(expected, out var decoded)).IsTrue();
-        await Assert.That(decoded is HelloPacket { RequestId: var id } && id == ChallengeId).IsTrue();
+        await Assert.That(decoded is HelloPacket { RequestId: var id, Nickname: GuestNickname } &&
+                          id == ChallengeId).IsTrue();
     }
 
     [Test]
     public async Task TryDeserialize_RejectsFormerStringGuidAndWrongNativeLength()
     {
-        var stringGuid = new byte[] { 0x92, 0x02, 0x92, 0x07, 0xd9, 0x20 }
-            .Concat(Encoding.ASCII.GetBytes(ChallengeId.ToString("N"))).ToArray();
-        var shortBinaryGuid = new byte[] { 0x92, 0x02, 0x92, 0x07, 0xc4, 0x0f }
-            .Concat(ChallengeId.ToByteArray()[..15]).ToArray();
+        var stringGuid = new byte[] { 0x92, 0x02, 0x93, 0x08, 0xd9, 0x20 }
+            .Concat(Encoding.ASCII.GetBytes(ChallengeId.ToString("N")))
+            .Concat(new byte[] { 0xa5, (byte)'G', (byte)'u', (byte)'e', (byte)'s', (byte)'t' }).ToArray();
+        var shortBinaryGuid = new byte[] { 0x92, 0x02, 0x93, 0x08, 0xc4, 0x0f }
+            .Concat(ChallengeId.ToByteArray()[..15])
+            .Concat(new byte[] { 0xa5, (byte)'G', (byte)'u', (byte)'e', (byte)'s', (byte)'t' }).ToArray();
 
         await Assert.That(WirePacketCodec.TryDeserialize(stringGuid, out _)).IsFalse();
         await Assert.That(WirePacketCodec.TryDeserialize(shortBinaryGuid, out _)).IsFalse();
@@ -75,7 +83,8 @@ public sealed class WirePacketCodecTests
     {
         var oldBinary = WirePacketCodec.Serialize(new HelloPacket
         {
-            Version = WirePacket.CurrentVersion - 1, RequestId = ChallengeId
+            Version = WirePacket.CurrentVersion - 1, RequestId = ChallengeId,
+            Nickname = GuestNickname
         });
         var oldJson = "{\"version\":1,\"type\":\"hello\"}"u8.ToArray();
         var oldFlatMessagePack = new byte[] { 0x92, 0x02, 0xa5, (byte)'h', (byte)'e', (byte)'l', (byte)'l', (byte)'o' };
@@ -101,10 +110,10 @@ public sealed class WirePacketCodecTests
     {
         WirePacket[] invalid =
         [
-            new HelloPacket(),
-            new WelcomePacket { SessionId = SessionId },
-            new WelcomePacket { RequestId = ChallengeId },
-            new ChallengePendingPacket(),
+            new HelloPacket { Nickname = GuestNickname },
+            new WelcomePacket { SessionId = SessionId, Nickname = HostNickname },
+            new WelcomePacket { RequestId = ChallengeId, Nickname = HostNickname },
+            new ChallengePendingPacket { Nickname = HostNickname },
             new ChallengeDeclinedPacket(),
             new CancelChallengePacket(),
             new InputPacket { SessionId = Guid.Empty, Sequence = 1, Tick = 1, Axes = [0] },
@@ -114,6 +123,26 @@ public sealed class WirePacketCodecTests
             new PingPacket { SessionId = Guid.Empty },
             new PongPacket { SessionId = Guid.Empty },
             new ByePacket { SessionId = Guid.Empty }
+        ];
+
+        foreach (var packet in invalid)
+            await Assert.That(WirePacketCodec.TryDeserialize(WirePacketCodec.Serialize(packet), out _)).IsFalse();
+    }
+
+    [Test]
+    public async Task TryDeserialize_RejectsNullEmptyAndBlankHandshakeNicknames()
+    {
+        WirePacket[] invalid =
+        [
+            new HelloPacket { RequestId = ChallengeId, Nickname = null! },
+            new HelloPacket { RequestId = ChallengeId, Nickname = "" },
+            new HelloPacket { RequestId = ChallengeId, Nickname = "   " },
+            new WelcomePacket { SessionId = SessionId, RequestId = ChallengeId, Nickname = null! },
+            new WelcomePacket { SessionId = SessionId, RequestId = ChallengeId, Nickname = "" },
+            new WelcomePacket { SessionId = SessionId, RequestId = ChallengeId, Nickname = "   " },
+            new ChallengePendingPacket { RequestId = ChallengeId, Nickname = null! },
+            new ChallengePendingPacket { RequestId = ChallengeId, Nickname = "" },
+            new ChallengePendingPacket { RequestId = ChallengeId, Nickname = "   " }
         ];
 
         foreach (var packet in invalid)
@@ -238,8 +267,8 @@ public sealed class WirePacketCodecTests
 
     private static WirePacket[] CreatePackets() =>
     [
-        new HelloPacket { RequestId = ChallengeId },
-        new WelcomePacket { SessionId = SessionId, RequestId = ChallengeId },
+        new HelloPacket { RequestId = ChallengeId, Nickname = GuestNickname },
+        new WelcomePacket { SessionId = SessionId, RequestId = ChallengeId, Nickname = HostNickname },
         new InputPacket
         {
             SessionId = SessionId, Sequence = 42, Tick = 123456,
@@ -260,7 +289,7 @@ public sealed class WirePacketCodecTests
         new PingPacket { SessionId = SessionId, Sequence = 43 },
         new PongPacket { SessionId = SessionId, Sequence = 43 },
         new ByePacket { SessionId = SessionId },
-        new ChallengePendingPacket { RequestId = ChallengeId },
+        new ChallengePendingPacket { RequestId = ChallengeId, Nickname = HostNickname },
         new ChallengeDeclinedPacket { RequestId = ChallengeId },
         new CancelChallengePacket { RequestId = ChallengeId }
     ];

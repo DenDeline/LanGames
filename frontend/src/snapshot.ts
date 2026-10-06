@@ -25,6 +25,8 @@ export interface PongSnapshot {
   udpPort: number;
   localAddresses: string[];
   peerAddress: string | null;
+  localNickname: string;
+  peerNickname: string | null;
   leftY: number;
   rightY: number;
   ballX: number;
@@ -50,6 +52,8 @@ export const defaultSnapshot: PongSnapshot = {
   udpPort: DEFAULT_UDP_PORT,
   localAddresses: [],
   peerAddress: null,
+  localNickname: "",
+  peerNickname: null,
   leftY: 0.5,
   rightY: 0.5,
   ballX: 0.5,
@@ -132,6 +136,8 @@ export function parseSnapshot(data: Record<string, unknown>): PongSnapshot {
         )
       : [],
     peerAddress: typeof data.peerAddress === "string" ? data.peerAddress : null,
+    localNickname: typeof data.localNickname === "string" ? data.localNickname : "",
+    peerNickname: typeof data.peerNickname === "string" ? data.peerNickname : null,
     leftY: snapshotNumber(data.leftY, defaultSnapshot.leftY),
     rightY: snapshotNumber(data.rightY, defaultSnapshot.rightY),
     ballX: snapshotNumber(data.ballX, defaultSnapshot.ballX),

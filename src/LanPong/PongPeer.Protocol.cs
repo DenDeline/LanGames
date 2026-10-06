@@ -68,7 +68,8 @@ internal sealed partial class PongPeer
                 _lastPeerSeen = now;
                 actions.Reply = new WelcomePacket
                 {
-                    SessionId = _sessionId!.Value, RequestId = _acceptedChallengeId!.Value
+                    SessionId = _sessionId!.Value, RequestId = _acceptedChallengeId!.Value,
+                    Nickname = _localNickname
                 };
             }
         }
@@ -82,18 +83,25 @@ internal sealed partial class PongPeer
             _incomingChallengeEndpoint = (IPEndPoint)anyEndpoint.Create(remote);
             _incomingChallengeSocketAddress = _incomingChallengeEndpoint.Serialize();
             _incomingChallengeId = hello.RequestId;
+            _peerNickname = hello.Nickname;
             _challengeStartedAt = now;
             _lastChallengeSeen = now;
             _connection = ConnectionState.IncomingChallenge;
             _message = "Входящий вызов. Примите или отклоните его.";
             _mdns.SetHostPort(null);
-            actions.Reply = new ChallengePendingPacket { RequestId = hello.RequestId };
+            actions.Reply = new ChallengePendingPacket
+            {
+                RequestId = hello.RequestId, Nickname = _localNickname
+            };
         }
         else if (_incomingChallengeSocketAddress?.Equals(remote) == true &&
                  hello.RequestId == _incomingChallengeId)
         {
             _lastChallengeSeen = now;
-            actions.Reply = new ChallengePendingPacket { RequestId = hello.RequestId };
+            actions.Reply = new ChallengePendingPacket
+            {
+                RequestId = hello.RequestId, Nickname = _localNickname
+            };
         }
         else
         {
@@ -156,6 +164,7 @@ internal sealed partial class PongPeer
             case ChallengePendingPacket pending when pending.RequestId == _outgoingChallengeId &&
                                                      _connection is (ConnectionState.Connecting or ConnectionState.AwaitingAcceptance):
                 _connection = ConnectionState.AwaitingAcceptance;
+                _peerNickname = pending.Nickname;
                 _message = "Вызов отправлен. Ждём решения соперника…";
                 _lastPeerSeen = now;
                 break;
@@ -175,6 +184,7 @@ internal sealed partial class PongPeer
                 _guestTimeline.Reset();
                 _lastInputSentTick = 0;
                 _connection = ConnectionState.Connected;
+                _peerNickname = welcome.Nickname;
                 _message = "Вы подключились. Игра началась!";
                 _outgoingChallengeId = null;
                 _lastPeerSeen = now;

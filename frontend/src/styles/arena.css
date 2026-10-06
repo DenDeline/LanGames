@@ -55,6 +55,7 @@
   gap: clamp(15px, 3vw, 38px);
   width: 36%;
   max-width: 270px;
+  min-width: 0;
 }
 .score-side-left {
   justify-content: flex-end;
@@ -64,6 +65,9 @@
   justify-content: flex-start;
 }
 .score-player {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: #a9b7c9;
   font-size: 12px;
   font-weight: 800;
@@ -78,6 +82,7 @@
   color: var(--coral);
 }
 .score-side strong {
+  flex-shrink: 0;
   min-width: 0.75em;
   font-size: clamp(44px, 5.5vw, 70px);
   font-weight: 780;

@@ -5,12 +5,22 @@ import { MotionModel } from "./motion.js";
 import { GameSession } from "./session.js";
 import { isRecord } from "./snapshot.js";
 import { SoundController } from "./sound.js";
-import { getPort, render, setTab, showToast, ui } from "./view.js";
+import {
+  getNickname,
+  getPort,
+  loadNickname,
+  render,
+  saveNickname,
+  setTab,
+  showToast,
+  ui,
+} from "./view.js";
 import { decodeWsSnapshot, encodeWsAxis } from "./wsProtocol.js";
 
 interface DiscoveredHost {
   address: string;
   port: number;
+  nickname: string;
 }
 
 const SOCKET_RECONNECT_MS = 1500;
@@ -22,6 +32,8 @@ let reconnectTimer: number | undefined;
 let busy = false;
 let discovering = false;
 let webSocketSnapshotVersion = 0;
+let selectedHost: DiscoveredHost | null = null;
+let discoveryButtons: Array<{ host: DiscoveredHost; button: HTMLButtonElement }> = [];
 
 const motion = new MotionModel();
 const sound = new SoundController(ui.soundToggle, ui.volumeRange);
@@ -71,7 +83,10 @@ async function refreshStatus(): Promise<void> {
   }
 }
 
-async function postAction(path: string, body?: { port?: number; address?: string }): Promise<void> {
+async function postAction(
+  path: string,
+  body?: { port?: number; address?: string; nickname?: string },
+): Promise<void> {
   if (busy) return;
   busy = true;
   render(session.snapshot, busy, discovering);
@@ -101,6 +116,8 @@ function isDiscoveredHost(value: unknown): value is DiscoveredHost {
     isRecord(value) &&
     typeof value.address === "string" &&
     value.address.trim().length > 0 &&
+    typeof value.nickname === "string" &&
+    value.nickname.trim().length > 0 &&
     typeof value.port === "number" &&
     Number.isInteger(value.port) &&
     value.port >= 1 &&
@@ -108,9 +125,26 @@ function isDiscoveredHost(value: unknown): value is DiscoveredHost {
   );
 }
 
+function renderSelectedHost(): void {
+  ui.selectedHost.hidden = selectedHost === null;
+  ui.selectedHostName.textContent = selectedHost?.nickname ?? "";
+  for (const { host, button } of discoveryButtons) {
+    const selected = host === selectedHost;
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  }
+}
+
+function clearSelectedHost(): void {
+  selectedHost = null;
+  renderSelectedHost();
+}
+
 async function discoverHosts(): Promise<void> {
   if (busy || discovering) return;
   discovering = true;
+  clearSelectedHost();
+  discoveryButtons = [];
   ui.discoveryResults.hidden = false;
   ui.discoveryResults.replaceChildren();
   const searching = document.createElement("p");
@@ -133,21 +167,21 @@ async function discoverHosts(): Promise<void> {
       empty.textContent = "Игр не найдено. Введите адрес и порт друга.";
       ui.discoveryResults.append(empty);
     } else {
-      const first = hosts[0];
-      ui.peerAddress.value = first.address;
-      ui.joinPort.value = String(first.port);
       for (const host of hosts) {
         const item = document.createElement("button");
         item.type = "button";
         item.className = "discovery-result";
-        const address = document.createElement("strong");
-        address.textContent = host.address;
-        item.append(address, document.createTextNode(` · порт ${host.port}`));
+        item.setAttribute("aria-pressed", "false");
+        const nickname = document.createElement("strong");
+        nickname.textContent = host.nickname;
+        item.append(nickname, document.createTextNode(` · порт ${host.port}`));
         item.addEventListener("click", () => {
-          ui.peerAddress.value = host.address;
+          selectedHost = host;
+          ui.peerAddress.value = "";
           ui.joinPort.value = String(host.port);
-          ui.peerAddress.focus();
+          renderSelectedHost();
         });
+        discoveryButtons.push({ host, button: item });
         ui.discoveryResults.append(item);
       }
     }
@@ -213,6 +247,7 @@ function animate(now: number): void {
 }
 
 export function startGame(): void {
+  loadNickname();
   sound.loadSettings();
   window.addEventListener("pointerdown", () => sound.unlockAudio(), { capture: true });
   window.addEventListener("keydown", () => sound.unlockAudio(), { capture: true });
@@ -221,14 +256,29 @@ export function startGame(): void {
   ui.joinTab.addEventListener("click", () => setTab("join"));
   ui.hostForm.addEventListener("submit", (event) => {
     event.preventDefault();
+    const nickname = getNickname();
     const port = getPort(ui.hostPort);
-    if (port !== null) postAction("/api/host", { port });
+    if (nickname !== null && port !== null) postAction("/api/host", { port, nickname });
   });
   ui.joinForm.addEventListener("submit", (event) => {
     event.preventDefault();
+    const nickname = getNickname();
     const port = getPort(ui.joinPort);
-    const address = ui.peerAddress.value.trim();
-    if (port !== null && address) postAction("/api/join", { address, port });
+    const address = selectedHost?.address ?? ui.peerAddress.value.trim();
+    if (!address) {
+      ui.peerAddress.setCustomValidity("Выберите найденную игру или введите адрес друга.");
+      ui.peerAddress.reportValidity();
+      ui.peerAddress.setCustomValidity("");
+    }
+    if (nickname !== null && port !== null && address)
+      postAction("/api/join", { address, port, nickname });
+  });
+  ui.playerNickname.addEventListener("input", saveNickname);
+  ui.peerAddress.addEventListener("input", clearSelectedHost);
+  ui.joinPort.addEventListener("input", clearSelectedHost);
+  ui.clearSelectedHost.addEventListener("click", () => {
+    clearSelectedHost();
+    ui.peerAddress.focus();
   });
   ui.discoverButton.addEventListener("click", discoverHosts);
   ui.acceptButton.addEventListener("click", () => postAction("/api/accept"));
