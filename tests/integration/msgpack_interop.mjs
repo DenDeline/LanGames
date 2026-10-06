@@ -4,7 +4,8 @@ import { decode, encode } from "@msgpack/msgpack";
 switch (process.argv[2]) {
   case "decode": {
     const bytes = Buffer.from(readFileSync(0, "utf8").trim(), "base64");
-    process.stdout.write(JSON.stringify(decode(bytes)));
+    process.stdout.write(JSON.stringify(decode(bytes), (_key, value) =>
+      value?.type === "Buffer" && Array.isArray(value.data) ? value.data : value));
     break;
   }
   case "encode-controls": {

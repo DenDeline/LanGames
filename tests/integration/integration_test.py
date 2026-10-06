@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 import urllib.request
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -32,9 +33,9 @@ CANCELED_CHALLENGE_ID = "00112233445566778899aabbccddeeff"
 
 
 def wire_challenge_packet(tag, request_id):
-    # [union tag, [UDP version, GUID N request ID]]
+    # NativeGuidResolver writes a 16-byte MessagePack binary value in .NET Guid byte order.
     assert len(request_id) == 32 and all(char in "0123456789abcdef" for char in request_id)
-    return b"\x92" + bytes([tag]) + b"\x92\x06\xd9\x20" + request_id.encode("ascii")
+    return b"\x92" + bytes([tag]) + b"\x92\x07\xc4\x10" + uuid.UUID(hex=request_id).bytes_le
 
 
 HELLO_PACKET = wire_challenge_packet(2, CHALLENGE_ID)
@@ -51,7 +52,7 @@ def msgpack_helper(operation, payload=b""):
 def expect_challenge_reply(sock, tag, request_id):
     sock.settimeout(2)
     packet, _ = sock.recvfrom(1201)
-    assert msgpack_helper("decode", packet) == [tag, [6, request_id]], packet
+    assert msgpack_helper("decode", packet) == [tag, [7, list(uuid.UUID(hex=request_id).bytes_le)]], packet
 
 
 def control_packets():

@@ -68,7 +68,7 @@ internal sealed class GuestPredictionTimeline(GameEngine game)
             _localAxes.Remove(old);
     }
 
-    public InputPacket CreateInputPacket(string sessionId, long sequence)
+    public InputPacket CreateInputPacket(Guid sessionId, long sequence)
     {
         var tick = game.TickNumber;
         var axes = new List<int>(NetworkConstants.InputRedundancyTicks);

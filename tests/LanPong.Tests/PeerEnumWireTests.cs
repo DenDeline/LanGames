@@ -7,6 +7,7 @@ namespace LanPong.Tests;
 public sealed class PeerEnumWireTests
 {
     private static readonly JsonSerializerOptions WebJsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly Guid SessionId = Guid.ParseExact("ffeeddccbbaa99887766554433221100", "N");
 
     [Test]
     public async Task Snapshot_EnumValuesKeepTheBrowserJsonContract()
@@ -54,7 +55,8 @@ public sealed class PeerEnumWireTests
     {
         var bytes = WirePacketCodec.Serialize(new StatePacket
         {
-            Phase = GamePhase.Playing, Sequence = 42, ServeDirection = 1, RecentEvents = []
+            SessionId = SessionId, Phase = GamePhase.Playing, Sequence = 42,
+            ServeDirection = 1, RecentEvents = []
         });
         var (isInteger, phaseValue) = ReadPackedPhase(bytes);
 
@@ -68,7 +70,7 @@ public sealed class PeerEnumWireTests
     [Test]
     public async Task StatePacket_RejectsUndefinedPhaseValue()
     {
-        var bytes = WirePacketCodec.Serialize(new StatePacket { Phase = (GamePhase)255 });
+        var bytes = WirePacketCodec.Serialize(new StatePacket { SessionId = SessionId, Phase = (GamePhase)255 });
 
         await Assert.That(WirePacketCodec.TryDeserialize(bytes, out var decoded)).IsFalse();
         await Assert.That(decoded).IsNull();

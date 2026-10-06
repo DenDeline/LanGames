@@ -5,7 +5,9 @@ namespace LanPong.Tests;
 
 public sealed class WirePacketCodecTests
 {
-    private const string ChallengeId = "0123456789abcdef0123456789abcdef";
+    private static readonly Guid ChallengeId = Guid.ParseExact("00112233445566778899aabbccddeeff", "N");
+    private static readonly Guid SessionId = Guid.ParseExact("ffeeddccbbaa99887766554433221100", "N");
+    private static readonly Guid RestartId = Guid.ParseExact("0123456789abcdef0123456789abcdef", "N");
 
     [Test]
     public async Task EveryPacketType_RoundTripsWithItsStableUnionTag()
@@ -25,6 +27,29 @@ public sealed class WirePacketCodecTests
             await Assert.That(packet?.GetType()).IsEqualTo(original.GetType());
             await AssertPacketEquivalent(original, packet);
         }
+    }
+
+    [Test]
+    public async Task HelloPacket_WritesGuidAsNativeSixteenByteBinary()
+    {
+        var bytes = WirePacketCodec.Serialize(new HelloPacket { RequestId = ChallengeId });
+        var expected = Convert.FromHexString("92029207C41033221100554477668899AABBCCDDEEFF");
+
+        await Assert.That(bytes.SequenceEqual(expected)).IsTrue();
+        await Assert.That(WirePacketCodec.TryDeserialize(expected, out var decoded)).IsTrue();
+        await Assert.That(decoded is HelloPacket { RequestId: var id } && id == ChallengeId).IsTrue();
+    }
+
+    [Test]
+    public async Task TryDeserialize_RejectsFormerStringGuidAndWrongNativeLength()
+    {
+        var stringGuid = new byte[] { 0x92, 0x02, 0x92, 0x07, 0xd9, 0x20 }
+            .Concat(Encoding.ASCII.GetBytes(ChallengeId.ToString("N"))).ToArray();
+        var shortBinaryGuid = new byte[] { 0x92, 0x02, 0x92, 0x07, 0xc4, 0x0f }
+            .Concat(ChallengeId.ToByteArray()[..15]).ToArray();
+
+        await Assert.That(WirePacketCodec.TryDeserialize(stringGuid, out _)).IsFalse();
+        await Assert.That(WirePacketCodec.TryDeserialize(shortBinaryGuid, out _)).IsFalse();
     }
 
     [Test]
@@ -72,16 +97,23 @@ public sealed class WirePacketCodecTests
     }
 
     [Test]
-    public async Task TryDeserialize_RejectsMissingOrMalformedChallengeRequestIds()
+    public async Task TryDeserialize_RejectsEmptyIds()
     {
         WirePacket[] invalid =
         [
             new HelloPacket(),
-            new HelloPacket { RequestId = "short" },
-            new WelcomePacket { SessionId = "session" },
+            new WelcomePacket { SessionId = SessionId },
+            new WelcomePacket { RequestId = ChallengeId },
             new ChallengePendingPacket(),
             new ChallengeDeclinedPacket(),
-            new CancelChallengePacket()
+            new CancelChallengePacket(),
+            new InputPacket { SessionId = Guid.Empty, Sequence = 1, Tick = 1, Axes = [0] },
+            new StatePacket { SessionId = Guid.Empty, ServeDirection = 1, RecentEvents = [] },
+            new RestartPacket { SessionId = SessionId },
+            new RestartPacket { RequestId = RestartId },
+            new PingPacket { SessionId = Guid.Empty },
+            new PongPacket { SessionId = Guid.Empty },
+            new ByePacket { SessionId = Guid.Empty }
         ];
 
         foreach (var packet in invalid)
@@ -110,7 +142,7 @@ public sealed class WirePacketCodecTests
 
         var valid = WirePacketCodec.Serialize(new StatePacket
         {
-            SessionId = "test", Sequence = 42, ServeDirection = 1, RecentEvents = []
+            SessionId = SessionId, Sequence = 42, ServeDirection = 1, RecentEvents = []
         });
         for (var index = 0; index < valid.Length; index++)
         {
@@ -125,7 +157,7 @@ public sealed class WirePacketCodecTests
     {
         var input = new InputPacket
         {
-            SessionId = "session", Sequence = 10, Tick = 100,
+            SessionId = SessionId, Sequence = 10, Tick = 100,
             RoundId = 3, Axes = [1, 1, 0, -1, -1, 0, 1, 0]
         };
 
@@ -153,7 +185,7 @@ public sealed class WirePacketCodecTests
     {
         var state = new StatePacket
         {
-            SessionId = "session", Sequence = 10, RoundId = 3,
+            SessionId = SessionId, Sequence = 10, RoundId = 3,
             ServeDirection = -1, Hits = 4, HostAxis = 1,
             LastEventTick = 9, EventOrdinal = 1,
             RecentEvents = [new GameEvent("9:0:2", GameEventKind.Paddle, 9, 0.05, 0.5)]
@@ -190,7 +222,7 @@ public sealed class WirePacketCodecTests
         var tick = long.MaxValue;
         var state = new StatePacket
         {
-            SessionId = new string('f', 32), Sequence = tick,
+            SessionId = SessionId, Sequence = tick,
             RoundId = int.MaxValue, ServeDirection = 1,
             LastEventTick = tick, EventOrdinal = GameEventHistory.Capacity,
             RecentEvents = Enumerable.Range(0, GameEventHistory.Capacity)
@@ -207,15 +239,15 @@ public sealed class WirePacketCodecTests
     private static WirePacket[] CreatePackets() =>
     [
         new HelloPacket { RequestId = ChallengeId },
-        new WelcomePacket { SessionId = "session", RequestId = ChallengeId },
+        new WelcomePacket { SessionId = SessionId, RequestId = ChallengeId },
         new InputPacket
         {
-            SessionId = "session", Sequence = 42, Tick = 123456,
+            SessionId = SessionId, Sequence = 42, Tick = 123456,
             RoundId = 7, Axes = [-1, 0, 1]
         },
         new StatePacket
         {
-            SessionId = "session", Sequence = 123456,
+            SessionId = SessionId, Sequence = 123456,
             LeftY = 0.14, RightY = 0.86,
             BallX = 0.35, BallY = 0.64, BallVx = -0.72, BallVy = 0.31,
             LeftScore = 2, RightScore = 3, Phase = GamePhase.Playing,
@@ -224,10 +256,10 @@ public sealed class WirePacketCodecTests
             LastEventTick = 123450, EventOrdinal = 1,
             RecentEvents = [new GameEvent("123450:0:3", GameEventKind.Wall, 123450, 0.4, 0.012)]
         },
-        new RestartPacket { SessionId = "session", RequestId = "restart" },
-        new PingPacket { SessionId = "session", Sequence = 43 },
-        new PongPacket { SessionId = "session", Sequence = 43 },
-        new ByePacket { SessionId = "session" },
+        new RestartPacket { SessionId = SessionId, RequestId = RestartId },
+        new PingPacket { SessionId = SessionId, Sequence = 43 },
+        new PongPacket { SessionId = SessionId, Sequence = 43 },
+        new ByePacket { SessionId = SessionId },
         new ChallengePendingPacket { RequestId = ChallengeId },
         new ChallengeDeclinedPacket { RequestId = ChallengeId },
         new CancelChallengePacket { RequestId = ChallengeId }

@@ -1,5 +1,6 @@
 using System.Buffers;
 using MessagePack;
+using MessagePack.Resolvers;
 
 namespace LanPong;
 
@@ -17,8 +18,8 @@ namespace LanPong;
 [MessagePackObject]
 public abstract record WirePacket
 {
-    // Version 6 requires explicit acceptance before a challenge starts a match.
-    public const int CurrentVersion = 6;
+    // Version 7 encodes peer IDs as native 16-byte GUID values.
+    public const int CurrentVersion = 7;
 
     [Key(0)]
     public int Version { get; set; } = CurrentVersion;
@@ -28,44 +29,44 @@ public abstract record WirePacket
 public sealed record HelloPacket : WirePacket
 {
     [Key(1)]
-    public string? RequestId { get; init; }
+    public Guid RequestId { get; init; }
 }
 
 [MessagePackObject]
 public sealed record WelcomePacket : WirePacket
 {
     [Key(1)]
-    public string? SessionId { get; init; }
+    public Guid SessionId { get; init; }
     [Key(2)]
-    public string? RequestId { get; init; }
+    public Guid RequestId { get; init; }
 }
 
 [MessagePackObject]
 public sealed record ChallengePendingPacket : WirePacket
 {
     [Key(1)]
-    public string? RequestId { get; init; }
+    public Guid RequestId { get; init; }
 }
 
 [MessagePackObject]
 public sealed record ChallengeDeclinedPacket : WirePacket
 {
     [Key(1)]
-    public string? RequestId { get; init; }
+    public Guid RequestId { get; init; }
 }
 
 [MessagePackObject]
 public sealed record CancelChallengePacket : WirePacket
 {
     [Key(1)]
-    public string? RequestId { get; init; }
+    public Guid RequestId { get; init; }
 }
 
 [MessagePackObject]
 public sealed record InputPacket : WirePacket
 {
     [Key(1)]
-    public string? SessionId { get; init; }
+    public Guid SessionId { get; init; }
     [Key(2)]
     public long Sequence { get; init; }
     [Key(3)]
@@ -81,7 +82,7 @@ public sealed record InputPacket : WirePacket
 public sealed record StatePacket : WirePacket
 {
     [Key(1)]
-    public string? SessionId { get; init; }
+    public Guid SessionId { get; init; }
     [Key(2)]
     public long Sequence { get; init; }
     [Key(3)]
@@ -137,16 +138,16 @@ public sealed record StatePacket : WirePacket
 public sealed record RestartPacket : WirePacket
 {
     [Key(1)]
-    public string? SessionId { get; init; }
+    public Guid SessionId { get; init; }
     [Key(2)]
-    public string? RequestId { get; init; }
+    public Guid RequestId { get; init; }
 }
 
 [MessagePackObject]
 public sealed record PingPacket : WirePacket
 {
     [Key(1)]
-    public string? SessionId { get; init; }
+    public Guid SessionId { get; init; }
     [Key(2)]
     public long Sequence { get; init; }
 }
@@ -155,7 +156,7 @@ public sealed record PingPacket : WirePacket
 public sealed record PongPacket : WirePacket
 {
     [Key(1)]
-    public string? SessionId { get; init; }
+    public Guid SessionId { get; init; }
     [Key(2)]
     public long Sequence { get; init; }
 }
@@ -164,7 +165,7 @@ public sealed record PongPacket : WirePacket
 public sealed record ByePacket : WirePacket
 {
     [Key(1)]
-    public string? SessionId { get; init; }
+    public Guid SessionId { get; init; }
 }
 
 internal static class WirePacketCodec
@@ -172,6 +173,9 @@ internal static class WirePacketCodec
     internal const int MaxPacketBytes = 1200;
 
     private static readonly MessagePackSerializerOptions Options = MessagePackSerializerOptions.Standard
+        .WithResolver(CompositeResolver.Create(
+            [],
+            [NativeGuidResolver.Instance, StandardResolver.Instance]))
         .WithSecurity(MessagePackSecurity.UntrustedData);
 
     internal static byte[] Serialize(WirePacket packet) => MessagePackSerializer.Serialize(packet, Options);
@@ -188,23 +192,30 @@ internal static class WirePacketCodec
         {
             var decoded = MessagePackSerializer.Deserialize<WirePacket>(data, Options);
             if (decoded is not { Version: WirePacket.CurrentVersion } ||
-                decoded is HelloPacket hello && !ValidRequestId(hello.RequestId) ||
+                decoded is HelloPacket hello && hello.RequestId == Guid.Empty ||
                 decoded is WelcomePacket welcome &&
-                (string.IsNullOrEmpty(welcome.SessionId) || !ValidRequestId(welcome.RequestId)) ||
-                decoded is ChallengePendingPacket pending && !ValidRequestId(pending.RequestId) ||
-                decoded is ChallengeDeclinedPacket declined && !ValidRequestId(declined.RequestId) ||
-                decoded is CancelChallengePacket cancel && !ValidRequestId(cancel.RequestId) ||
+                (welcome.SessionId == Guid.Empty || welcome.RequestId == Guid.Empty) ||
+                decoded is ChallengePendingPacket pending && pending.RequestId == Guid.Empty ||
+                decoded is ChallengeDeclinedPacket declined && declined.RequestId == Guid.Empty ||
+                decoded is CancelChallengePacket cancel && cancel.RequestId == Guid.Empty ||
                 decoded is InputPacket input &&
-                (input.Sequence < 0 || input.Tick <= 0 || input.RoundId < 0 ||
+                (input.SessionId == Guid.Empty || input.Sequence < 0 || input.Tick <= 0 ||
+                 input.RoundId < 0 ||
                  input.Axes is not { Length: >= 1 and <= NetworkConstants.InputRedundancyTicks } ||
                  input.Axes.Any(axis => axis is < -1 or > 1)) ||
                 decoded is StatePacket state &&
-                (!Enum.IsDefined(state.Phase) || state.Sequence < 0 || state.RoundId < 0 ||
+                (state.SessionId == Guid.Empty || !Enum.IsDefined(state.Phase) ||
+                 state.Sequence < 0 || state.RoundId < 0 ||
                  state.ServeDirection is not (-1 or 1) || state.Hits < 0 ||
                  state.HostAxis is < -1 or > 1 || state.LastEventTick < -1 ||
                  state.LastEventTick > state.Sequence || state.EventOrdinal < 0 ||
                  state.RecentEvents is not { Length: <= GameEventHistory.Capacity } ||
-                 !ValidEvents(state.RecentEvents!, state.Sequence)))
+                 !ValidEvents(state.RecentEvents!, state.Sequence)) ||
+                decoded is RestartPacket restart &&
+                (restart.SessionId == Guid.Empty || restart.RequestId == Guid.Empty) ||
+                decoded is PingPacket ping && ping.SessionId == Guid.Empty ||
+                decoded is PongPacket pong && pong.SessionId == Guid.Empty ||
+                decoded is ByePacket bye && bye.SessionId == Guid.Empty)
                 return false;
 
             packet = decoded;
@@ -215,9 +226,6 @@ internal static class WirePacketCodec
             return false;
         }
     }
-
-    private static bool ValidRequestId(string? requestId) =>
-        requestId is { Length: 32 } && Guid.TryParseExact(requestId, "N", out _);
 
     private static bool ValidEvents(GameEvent[] events, long sequence)
     {

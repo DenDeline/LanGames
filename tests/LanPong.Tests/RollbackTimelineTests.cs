@@ -2,6 +2,8 @@ namespace LanPong.Tests;
 
 public sealed class RollbackTimelineTests
 {
+    private static readonly Guid SessionId = Guid.ParseExact("ffeeddccbbaa99887766554433221100", "N");
+
     [Test]
     public async Task LateInput_ReplaysPaddleCollisionAndRemovesPredictedScore()
     {
@@ -103,7 +105,7 @@ public sealed class RollbackTimelineTests
         await Assert.That(guest.TickNumber).IsEqualTo(8);
         await Assert.That(guest.RightY < predictedY).IsTrue();
         await Assert.That(guest.Capture()).IsEqualTo(expected.Capture());
-        var packet = prediction.CreateInputPacket("session", 99);
+        var packet = prediction.CreateInputPacket(SessionId, 99);
         await Assert.That(packet.Tick).IsEqualTo(8);
         await Assert.That(packet.Sequence).IsEqualTo(99);
         await Assert.That(packet.Axes).IsNotNull();
@@ -127,7 +129,7 @@ public sealed class RollbackTimelineTests
 
         prediction.Advance(1);
         await Assert.That(prediction.HasCurrentInput).IsTrue();
-        var packet = prediction.CreateInputPacket("session", 1);
+        var packet = prediction.CreateInputPacket(SessionId, 1);
         await Assert.That(packet.Tick).IsEqualTo(11);
         await Assert.That(packet.Axes).IsNotNull();
         await Assert.That(packet.Axes!.SequenceEqual([1])).IsTrue();
@@ -157,7 +159,7 @@ public sealed class RollbackTimelineTests
         // The next local tick is still within the host's eight-tick future
         // window. All of its redundant inputs are future ticks on the host.
         prediction.Advance(1);
-        var packet = prediction.CreateInputPacket("session", 1);
+        var packet = prediction.CreateInputPacket(SessionId, 1);
         await Assert.That(packet.Tick - host.TickNumber).IsGreaterThan(0);
         await Assert.That(packet.Tick - host.TickNumber).IsLessThanOrEqualTo(NetworkConstants.MaximumFutureInputTicks);
         await Assert.That(packet.Axes).IsNotNull();
@@ -186,7 +188,7 @@ public sealed class RollbackTimelineTests
         await Assert.That(guest.TickNumber).IsLessThanOrEqualTo(12);
 
         prediction.Advance(0);
-        var packet = prediction.CreateInputPacket("session", 1);
+        var packet = prediction.CreateInputPacket(SessionId, 1);
         await Assert.That(packet.Tick).IsEqualTo(guest.TickNumber);
         await Assert.That(packet.Axes).IsNotNull();
         await Assert.That(packet.Axes![0]).IsEqualTo(0);
@@ -194,7 +196,7 @@ public sealed class RollbackTimelineTests
 
     private static InputPacket Input(long tick, long sequence, int[] axes) => new()
     {
-        SessionId = "session", RoundId = 1, Tick = tick,
+        SessionId = SessionId, RoundId = 1, Tick = tick,
         Sequence = sequence, Axes = axes
     };
 

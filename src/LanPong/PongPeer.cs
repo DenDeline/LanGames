@@ -20,7 +20,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
     private readonly MdnsDiscovery _mdns;
     private GameEvent[] _confirmedGuestEvents = [];
     private readonly Dictionary<Guid, (int Axis, DateTime Updated)> _controllers = [];
-    private readonly List<(SocketAddress Address, string RequestId, DateTime RejectedAt)> _rejectedChallenges = [];
+    private readonly List<(SocketAddress Address, Guid RequestId, DateTime RejectedAt)> _rejectedChallenges = [];
     private readonly string[] _localAddresses = GetLocalAddresses();
     private readonly Task _clockTask;
     private Task? _shutdownTask;
@@ -36,12 +36,12 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
     private SocketAddress? _peerSocketAddress;
     private SocketAddress? _targetSocketAddress;
     private SocketAddress? _incomingChallengeSocketAddress;
-    private string? _sessionId;
-    private string? _outgoingChallengeId;
-    private string? _incomingChallengeId;
-    private string? _acceptedChallengeId;
-    private string? _lastRestartRequestId;
-    private string? _pendingRestartRequestId;
+    private Guid? _sessionId;
+    private Guid? _outgoingChallengeId;
+    private Guid? _incomingChallengeId;
+    private Guid? _acceptedChallengeId;
+    private Guid? _lastRestartRequestId;
+    private Guid? _pendingRestartRequestId;
     private int _restartAfterRound;
     private PeerRole _role = PeerRole.None;
     private ConnectionState _connection = ConnectionState.Idle;
@@ -186,7 +186,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                 _socketStop = stop;
                 _targetEndpoint = new IPEndPoint(targetAddress, port);
                 _targetSocketAddress = _targetEndpoint.Serialize();
-                _outgoingChallengeId = Guid.NewGuid().ToString("N");
+                _outgoingChallengeId = Guid.NewGuid();
                 _challengeStartedAt = DateTime.UtcNow;
                 _role = PeerRole.Guest;
                 _connection = ConnectionState.Connecting;
@@ -211,7 +211,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
             }
             else if (_role == PeerRole.Guest)
             {
-                _pendingRestartRequestId = Guid.NewGuid().ToString("N");
+                _pendingRestartRequestId = Guid.NewGuid();
                 _restartAfterRound = _game.RoundId;
                 _lastRestartSent = DateTime.MinValue;
             }
@@ -238,7 +238,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
             _incomingChallengeEndpoint = null;
             _incomingChallengeSocketAddress = null;
             _incomingChallengeId = null;
-            _sessionId = Guid.NewGuid().ToString("N");
+            _sessionId = Guid.NewGuid();
             _connection = ConnectionState.Connected;
             _message = "Вызов принят. Игра началась!";
             _lastPeerSeen = DateTime.UtcNow;
@@ -248,7 +248,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
             _game.StartMatch();
             _hostTimeline.Reset();
             _mdns.SetHostPort(null);
-            welcome = new WelcomePacket { SessionId = _sessionId, RequestId = _acceptedChallengeId };
+            welcome = new WelcomePacket { SessionId = _sessionId.Value, RequestId = _acceptedChallengeId.Value };
         }
         await SendQuietlyAsync(socket, destination, welcome, _lifetime.Token);
     }
@@ -266,7 +266,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
 
             socket = _socket;
             destination = _incomingChallengeEndpoint;
-            declined = new ChallengeDeclinedPacket { RequestId = _incomingChallengeId };
+            declined = new ChallengeDeclinedPacket { RequestId = _incomingChallengeId.Value };
             ClearIncomingChallengeLocked("Вызов отклонён. Ожидание другого игрока…");
         }
         await SendQuietlyAsync(socket, destination, declined, _lifetime.Token);
@@ -285,11 +285,11 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                 socket = _socket;
                 peer = _peerEndpoint ?? _incomingChallengeEndpoint ?? _targetEndpoint;
                 bye = _sessionId is not null
-                    ? new ByePacket { SessionId = _sessionId }
+                    ? new ByePacket { SessionId = _sessionId.Value }
                     : _role == PeerRole.Guest && _outgoingChallengeId is not null
-                        ? new CancelChallengePacket { RequestId = _outgoingChallengeId }
+                        ? new CancelChallengePacket { RequestId = _outgoingChallengeId.Value }
                         : _role == PeerRole.Host && _incomingChallengeId is not null
-                            ? new ChallengeDeclinedPacket { RequestId = _incomingChallengeId }
+                            ? new ChallengeDeclinedPacket { RequestId = _incomingChallengeId.Value }
                             : null;
             }
             if (socket is not null && peer is not null && bye is not null)
@@ -404,7 +404,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                             _incomingChallengeEndpoint is not null && _incomingChallengeId is not null)
                         {
                             destination = _incomingChallengeEndpoint;
-                            packet = new ChallengeDeclinedPacket { RequestId = _incomingChallengeId };
+                            packet = new ChallengeDeclinedPacket { RequestId = _incomingChallengeId.Value };
                             ClearIncomingChallengeLocked("Вызов истёк. Ожидание другого игрока…");
                         }
                         if (_peerEndpoint is not null && now - _lastPeerSeen > NetworkConstants.PeerIdleTimeout)
@@ -451,7 +451,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                               now - _lastPeerSeen >= NetworkConstants.PeerIdleTimeout)))
                         {
                             if (_outgoingChallengeId is not null)
-                                packet = new CancelChallengePacket { RequestId = _outgoingChallengeId };
+                                packet = new CancelChallengePacket { RequestId = _outgoingChallengeId.Value };
                             (socketToClose, stopToClose, _) = ResetSocketLocked(
                                 "Вызов истёк или связь с соперником потеряна.");
                             accumulatedTime = 0;
@@ -461,7 +461,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                             _outgoingChallengeId is not null)
                         {
                             _lastHelloSent = now;
-                            packet = new HelloPacket { RequestId = _outgoingChallengeId };
+                            packet = new HelloPacket { RequestId = _outgoingChallengeId.Value };
                         }
                         else if (_connection == ConnectionState.Connected && _sessionId is not null)
                         {
@@ -469,7 +469,10 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                                 now - _lastRestartSent >= NetworkConstants.RestartRetryInterval)
                             {
                                 _lastRestartSent = now;
-                                packet = new RestartPacket { SessionId = _sessionId, RequestId = _pendingRestartRequestId };
+                                packet = new RestartPacket
+                                {
+                                    SessionId = _sessionId.Value, RequestId = _pendingRestartRequestId.Value
+                                };
                             }
                             if (_guestTimeline.Started)
                             {
@@ -482,7 +485,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                                 }
                                 if (_game.TickNumber > _lastInputSentTick && _guestTimeline.HasCurrentInput)
                                 {
-                                    inputPacket = _guestTimeline.CreateInputPacket(_sessionId, ++_outSequence);
+                                    inputPacket = _guestTimeline.CreateInputPacket(_sessionId.Value, ++_outSequence);
                                     _lastInputSentTick = _game.TickNumber;
                                 }
                             }
@@ -496,7 +499,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                         _lastPingSent = now;
                         _pendingPingSequence = ++_pingSequence;
                         _pingSentTimestamp = Stopwatch.GetTimestamp();
-                        pingPacket = new PingPacket { SessionId = _sessionId, Sequence = _pendingPingSequence };
+                        pingPacket = new PingPacket { SessionId = _sessionId.Value, Sequence = _pendingPingSequence };
                     }
                     if (_pingMs is not null && now - _lastPongSeen > NetworkConstants.PingStaleAfter)
                         _pingMs = null;
@@ -518,7 +521,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
         var state = _game.Capture();
         return new StatePacket
         {
-            SessionId = _sessionId, Sequence = state.TickNumber,
+            SessionId = _sessionId!.Value, Sequence = state.TickNumber,
             LeftY = state.LeftY, RightY = state.RightY,
             BallX = state.BallX, BallY = state.BallY,
             BallVx = state.BallVx, BallVy = state.BallVy,
@@ -557,7 +560,8 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
     private void ClearIncomingChallengeLocked(string message)
     {
         if (_incomingChallengeSocketAddress is not null && _incomingChallengeId is not null)
-            RememberRejectedChallengeLocked(_incomingChallengeSocketAddress, _incomingChallengeId, DateTime.UtcNow);
+            RememberRejectedChallengeLocked(
+                _incomingChallengeSocketAddress, _incomingChallengeId.Value, DateTime.UtcNow);
         _incomingChallengeEndpoint = null;
         _incomingChallengeSocketAddress = null;
         _incomingChallengeId = null;
@@ -567,13 +571,13 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
         _mdns.SetHostPort(_udpPort);
     }
 
-    private bool IsRejectedChallengeLocked(SocketAddress address, string requestId, DateTime now)
+    private bool IsRejectedChallengeLocked(SocketAddress address, Guid requestId, DateTime now)
     {
         _rejectedChallenges.RemoveAll(item => now - item.RejectedAt >= NetworkConstants.ChallengeLifetime);
         return _rejectedChallenges.Any(item => item.Address.Equals(address) && item.RequestId == requestId);
     }
 
-    private void RememberRejectedChallengeLocked(SocketAddress address, string requestId, DateTime now)
+    private void RememberRejectedChallengeLocked(SocketAddress address, Guid requestId, DateTime now)
     {
         if (IsRejectedChallengeLocked(address, requestId, now)) return;
         const int maximumRememberedChallenges = 32;
@@ -680,7 +684,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
             if (_socket != socket) return;
             if (_role == PeerRole.Host)
             {
-                if (packet is HelloPacket hello && hello.RequestId is not null)
+                if (packet is HelloPacket hello && hello.RequestId != Guid.Empty)
                 {
                     if (_peerEndpoint is not null)
                     {
@@ -688,7 +692,10 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                             hello.RequestId == _acceptedChallengeId)
                         {
                             _lastPeerSeen = now;
-                            reply = new WelcomePacket { SessionId = _sessionId, RequestId = _acceptedChallengeId };
+                            reply = new WelcomePacket
+                            {
+                                SessionId = _sessionId!.Value, RequestId = _acceptedChallengeId!.Value
+                            };
                         }
                     }
                     else if (IsRejectedChallengeLocked(remote, hello.RequestId, now))
@@ -732,7 +739,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                     var canceledEndpoint = (IPEndPoint)(socket.Client.AddressFamily == AddressFamily.InterNetworkV6
                         ? NetworkConstants.AnyIpv6Endpoint
                         : NetworkConstants.AnyIpv4Endpoint).Create(remote);
-                    RememberRejectedChallengeLocked(canceledEndpoint.Serialize(), cancel.RequestId!, now);
+                    RememberRejectedChallengeLocked(canceledEndpoint.Serialize(), cancel.RequestId, now);
                     if (_connection == ConnectionState.IncomingChallenge &&
                         _incomingChallengeSocketAddress?.Equals(remote) == true &&
                         cancel.RequestId == _incomingChallengeId)
@@ -748,7 +755,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                     {
                         case PingPacket ping when ping.SessionId == _sessionId:
                             _lastPeerSeen = now;
-                            reply = new PongPacket { SessionId = _sessionId, Sequence = ping.Sequence };
+                            reply = new PongPacket { SessionId = _sessionId.Value, Sequence = ping.Sequence };
                             break;
                         case PongPacket pong when pong.SessionId == _sessionId:
                             _lastPeerSeen = now;
@@ -762,7 +769,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                                     _game.TickNumber - NetworkConstants.StateSendIntervalTicks);
                             break;
                         case RestartPacket restart when restart.SessionId == _sessionId &&
-                                                        !string.IsNullOrEmpty(restart.RequestId):
+                                                        restart.RequestId != Guid.Empty:
                             _lastPeerSeen = now;
                             if (restart.RequestId != _lastRestartRequestId)
                             {
@@ -792,7 +799,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                         (socketToClose, stopToClose, _) = ResetSocketLocked(
                             "Вызов отклонён. Выберите другую игру или попробуйте позже.");
                         break;
-                    case WelcomePacket welcome when !string.IsNullOrEmpty(welcome.SessionId) &&
+                    case WelcomePacket welcome when welcome.SessionId != Guid.Empty &&
                                                     welcome.RequestId == _outgoingChallengeId &&
                                                     _connection is (ConnectionState.Connecting or ConnectionState.AwaitingAcceptance):
                         if (_sessionId != welcome.SessionId)
@@ -813,7 +820,7 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                         break;
                     case PingPacket ping when _sessionId is not null && ping.SessionId == _sessionId:
                         _lastPeerSeen = now;
-                        reply = new PongPacket { SessionId = _sessionId, Sequence = ping.Sequence };
+                        reply = new PongPacket { SessionId = _sessionId.Value, Sequence = ping.Sequence };
                         break;
                     case PongPacket pong when _sessionId is not null && pong.SessionId == _sessionId:
                         _lastPeerSeen = now;
@@ -830,13 +837,13 @@ internal sealed class PongPeer : IHostedLifecycleService, IAsyncDisposable
                         if (_game.TickNumber > _lastInputSentTick && _guestTimeline.HasCurrentInput)
                         {
                             _lastInputSentTick = _game.TickNumber;
-                            reply = _guestTimeline.CreateInputPacket(_sessionId, ++_outSequence);
+                            reply = _guestTimeline.CreateInputPacket(_sessionId.Value, ++_outSequence);
                         }
                         if (_pendingRestartRequestId is not null && state.RoundId > _restartAfterRound)
                             _pendingRestartRequestId = null;
                         break;
                     // Welcome and Bye can arrive out of order while the first handshake is in flight.
-                    case ByePacket bye when !string.IsNullOrEmpty(bye.SessionId) &&
+                    case ByePacket bye when bye.SessionId != Guid.Empty &&
                                               (bye.SessionId == _sessionId ||
                                               _connection is (ConnectionState.Connecting or ConnectionState.AwaitingAcceptance) &&
                                               _sessionId is null):
