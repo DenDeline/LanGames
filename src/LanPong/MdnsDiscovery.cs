@@ -26,6 +26,7 @@ internal sealed class MdnsDiscovery : IAsyncDisposable
     private bool _disposed;
 
     private string FullInstanceName => $"{_instanceName}.{MdnsConstants.ServiceType}";
+    internal string InstanceName => FullInstanceName;
     private string HostName => $"{_instanceName.ToLowerInvariant()}.local.";
 
     public MdnsDiscovery(ILogger logger)

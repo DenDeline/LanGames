@@ -6,6 +6,7 @@ export type ConnectionState =
   | "connected"
   | "incomingChallenge"
   | "awaitingAcceptance"
+  | "searching"
   | "disconnected";
 export type GamePhase = "waiting" | "countdown" | "playing" | "gameover";
 export type GameEventKind = "serve" | "paddle" | "wall" | "goal" | "match";
@@ -43,13 +44,11 @@ export interface PongSnapshot {
   events: GameEvent[];
 }
 
-export const DEFAULT_UDP_PORT = 47777;
-
 export const defaultSnapshot: PongSnapshot = {
   role: "none",
   connection: "idle",
   message: "",
-  udpPort: DEFAULT_UDP_PORT,
+  udpPort: 0,
   localAddresses: [],
   peerAddress: null,
   localNickname: "",
@@ -124,6 +123,7 @@ export function parseSnapshot(data: Record<string, unknown>): PongSnapshot {
       "connected",
       "incomingChallenge",
       "awaitingAcceptance",
+      "searching",
       "disconnected",
     ])
       ? data.connection

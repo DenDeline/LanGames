@@ -4,11 +4,14 @@ namespace LanPong;
 
 internal sealed partial class PongPeer
 {
-    private async Task StopSocketAsync()
+    private async Task<bool> StopSocketAsync(Func<bool>? canStop = null)
     {
         (UdpClient? Socket, CancellationTokenSource? Stop, Task? Receiver) detached;
         lock (_gate)
+        {
+            if (canStop is not null && !canStop()) return false;
             detached = ResetSocketLocked();
+        }
         _mdns.SetHostPort(null);
         detached.Stop?.Cancel();
         detached.Socket?.Dispose();
@@ -18,14 +21,18 @@ internal sealed partial class PongPeer
             catch (OperationCanceledException) { }
         }
         if (detached.Receiver is null) detached.Stop?.Dispose();
+        return true;
     }
 
     // The receive loop may call this without awaiting its own completion.
     private (UdpClient? Socket, CancellationTokenSource? Stop, Task? Receiver) ResetSocketLocked(
-        string message = "Создайте игру или подключитесь к другу.")
+        string message = "Нажмите «Быстрая игра» или подключитесь к другу.")
     {
+        var retryQuick = _quickMode && _role == PeerRole.Guest &&
+                         _connection is (ConnectionState.Connecting or ConnectionState.AwaitingAcceptance);
         var detached = (_socket, _socketStop, _receiveTask);
         _socket = null;
+        _quickHostAutoAccept = false;
         _socketStop = null;
         _receiveTask = null;
         _peerEndpoint = _targetEndpoint = null;
@@ -39,8 +46,8 @@ internal sealed partial class PongPeer
         _confirmedGuestEvents = [];
         _restartAfterRound = 0;
         _role = PeerRole.None;
-        _connection = ConnectionState.Idle;
-        _message = message;
+        _connection = retryQuick ? ConnectionState.Searching : ConnectionState.Idle;
+        _message = retryQuick ? "Соперник недоступен. Ищем другую игру…" : message;
         _udpPort = 0;
         _controllers.Clear();
         _outSequence = 0;
@@ -96,6 +103,21 @@ internal sealed partial class PongPeer
         _ping.Reset();
         _game.ResetWaiting();
         _hostTimeline.Reset();
+    }
+
+    // A Quick Game lobby serves one match; an explicitly hosted lobby remains open.
+    private (UdpClient? Socket, CancellationTokenSource? Stop, Task? Receiver) EndHostMatchLocked(
+        string waitingMessage, string quickMessage)
+    {
+        if (!_quickHostAutoAccept)
+        {
+            ReturnHostToWaitingLocked(waitingMessage);
+            return default;
+        }
+
+        var detached = ResetSocketLocked(quickMessage);
+        _mdns.SetHostPort(null);
+        return detached;
     }
 
 }

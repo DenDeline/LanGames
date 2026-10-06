@@ -277,4 +277,4 @@ public sealed record PongSnapshot(
     string LocalNickname,
     string? PeerNickname);
 
-public sealed record DiscoveredHost(string Address, int Port, string Nickname);
+public sealed record DiscoveredHost(string Address, int Port, string Nickname, string InstanceName);

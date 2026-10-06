@@ -55,6 +55,15 @@
 .nickname-field {
   margin-bottom: 20px;
 }
+.quick-description {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.quick-button {
+  width: 100%;
+}
 .input-row,
 .discover-row {
   display: flex;

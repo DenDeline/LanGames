@@ -49,7 +49,7 @@ internal sealed partial class PongPeer
                 HandleHostHelloLocked(anyEndpoint, remote, hello, now, ref actions);
                 break;
             case CancelChallengePacket cancel:
-                HandleHostCancelLocked(remote, cancel, now);
+                HandleHostCancelLocked(remote, cancel, now, ref actions);
                 break;
             default:
                 if (_peerSocketAddress?.Equals(remote) == true && _sessionId is not null)
@@ -89,10 +89,17 @@ internal sealed partial class PongPeer
             _connection = ConnectionState.IncomingChallenge;
             _message = "Входящий вызов. Примите или отклоните его.";
             _mdns.SetHostPort(null);
-            actions.Reply = new ChallengePendingPacket
+            if (_quickHostAutoAccept)
             {
-                RequestId = hello.RequestId, Nickname = _localNickname
-            };
+                var accepted = AcceptChallengeLocked();
+                actions.Reply = accepted.Welcome;
+                actions.Destination = accepted.Destination;
+            }
+            else
+                actions.Reply = new ChallengePendingPacket
+                {
+                    RequestId = hello.RequestId, Nickname = _localNickname
+                };
         }
         else if (_incomingChallengeSocketAddress?.Equals(remote) == true &&
                  hello.RequestId == _incomingChallengeId)
@@ -111,7 +118,8 @@ internal sealed partial class PongPeer
         }
     }
 
-    private void HandleHostCancelLocked(SocketAddress remote, CancelChallengePacket cancel, DateTime now)
+    private void HandleHostCancelLocked(SocketAddress remote, CancelChallengePacket cancel, DateTime now,
+        ref PacketActions actions)
     {
         _rejectedChallenges.Remember(remote, cancel.RequestId, now);
         if (_connection == ConnectionState.IncomingChallenge &&
@@ -121,7 +129,9 @@ internal sealed partial class PongPeer
         else if (_connection == ConnectionState.Connected &&
                  _peerSocketAddress?.Equals(remote) == true &&
                  cancel.RequestId == _acceptedChallengeId)
-            ReturnHostToWaitingLocked("Соперник отменил вызов. Ожидание другого игрока…");
+            (actions.SocketToClose, actions.StopToClose, _) = EndHostMatchLocked(
+                "Соперник отменил вызов. Ожидание другого игрока…",
+                "Соперник отменил игру. Нажмите «Быстрая игра», чтобы сыграть снова.");
     }
 
     private void HandleHostSessionPacketLocked(WirePacket packet, DateTime now, ref PacketActions actions)
@@ -152,7 +162,9 @@ internal sealed partial class PongPeer
                 }
                 break;
             case ByePacket bye when bye.SessionId == _sessionId:
-                ReturnHostToWaitingLocked("Соперник вышел. Ожидание нового игрока…");
+                (actions.SocketToClose, actions.StopToClose, _) = EndHostMatchLocked(
+                    "Соперник вышел. Ожидание нового игрока…",
+                    "Соперник вышел. Нажмите «Быстрая игра», чтобы сыграть снова.");
                 break;
         }
     }
@@ -186,6 +198,7 @@ internal sealed partial class PongPeer
                 _connection = ConnectionState.Connected;
                 _peerNickname = welcome.Nickname;
                 _message = "Вы подключились. Игра началась!";
+                CancelQuickMatchmakingLocked();
                 _outgoingChallengeId = null;
                 _lastPeerSeen = now;
                 break;

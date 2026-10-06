@@ -174,7 +174,7 @@ async function discoverHosts(): Promise<void> {
         item.setAttribute("aria-pressed", "false");
         const nickname = document.createElement("strong");
         nickname.textContent = host.nickname;
-        item.append(nickname, document.createTextNode(` · порт ${host.port}`));
+        item.append(nickname);
         item.addEventListener("click", () => {
           selectedHost = host;
           ui.peerAddress.value = "";
@@ -252,13 +252,12 @@ export function startGame(): void {
   window.addEventListener("pointerdown", () => sound.unlockAudio(), { capture: true });
   window.addEventListener("keydown", () => sound.unlockAudio(), { capture: true });
   sound.bindControls();
-  ui.hostTab.addEventListener("click", () => setTab("host"));
+  ui.quickTab.addEventListener("click", () => setTab("quick"));
   ui.joinTab.addEventListener("click", () => setTab("join"));
-  ui.hostForm.addEventListener("submit", (event) => {
+  ui.quickForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const nickname = getNickname();
-    const port = getPort(ui.hostPort);
-    if (nickname !== null && port !== null) postAction("/api/host", { port, nickname });
+    if (nickname !== null) postAction("/api/quick", { nickname });
   });
   ui.joinForm.addEventListener("submit", (event) => {
     event.preventDefault();

@@ -13,6 +13,19 @@ app.UseStaticFiles();
 
 app.MapGet("/api/status", () => peer.Snapshot());
 
+app.MapPost("/api/quick", async (QuickGameRequest request) =>
+{
+    try
+    {
+        await peer.QuickGameAsync(request.Nickname);
+        return Results.Ok(peer.Snapshot());
+    }
+    catch (Exception ex) when (ex is ArgumentException or SocketException or InvalidOperationException)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+});
+
 app.MapPost("/api/host", async (HostRequest request) =>
 {
     try
@@ -110,4 +123,5 @@ app.Map("/ws", context => PongWebSocketEndpoint.HandleAsync(context, peer, app.L
 app.Run();
 
 internal sealed record HostRequest(int Port, string Nickname);
+internal sealed record QuickGameRequest(string Nickname);
 internal sealed record JoinRequest(string Address, int Port, string Nickname);

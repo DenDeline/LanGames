@@ -1,4 +1,4 @@
-import { DEFAULT_UDP_PORT, type PongSnapshot } from "./snapshot.js";
+import type { PongSnapshot } from "./snapshot.js";
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -31,17 +31,16 @@ export const ui = {
   declineButton: element<HTMLButtonElement>("decline-button"),
   liveIndicator: element("live-indicator"),
   liveLabel: element("live-label"),
-  hostTab: element<HTMLButtonElement>("tab-host"),
+  quickTab: element<HTMLButtonElement>("tab-host"),
   joinTab: element<HTMLButtonElement>("tab-join"),
-  hostPanel: element("host-panel"),
+  quickPanel: element("quick-panel"),
   joinPanel: element("join-panel"),
-  hostForm: element<HTMLFormElement>("host-form"),
+  quickForm: element<HTMLFormElement>("quick-form"),
   joinForm: element<HTMLFormElement>("join-form"),
   playerNickname: element<HTMLInputElement>("player-nickname"),
-  hostPort: element<HTMLInputElement>("host-port"),
   joinPort: element<HTMLInputElement>("join-port"),
   peerAddress: element<HTMLInputElement>("peer-address"),
-  hostButton: element<HTMLButtonElement>("host-button"),
+  quickButton: element<HTMLButtonElement>("quick-button"),
   joinButton: element<HTMLButtonElement>("join-button"),
   discoverButton: element<HTMLButtonElement>("discover-button"),
   discoveryResults: element("discovery-results"),
@@ -69,7 +68,7 @@ let lastUiSignature: string | null = null;
 let toastTimer: number | undefined;
 let nicknameWasEdited = false;
 let preferredNickname: string | null = null;
-let wasInGame = false;
+let wasActive = false;
 
 function validNickname(value: string): boolean {
   return (
@@ -140,20 +139,22 @@ function writeText(element: HTMLElement, value: string | number): void {
   if (element.textContent !== text) element.textContent = text;
 }
 
-export function setTab(tab: "host" | "join"): void {
-  const isHost = tab === "host";
-  ui.hostTab.classList.toggle("is-active", isHost);
-  ui.joinTab.classList.toggle("is-active", !isHost);
-  ui.hostTab.setAttribute("aria-selected", String(isHost));
-  ui.joinTab.setAttribute("aria-selected", String(!isHost));
-  ui.hostPanel.hidden = !isHost;
-  ui.joinPanel.hidden = isHost;
+export function setTab(tab: "quick" | "join"): void {
+  const isQuick = tab === "quick";
+  ui.quickTab.classList.toggle("is-active", isQuick);
+  ui.joinTab.classList.toggle("is-active", !isQuick);
+  ui.quickTab.setAttribute("aria-selected", String(isQuick));
+  ui.joinTab.setAttribute("aria-selected", String(!isQuick));
+  ui.quickPanel.hidden = !isQuick;
+  ui.joinPanel.hidden = isQuick;
 }
 
 function connectionText(snapshot: PongSnapshot): string {
   switch (snapshot.connection) {
     case "waiting":
       return "Ожидаем соперника";
+    case "searching":
+      return "Ищем соперника";
     case "connecting":
       return "Подключаемся";
     case "incomingChallenge":
@@ -170,6 +171,7 @@ function connectionText(snapshot: PongSnapshot): string {
 }
 
 function roleText(snapshot: PongSnapshot): string {
+  if (snapshot.connection === "searching") return "Поиск соперника";
   switch (snapshot.role) {
     case "host":
       return "Первый игрок";
@@ -181,8 +183,11 @@ function roleText(snapshot: PongSnapshot): string {
 }
 
 function overlayContent(snapshot: PongSnapshot): [string, string, string] | null {
+  if (snapshot.connection === "searching") {
+    return ["Быстрая игра", "Ищем соперника", "Проверяем игры в локальной сети…"];
+  }
   if (snapshot.role === "none") {
-    return ["Локальный матч", "Создайте игру", "Или найдите игру друга."];
+    return ["Локальный матч", "Быстрая игра", "Найдём соперника в вашей сети."];
   }
   if (snapshot.connection === "disconnected") {
     return ["Сеть", "Связь потеряна", "Проверьте сеть или покиньте игру, чтобы начать заново."];
@@ -209,15 +214,15 @@ function overlayContent(snapshot: PongSnapshot): [string, string, string] | null
   }
   if (snapshot.phase === "playing" && snapshot.connection === "connected") return null;
   if (snapshot.connection === "connecting") {
-    return ["Подключение", "Подключаемся", "Ждём ответ друга…"];
+    return ["Подключение", "Подключаемся", "Ждём ответ соперника…"];
   }
   if (snapshot.connection === "incomingChallenge") {
     return ["Вызов на матч", "Примите вызов", "Решите, хотите ли сыграть с этим соперником."];
   }
   if (snapshot.connection === "awaitingAcceptance") {
-    return ["Вызов отправлен", "Ждём согласия", "Матч начнётся, когда друг примет вызов."];
+    return ["Вызов отправлен", "Ждём согласия", "Матч начнётся, когда соперник примет вызов."];
   }
-  return ["Ожидание", "Ждём друга", "Друг найдёт вашу игру по нику в сети."];
+  return ["Ожидание", "Ждём соперника", "Ваша игра доступна игрокам в локальной сети."];
 }
 
 function localDisplayName(snapshot: PongSnapshot): string {
@@ -252,12 +257,13 @@ function renderAddresses(snapshot: PongSnapshot): void {
 
 export function render(snapshot: PongSnapshot, busy: boolean, discovering: boolean): void {
   const inGame = snapshot.role === "host" || snapshot.role === "guest";
-  if (inGame && snapshot.localNickname && ui.playerNickname.value !== snapshot.localNickname)
+  const active = inGame || snapshot.connection === "searching";
+  if (active && snapshot.localNickname && ui.playerNickname.value !== snapshot.localNickname)
     ui.playerNickname.value = snapshot.localNickname;
-  else if (!inGame && wasInGame && preferredNickname) ui.playerNickname.value = preferredNickname;
+  else if (!active && wasActive && preferredNickname) ui.playerNickname.value = preferredNickname;
   else if (!nicknameWasEdited && !ui.playerNickname.value && snapshot.localNickname)
     ui.playerNickname.value = snapshot.localNickname;
-  wasInGame = inGame;
+  wasActive = active;
   // Network snapshots arrive much more often than score, ping text, or controls change.
   const uiSignature = JSON.stringify([
     snapshot.role,
@@ -310,7 +316,13 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   writeText(
     ui.peerDetail,
     snapshot.peerNickname ||
-      (snapshot.peerAddress ? "Соперник" : inGame ? "Ожидаем подключения" : "—"),
+      (snapshot.peerAddress
+        ? "Соперник"
+        : snapshot.connection === "searching"
+          ? "Ищем соперника"
+          : inGame
+            ? "Ожидаем подключения"
+            : "—"),
   );
   ui.pingRow.hidden = !connected;
   const ping = snapshot.pingMs;
@@ -322,7 +334,8 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   );
   writeText(
     ui.sessionMessage,
-    snapshot.message || (inGame ? status + "." : "Создайте игру или присоединитесь к сопернику."),
+    snapshot.message ||
+      (active ? status + "." : "Начните быструю игру или присоединитесь к другу."),
   );
   ui.challengeRequest.hidden = !incomingChallenge;
   if (incomingChallenge) writeText(ui.challengePeer, peerDisplayName(snapshot));
@@ -336,9 +349,11 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
       ? "Матч идёт"
       : snapshot.phase === "gameover"
         ? "Матч окончен"
-        : inGame
-          ? "Ожидание игры"
-          : "Пора сыграть",
+        : snapshot.connection === "searching"
+          ? "Подбираем соперника"
+          : inGame
+            ? "Ожидание игры"
+            : "Пора сыграть",
   );
 
   const overlay = overlayContent(snapshot);
@@ -349,23 +364,32 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
     writeText(ui.overlayDescription, overlay[2]);
   }
 
-  ui.hostButton.disabled = busy || inGame;
-  ui.joinButton.disabled = busy || inGame;
-  ui.discoverButton.disabled = busy || discovering || inGame;
-  ui.hostPort.disabled = busy || inGame;
-  ui.joinPort.disabled = busy || inGame;
-  ui.playerNickname.disabled = busy || inGame;
-  ui.peerAddress.disabled = busy || inGame;
+  ui.quickButton.disabled = busy || active;
+  writeText(
+    ui.quickButton,
+    snapshot.connection === "searching"
+      ? "Ищем соперника…"
+      : busy && !active
+        ? "Запускаем…"
+        : "Быстрая игра",
+  );
+  ui.joinButton.disabled = busy || active;
+  ui.discoverButton.disabled = busy || discovering || active;
+  ui.joinPort.disabled = busy || active;
+  ui.playerNickname.disabled = busy || active;
+  ui.peerAddress.disabled = busy || active;
   ui.restartButton.disabled = busy || !connected || snapshot.phase !== "gameover";
-  ui.leaveButton.disabled = busy || !inGame;
+  ui.leaveButton.disabled = busy || !active;
   writeText(
     ui.leaveButton,
-    snapshot.connection === "awaitingAcceptance" || snapshot.connection === "connecting"
-      ? "Отменить вызов"
-      : "Покинуть игру",
+    snapshot.connection === "searching"
+      ? "Отменить поиск"
+      : snapshot.connection === "awaitingAcceptance" || snapshot.connection === "connecting"
+        ? "Отменить вызов"
+        : "Покинуть игру",
   );
-  ui.shareBox.hidden = snapshot.role !== "host";
+  ui.shareBox.hidden = snapshot.role !== "host" || snapshot.connection !== "waiting";
   writeText(ui.shareNickname, localDisplayName(snapshot));
-  writeText(ui.sharePort, snapshot.udpPort || Number(ui.hostPort.value) || DEFAULT_UDP_PORT);
+  writeText(ui.sharePort, snapshot.udpPort > 0 ? snapshot.udpPort : "—");
   if (snapshot.role === "host") renderAddresses(snapshot);
 }

@@ -21,7 +21,7 @@ public sealed class BrowserWebSocketProtocolTests
         var (fieldCount, version, decoded, atEnd) = ReadSnapshot(buffer.WrittenMemory);
 
         await Assert.That(fieldCount).IsEqualTo(23);
-        await Assert.That(version).IsEqualTo(4);
+        await Assert.That(version).IsEqualTo(5);
         await Assert.That(atEnd).IsTrue();
         await Assert.That(decoded with
         {
@@ -37,16 +37,16 @@ public sealed class BrowserWebSocketProtocolTests
     {
         foreach (var axis in new[] { -1, 0, 1 })
         {
-            var bytes = new byte[] { 0x92, 0x04, unchecked((byte)axis) };
+            var bytes = new byte[] { 0x92, 0x05, unchecked((byte)axis) };
             await Assert.That(BrowserWebSocketProtocol.TryReadAxis(bytes, out var parsed)).IsTrue();
             await Assert.That(parsed).IsEqualTo(axis);
         }
 
         byte[][] invalid =
         [
-            [], [0x92, 0x04], [0x92, 0x03, 0x01], [0x92, 0x04, 0x02],
-            [0x91, 0x04], [0x93, 0x04, 0x01, 0x00], [0x92, 0x04, 0xa1, 0x31],
-            [0x92, 0x04, 0x01, 0x00], [0xc1], "{\"axis\":1}"u8.ToArray()
+            [], [0x92, 0x05], [0x92, 0x04, 0x01], [0x92, 0x05, 0x02],
+            [0x91, 0x05], [0x93, 0x05, 0x01, 0x00], [0x92, 0x05, 0xa1, 0x31],
+            [0x92, 0x05, 0x01, 0x00], [0xc1], "{\"axis\":1}"u8.ToArray()
         ];
         foreach (var bytes in invalid)
             await Assert.That(BrowserWebSocketProtocol.TryReadAxis(bytes, out _)).IsFalse();

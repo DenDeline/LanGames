@@ -432,13 +432,22 @@ async function main() {
   ui.playerNickname.value = "Мой ник";
   saveNickname();
   renderView(
-    { ...session.snapshot, role: "host", localNickname: "Лиса", peerNickname: "Кот" },
+    {
+      ...session.snapshot,
+      role: "host",
+      connection: "waiting",
+      udpPort: 59123,
+      localNickname: "Лиса",
+      peerNickname: "Кот",
+    },
     false,
     false,
   );
   assert.equal(ui.leftPlayer.textContent, "Лиса");
   assert.equal(ui.rightPlayer.textContent, "Кот");
   assert.equal(ui.shareNickname.textContent, "Лиса");
+  assert.equal(ui.sharePort.textContent, "59123");
+  assert.equal(ui.shareBox.hidden, false);
   assert.equal(ui.playerNickname.value, "Лиса");
   assert.equal(ui.playerNickname.disabled, true);
   renderView(
@@ -483,6 +492,7 @@ async function main() {
     false,
   );
   assert.equal(ui.overlayTitle.textContent, "Победа: Лиса");
+  assert.equal(ui.shareBox.hidden, true);
   renderView(
     { ...session.snapshot, role: "guest", connection: "awaitingAcceptance", phase: "waiting" },
     false,
@@ -497,11 +507,23 @@ async function main() {
     parseSnapshot({ connection: "awaitingAcceptance" }).connection,
     "awaitingAcceptance",
   );
+  assert.equal(parseSnapshot({ connection: "searching" }).connection, "searching");
+  renderView(
+    { ...session.snapshot, role: "none", connection: "searching", message: "", udpPort: 0 },
+    false,
+    false,
+  );
+  assert.equal(ui.overlayTitle.textContent, "Ищем соперника");
+  assert.equal(ui.quickButton.disabled, true);
+  assert.equal(ui.joinButton.disabled, true);
+  assert.equal(ui.leaveButton.disabled, false);
+  assert.equal(ui.leaveButton.textContent, "Отменить поиск");
   renderView({ ...session.snapshot, role: "none", connection: "idle" }, false, false);
   assert.equal(ui.playerNickname.value, "Мой ник");
   assert.equal(ui.playerNickname.disabled, false);
+  assert.equal(ui.quickButton.disabled, false);
   setTab("join");
-  assert.equal(ui.hostPanel.hidden, true);
+  assert.equal(ui.quickPanel.hidden, true);
   assert.equal(ui.joinPanel.hidden, false);
 
   console.log(

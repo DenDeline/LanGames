@@ -35,7 +35,7 @@ public sealed class MdnsQuerySessionTests
 
         var hosts = session.GetResults();
         await Assert.That(hosts.Count).IsEqualTo(1);
-        await Assert.That(hosts[0]).IsEqualTo(new DiscoveredHost(address.ToString(), 47888, PeerNickname));
+        await Assert.That(hosts[0]).IsEqualTo(new DiscoveredHost(address.ToString(), 47888, PeerNickname, PeerInstance));
     }
 
     [Test]
@@ -74,7 +74,7 @@ public sealed class MdnsQuerySessionTests
 
         var hosts = session.GetResults();
         await Assert.That(hosts.Count).IsEqualTo(1);
-        await Assert.That(hosts[0]).IsEqualTo(new DiscoveredHost(Source.ToString(), 47888, PeerNickname));
+        await Assert.That(hosts[0]).IsEqualTo(new DiscoveredHost(Source.ToString(), 47888, PeerNickname, secondPeer));
     }
 
     [Test]
@@ -92,8 +92,8 @@ public sealed class MdnsQuerySessionTests
 
         var hosts = session.GetResults();
         await Assert.That(hosts.Count).IsEqualTo(2);
-        await Assert.That(hosts.Contains(new DiscoveredHost(Source.ToString(), 47888, "Первый"))).IsTrue();
-        await Assert.That(hosts.Contains(new DiscoveredHost(secondAddress.ToString(), 47889, "Второй"))).IsTrue();
+        await Assert.That(hosts.Contains(new DiscoveredHost(Source.ToString(), 47888, "Первый", PeerInstance))).IsTrue();
+        await Assert.That(hosts.Contains(new DiscoveredHost(secondAddress.ToString(), 47889, "Второй", secondInstance))).IsTrue();
     }
 
     [Test]
@@ -132,7 +132,7 @@ public sealed class MdnsQuerySessionTests
 
         var hosts = session.GetResults();
         await Assert.That(hosts.Count).IsEqualTo(1);
-        await Assert.That(hosts[0]).IsEqualTo(new DiscoveredHost(source.ToString(), 47888, PeerNickname));
+        await Assert.That(hosts[0]).IsEqualTo(new DiscoveredHost(source.ToString(), 47888, PeerNickname, PeerInstance));
     }
 
     [Test]
@@ -148,7 +148,7 @@ public sealed class MdnsQuerySessionTests
 
         session.Observe(Address(PeerHost, IPAddress.Parse("fe80::44")), source);
         await Assert.That(session.GetResults().Single())
-            .IsEqualTo(new DiscoveredHost(source.ToString(), 47888, PeerNickname));
+            .IsEqualTo(new DiscoveredHost(source.ToString(), 47888, PeerNickname, PeerInstance));
     }
 
     [Test]

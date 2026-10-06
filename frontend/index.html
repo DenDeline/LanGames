@@ -57,8 +57,8 @@
             ></canvas>
             <div class="game-overlay" id="game-overlay" aria-live="polite">
               <span class="overlay-kicker" id="overlay-kicker">Локальный матч</span>
-              <strong id="overlay-title">Создайте игру</strong>
-              <span id="overlay-description">Или найдите игру друга.</span>
+              <strong id="overlay-title">Быстрая игра</strong>
+              <span id="overlay-description">Найдём соперника в вашей сети.</span>
             </div>
             <span class="canvas-corner canvas-corner-tl" aria-hidden="true"></span>
             <span class="canvas-corner canvas-corner-tr" aria-hidden="true"></span>
@@ -115,9 +115,9 @@
                 role="tab"
                 id="tab-host"
                 aria-selected="true"
-                aria-controls="host-panel"
+                aria-controls="quick-panel"
               >
-                Создать игру
+                Быстрая игра
               </button>
               <button
                 class="tab"
@@ -131,22 +131,14 @@
               </button>
             </div>
 
-            <div class="tab-panel" id="host-panel" role="tabpanel" aria-labelledby="tab-host">
-              <form id="host-form">
-                <label for="host-port">Порт</label>
-                <div class="input-row">
-                  <input
-                    id="host-port"
-                    name="port"
-                    type="number"
-                    min="1"
-                    max="65535"
-                    value="47777"
-                    required
-                    inputmode="numeric"
-                  />
-                  <button class="primary-button" id="host-button" type="submit">Создать</button>
-                </div>
+            <div class="tab-panel" id="quick-panel" role="tabpanel" aria-labelledby="tab-host">
+              <form id="quick-form">
+                <p class="quick-description">
+                  Найдём свободного игрока или откроем вашу игру для поиска.
+                </p>
+                <button class="primary-button quick-button" id="quick-button" type="submit">
+                  Быстрая игра
+                </button>
               </form>
               <div class="share-box" id="share-box" hidden>
                 <span class="share-label">Вашу игру найдут по нику</span>
@@ -154,7 +146,7 @@
                 <details class="manual-share">
                   <summary>Адрес и порт для ручного подключения</summary>
                   <div id="share-addresses" class="address-list"></div>
-                  <small>Порт: <strong id="share-port">47777</strong></small>
+                  <small>Порт: <strong id="share-port">—</strong></small>
                 </details>
               </div>
             </div>
@@ -193,7 +185,7 @@
                     Изменить
                   </button>
                 </div>
-                <label for="join-port">Порт</label>
+                <label for="join-port">Порт друга (вручную)</label>
                 <div class="input-row">
                   <input
                     id="join-port"
@@ -201,7 +193,7 @@
                     type="number"
                     min="1"
                     max="65535"
-                    value="47777"
+                    placeholder="Порт из приглашения"
                     required
                     inputmode="numeric"
                   />
@@ -225,7 +217,7 @@
               >
             </div>
             <p class="session-message" id="session-message" role="status" aria-live="polite">
-              Создайте игру или найдите друга.
+              Начните быструю игру или найдите друга.
             </p>
             <dl class="session-details">
               <div>

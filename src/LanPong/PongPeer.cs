@@ -46,7 +46,7 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
     private int _restartAfterRound;
     private PeerRole _role = PeerRole.None;
     private ConnectionState _connection = ConnectionState.Idle;
-    private string _message = "Создайте игру или подключитесь к другу.";
+    private string _message = "Нажмите «Быстрая игра» или подключитесь к другу.";
     private string _localNickname = $"Игрок {Random.Shared.Next(1000, 10000)}";
     private string? _peerNickname;
     private int _udpPort;
@@ -108,30 +108,40 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
         await _transition.WaitAsync();
         try
         {
-            ThrowIfStopping();
-            await StopSocketAsync();
-            var socket = CreateUdpSocket(port);
-            var stop = new CancellationTokenSource();
-            lock (_gate)
-            {
-                if (_stopping)
-                {
-                    socket.Dispose();
-                    stop.Dispose();
-                    throw new InvalidOperationException("Приложение завершает работу.");
-                }
-                _socket = socket;
-                _socketStop = stop;
-                _localNickname = selectedNickname;
-                _role = PeerRole.Host;
-                _connection = ConnectionState.Waiting;
-                _message = "Ожидание второго игрока. Он может найти вашу игру в сети по нику.";
-                _udpPort = port;
-                _mdns.SetHostPort(port, _localNickname);
-                _receiveTask = Task.Run(() => ReceiveAsync(socket, stop));
-            }
+            lock (_gate) CancelQuickMatchmakingLocked(clearLobby: true);
+            await StartHostingAsync(port, selectedNickname);
         }
         finally { _transition.Release(); }
+    }
+
+    // The caller holds _transition. Port zero asks the OS to choose a free UDP port.
+    private async Task StartHostingAsync(int port, string nickname, bool socketAlreadyStopped = false,
+        bool quickLobby = false)
+    {
+        ThrowIfStopping();
+        if (!socketAlreadyStopped) await StopSocketAsync();
+        var socket = CreateUdpSocket(port);
+        var actualPort = ((IPEndPoint)socket.Client.LocalEndPoint!).Port;
+        var stop = new CancellationTokenSource();
+        lock (_gate)
+        {
+            if (_stopping)
+            {
+                socket.Dispose();
+                stop.Dispose();
+                throw new InvalidOperationException("Приложение завершает работу.");
+            }
+            _socket = socket;
+            _socketStop = stop;
+            _localNickname = nickname;
+            _quickHostAutoAccept = quickLobby;
+            _role = PeerRole.Host;
+            _connection = ConnectionState.Waiting;
+            _message = "Ожидание второго игрока. Он может найти вашу игру в сети по нику.";
+            _udpPort = actualPort;
+            _mdns.SetHostPort(actualPort, _localNickname);
+            _receiveTask = Task.Run(() => ReceiveAsync(socket, stop));
+        }
     }
 
     public async Task JoinAsync(string address, int port, string nickname,
@@ -158,47 +168,55 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
         await _transition.WaitAsync(cancellationToken);
         try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            ThrowIfStopping();
-            await StopSocketAsync();
-            cancellationToken.ThrowIfCancellationRequested();
-            var socket = CreateUdpSocket(0);
-            if (ip.AddressFamily == AddressFamily.InterNetworkV6 &&
-                socket.Client.AddressFamily != AddressFamily.InterNetworkV6)
-            {
-                socket.Dispose();
-                throw new ArgumentException("IPv6 недоступен на этом компьютере.");
-            }
-            // A dual-mode socket receives IPv4 peers as IPv4-mapped IPv6 addresses.
-            var targetAddress = socket.Client.AddressFamily == AddressFamily.InterNetworkV6 &&
-                                ip.AddressFamily == AddressFamily.InterNetwork
-                ? ip.MapToIPv6()
-                : ip;
-            var stop = new CancellationTokenSource();
-            lock (_gate)
-            {
-                if (_stopping || cancellationToken.IsCancellationRequested)
-                {
-                    socket.Dispose();
-                    stop.Dispose();
-                    cancellationToken.ThrowIfCancellationRequested();
-                    throw new InvalidOperationException("Приложение завершает работу.");
-                }
-                _socket = socket;
-                _socketStop = stop;
-                _localNickname = selectedNickname;
-                _targetEndpoint = new IPEndPoint(targetAddress, port);
-                _targetSocketAddress = _targetEndpoint.Serialize();
-                _outgoingChallengeId = Guid.NewGuid();
-                _challengeStartedAt = DateTime.UtcNow;
-                _role = PeerRole.Guest;
-                _connection = ConnectionState.Connecting;
-                _message = "Подключаемся к игроку…";
-                _udpPort = ((IPEndPoint)socket.Client.LocalEndPoint!).Port;
-                _receiveTask = Task.Run(() => ReceiveAsync(socket, stop));
-            }
+            lock (_gate) CancelQuickMatchmakingLocked(clearLobby: true);
+            await StartJoiningAsync(ip, port, selectedNickname, cancellationToken);
         }
         finally { _transition.Release(); }
+    }
+
+    // The caller holds _transition and supplies a resolved local-network address.
+    private async Task StartJoiningAsync(IPAddress ip, int port, string nickname,
+        CancellationToken cancellationToken, bool socketAlreadyStopped = false)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ThrowIfStopping();
+        if (!socketAlreadyStopped) await StopSocketAsync();
+        cancellationToken.ThrowIfCancellationRequested();
+        var socket = CreateUdpSocket(0);
+        if (ip.AddressFamily == AddressFamily.InterNetworkV6 &&
+            socket.Client.AddressFamily != AddressFamily.InterNetworkV6)
+        {
+            socket.Dispose();
+            throw new ArgumentException("IPv6 недоступен на этом компьютере.");
+        }
+        // A dual-mode socket receives IPv4 peers as IPv4-mapped IPv6 addresses.
+        var targetAddress = socket.Client.AddressFamily == AddressFamily.InterNetworkV6 &&
+                            ip.AddressFamily == AddressFamily.InterNetwork
+            ? ip.MapToIPv6()
+            : ip;
+        var stop = new CancellationTokenSource();
+        lock (_gate)
+        {
+            if (_stopping || cancellationToken.IsCancellationRequested)
+            {
+                socket.Dispose();
+                stop.Dispose();
+                cancellationToken.ThrowIfCancellationRequested();
+                throw new InvalidOperationException("Приложение завершает работу.");
+            }
+            _socket = socket;
+            _socketStop = stop;
+            _localNickname = nickname;
+            _targetEndpoint = new IPEndPoint(targetAddress, port);
+            _targetSocketAddress = _targetEndpoint.Serialize();
+            _outgoingChallengeId = Guid.NewGuid();
+            _challengeStartedAt = DateTime.UtcNow;
+            _role = PeerRole.Guest;
+            _connection = ConnectionState.Connecting;
+            _message = "Подключаемся к игроку…";
+            _udpPort = ((IPEndPoint)socket.Client.LocalEndPoint!).Port;
+            _receiveTask = Task.Run(() => ReceiveAsync(socket, stop));
+        }
     }
 
     public void Restart()
@@ -223,41 +241,45 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
 
     public async Task AcceptChallengeAsync()
     {
-        UdpClient socket;
-        IPEndPoint destination;
-        WelcomePacket welcome;
+        (UdpClient Socket, IPEndPoint Destination, WelcomePacket Welcome) accepted;
         lock (_gate)
-        {
-            if (_stopping || _role != PeerRole.Host || _connection != ConnectionState.IncomingChallenge ||
-                _socket is null || _incomingChallengeEndpoint is null ||
-                _incomingChallengeSocketAddress is null || _incomingChallengeId is null)
-                throw new InvalidOperationException("Нет вызова для принятия.");
+            accepted = AcceptChallengeLocked();
+        await SendQuietlyAsync(accepted.Socket, accepted.Destination, accepted.Welcome, _lifetime.Token);
+    }
 
-            socket = _socket;
-            destination = _incomingChallengeEndpoint;
-            _peerEndpoint = destination;
-            _peerSocketAddress = _incomingChallengeSocketAddress;
-            _acceptedChallengeId = _incomingChallengeId;
-            _incomingChallengeEndpoint = null;
-            _incomingChallengeSocketAddress = null;
-            _incomingChallengeId = null;
-            _sessionId = Guid.NewGuid();
-            _connection = ConnectionState.Connected;
-            _message = "Вызов принят. Игра началась!";
-            _lastPeerSeen = DateTime.UtcNow;
-            _lastStateSentTick = 0;
-            _lastRestartRequestId = null;
-            _ping.Reset();
-            _game.StartMatch();
-            _hostTimeline.Reset();
-            _mdns.SetHostPort(null);
-            welcome = new WelcomePacket
-            {
-                SessionId = _sessionId.Value, RequestId = _acceptedChallengeId.Value,
-                Nickname = _localNickname
-            };
-        }
-        await SendQuietlyAsync(socket, destination, welcome, _lifetime.Token);
+    // May also be used by Quick Game as soon as a valid Hello packet arrives.
+    private (UdpClient Socket, IPEndPoint Destination, WelcomePacket Welcome) AcceptChallengeLocked()
+    {
+        if (_stopping || _role != PeerRole.Host || _connection != ConnectionState.IncomingChallenge ||
+            _socket is null || _incomingChallengeEndpoint is null ||
+            _incomingChallengeSocketAddress is null || _incomingChallengeId is null)
+            throw new InvalidOperationException("Нет вызова для принятия.");
+
+        var socket = _socket;
+        var destination = _incomingChallengeEndpoint;
+        _peerEndpoint = destination;
+        _peerSocketAddress = _incomingChallengeSocketAddress;
+        _acceptedChallengeId = _incomingChallengeId;
+        _incomingChallengeEndpoint = null;
+        _incomingChallengeSocketAddress = null;
+        _incomingChallengeId = null;
+        _sessionId = Guid.NewGuid();
+        _connection = ConnectionState.Connected;
+        _message = "Вызов принят. Игра началась!";
+        _lastPeerSeen = DateTime.UtcNow;
+        _lastStateSentTick = 0;
+        _lastRestartRequestId = null;
+        _ping.Reset();
+        _game.StartMatch();
+        _hostTimeline.Reset();
+        _mdns.SetHostPort(null);
+        CancelQuickMatchmakingLocked();
+        var welcome = new WelcomePacket
+        {
+            SessionId = _sessionId.Value, RequestId = _acceptedChallengeId.Value,
+            Nickname = _localNickname
+        };
+        return (socket, destination, welcome);
     }
 
     public async Task DeclineChallengeAsync()
@@ -281,6 +303,7 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
 
     public async Task LeaveAsync(CancellationToken cancellationToken = default)
     {
+        Task? matchmakingTask = null;
         await _transition.WaitAsync();
         try
         {
@@ -289,6 +312,8 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
             WirePacket? bye;
             lock (_gate)
             {
+                matchmakingTask = _matchmakingTask;
+                CancelQuickMatchmakingLocked(clearLobby: true);
                 socket = _socket;
                 peer = _peerEndpoint ?? _incomingChallengeEndpoint ?? _targetEndpoint;
                 bye = _sessionId is not null
@@ -308,6 +333,7 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
             await StopSocketAsync();
         }
         finally { _transition.Release(); }
+        if (matchmakingTask is not null) await matchmakingTask;
     }
 
     public Task<IReadOnlyList<DiscoveredHost>> DiscoverAsync(CancellationToken cancellationToken) =>

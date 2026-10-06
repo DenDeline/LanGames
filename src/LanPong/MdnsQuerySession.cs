@@ -100,7 +100,7 @@ internal sealed class MdnsQuerySession(string serviceType, string ownInstanceNam
                                                  isOnLocalSubnet(item.Address)).Address
                 ?? usable.Select(item => item.Address).FirstOrDefault(isOnLocalSubnet);
             if (chosen is null) continue;
-            var host = new DiscoveredHost(chosen.ToString(), instance.Port, instance.Nickname!);
+            var host = new DiscoveredHost(chosen.ToString(), instance.Port, instance.Nickname!, name);
             results[$"{host.Address}:{host.Port}"] = host;
         }
         return [.. results.Values];

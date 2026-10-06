@@ -89,7 +89,9 @@ internal sealed partial class PongPeer
         }
         if (now - _lastPeerSeen > NetworkConstants.PeerIdleTimeout)
         {
-            ReturnHostToWaitingLocked("Связь потеряна. Ожидание второго игрока…");
+            (actions.SocketToClose, actions.StopToClose, _) = EndHostMatchLocked(
+                "Связь потеряна. Ожидание второго игрока…",
+                "Связь потеряна. Нажмите «Быстрая игра», чтобы сыграть снова.");
             accumulatedTime = 0;
             return;
         }

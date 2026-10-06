@@ -8,9 +8,6 @@ internal static class NetworkConstants
     public static readonly IPEndPoint AnyIpv4Endpoint = new(IPAddress.Any, 0);
     public static readonly IPEndPoint AnyIpv6Endpoint = new(IPAddress.IPv6Any, 0);
 
-    // Also shown in the browser form and mirrored in frontend/src/game.ts.
-    public const int DefaultUdpPort = 47777;
-
     // Bound scheduler catch-up; two 60 Hz simulation ticks yield a 30 Hz UDP state stream.
     public const int MaximumSimulationCatchUpSteps = 4;
     public const int StateSendIntervalTicks = 2;

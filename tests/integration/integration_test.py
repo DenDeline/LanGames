@@ -1,4 +1,5 @@
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 import os
@@ -25,6 +26,7 @@ SNAPSHOT_FIELDS = (
 ROLES = ("none", "host", "guest")
 CONNECTIONS = (
     "idle", "waiting", "connecting", "connected", "incomingChallenge", "awaitingAcceptance",
+    "searching",
 )
 PHASES = ("waiting", "countdown", "playing", "gameover")
 EVENT_KINDS = ("serve", "paddle", "wall", "goal", "match")
@@ -53,6 +55,10 @@ HELLO_PACKET = wire_challenge_packet(2, CHALLENGE_ID, RAW_NICKNAME)
 
 def host_payload():
     return {"port": 47888, "nickname": HOST_NICKNAME}
+
+
+def quick_payload(nickname):
+    return {"nickname": nickname}
 
 
 def join_payload(address="127.0.0.1", port=47888):
@@ -86,7 +92,7 @@ def decode_snapshot(frame):
     values = msgpack_helper("decode", frame[1])
     assert isinstance(values, list) and len(values) == len(SNAPSHOT_FIELDS), values
     snapshot = dict(zip(SNAPSHOT_FIELDS, values))
-    assert snapshot["version"] == 4, snapshot
+    assert snapshot["version"] == 5, snapshot
     snapshot["role"] = ROLES[snapshot["role"]]
     snapshot["connection"] = CONNECTIONS[snapshot["connection"]]
     snapshot["phase"] = PHASES[snapshot["phase"]]
@@ -177,6 +183,16 @@ def wait_until(label, check, seconds=8):
             pass
         time.sleep(0.1)
     raise AssertionError(f"Timed out: {label}")
+
+
+def wait_for_quick_lobby(port, nickname):
+    def waiting():
+        snapshot = request(port, "/api/status")
+        return snapshot if (snapshot["role"] == "host" and
+                            snapshot["connection"] == "waiting" and
+                            snapshot["localNickname"] == nickname) else None
+
+    return wait_until(f"Quick Game lobby for {nickname}", waiting, seconds=12)
 
 
 def wait_for_challenge():
@@ -459,6 +475,9 @@ try:
         expect_bad_request(5181, "/api/join", join_payload() | {"nickname": nickname})
     expect_bad_request(5180, "/api/host", {"port": 47888})
     expect_bad_request(5181, "/api/join", {"address": "127.0.0.1", "port": 47888})
+    for nickname in (None, "", "   "):
+        expect_bad_request(5180, "/api/quick", {"nickname": nickname})
+    expect_bad_request(5180, "/api/quick", {})
 
     require_mdns_loopback = os.environ.get("LANPONG_REQUIRE_MDNS_LOOPBACK") == "1"
     host = request(5180, "/api/host", host_payload())
@@ -587,8 +606,8 @@ try:
         send_text(host_ws, '{"axis":1}')
         send_binary(host_ws, b"\x90")  # Wrong array shape.
         send_binary(host_ws, b"\x92\x03\x01")  # Wrong protocol version.
-        send_binary(host_ws, b"\x92\x04\xa2up")  # Non-numeric axis.
-        send_binary(host_ws, b"\x92\x04\x02")  # Axis outside -1..1.
+        send_binary(host_ws, b"\x92\x05\xa2up")  # Non-numeric axis.
+        send_binary(host_ws, b"\x92\x05\x02")  # Axis outside -1..1.
         send_binary(host_ws, b"\xc1")  # Reserved MessagePack prefix.
         send_binary(host_ws, controls[1] + b"\x00")  # A second packed value.
         send_binary(host_ws, controls[1] + bytes(257 - len(controls[1])))
@@ -786,6 +805,87 @@ try:
         wait_until("host observes IPv6 guest leave", lambda:
                    request(5180, "/api/status")["connection"] == "waiting")
         request(5180, "/api/leave", {})
+
+    # Quick Game can be cancelled before its discovery window opens a lobby.
+    quick_start = request(5180, "/api/quick", quick_payload("QuickCancel"))
+    assert quick_start["connection"] in ("searching", "waiting"), quick_start
+    cancelled_quick = request(5180, "/api/leave", {})
+    assert cancelled_quick["role"] == "none" and cancelled_quick["connection"] == "idle"
+    request(5180, "/api/quick", quick_payload("QuickAgain"))
+    wait_for_quick_lobby(5180, "QuickAgain")
+    request(5180, "/api/leave", {})
+    time.sleep(1.5)
+    assert request(5180, "/api/status")["connection"] == "idle"
+
+    # The backend chooses the host port, and a direct invitation is accepted
+    # automatically by a Quick Game lobby.
+    request(5180, "/api/quick", quick_payload("QuickHost"))
+    quick_host = wait_for_quick_lobby(5180, "QuickHost")
+    assert 1 <= quick_host["udpPort"] <= 65535, quick_host
+    request(5181, "/api/join", join_payload(port=quick_host["udpPort"]))
+    wait_until("Quick Game automatically accepts a direct challenge", lambda:
+               request(5180, "/api/status")["connection"] == "connected"
+               and request(5181, "/api/status")["connection"] == "connected")
+    assert request(5180, "/api/status")["peerNickname"] == GUEST_NICKNAME
+    assert request(5181, "/api/status")["peerNickname"] == "QuickHost"
+    request(5181, "/api/leave", {})
+    wait_until("Quick Game host ends lobby after guest leave", lambda:
+               request(5180, "/api/status")["connection"] == "idle")
+    request(5180, "/api/quick", quick_payload("QuickHost"))
+    next_quick_host = wait_for_quick_lobby(5180, "QuickHost")
+    request(5181, "/api/join", join_payload(port=next_quick_host["udpPort"]))
+    wait_until("new Quick Game auto-accepts another opponent", lambda:
+               request(5180, "/api/status")["connection"] == "connected"
+               and request(5181, "/api/status")["connection"] == "connected")
+    request(5181, "/api/leave", {})
+    wait_until("second Quick Game ends", lambda:
+               request(5180, "/api/status")["connection"] == "idle")
+    time.sleep(1.2)
+    assert request(5180, "/api/status")["connection"] == "idle"
+    assert request(5181, "/api/status")["connection"] == "idle"
+
+    if require_mdns_loopback:
+        request(5180, "/api/quick", quick_payload("QuickA"))
+        open_quick = wait_for_quick_lobby(5180, "QuickA")
+        found_quick = wait_until("mDNS discovers Quick Game", lambda:
+                                 next((item for item in request(5181, "/api/discover")["hosts"]
+                                       if item["nickname"] == "QuickA" and
+                                       item["port"] == open_quick["udpPort"]), None),
+                                 seconds=10)
+        assert found_quick["instanceName"], found_quick
+        request(5181, "/api/quick", quick_payload("QuickB"))
+        wait_until("Quick Game joins an available opponent", lambda:
+                   request(5180, "/api/status")["connection"] == "connected"
+                   and request(5181, "/api/status")["connection"] == "connected",
+                   seconds=15)
+        assert request(5180, "/api/status")["peerNickname"] == "QuickB"
+        assert request(5181, "/api/status")["peerNickname"] == "QuickA"
+        request(5181, "/api/leave", {})
+        wait_until("Quick Game host closes after match", lambda:
+                   request(5180, "/api/status")["connection"] == "idle")
+
+        # Starting at the same time must settle on one lobby, not two hosts.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            starts = [pool.submit(request, port, "/api/quick", quick_payload(nickname))
+                      for port, nickname in ((5180, "QuickLeft"), (5181, "QuickRight"))]
+            for start in starts:
+                assert start.result()["connection"] in ("searching", "waiting")
+
+        def paired_quick_games():
+            left = request(5180, "/api/status")
+            right = request(5181, "/api/status")
+            if left["connection"] == right["connection"] == "connected":
+                return left, right
+            return None
+
+        left, right = wait_until("simultaneous Quick Games converge", paired_quick_games,
+                                 seconds=20)
+        assert {left["role"], right["role"]} == {"host", "guest"}, (left, right)
+        assert left["peerNickname"] == "QuickRight", left
+        assert right["peerNickname"] == "QuickLeft", right
+        request(5180, "/api/leave", {})
+        request(5181, "/api/leave", {})
+
     request(5180, "/api/host", host_payload())
     request(5181, "/api/join", join_payload())
     accept_challenge()
@@ -797,7 +897,7 @@ try:
     accept_challenge()
     terminate_connected_process(processes[0], 5180, 5181, "idle", "none", "host")
 
-    print("PASS: static UI, discovery, pending challenge acceptance/decline/cancel, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, binary MessagePack WebSocket snapshots, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, and graceful host/guest shutdown")
+    print("PASS: static UI, discovery, pending challenge acceptance/decline/cancel, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, binary MessagePack WebSocket snapshots, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, Quick Game port selection/cancellation/auto-accept/matching, and graceful host/guest shutdown")
 finally:
     for process in processes:
         if process.poll() is None:

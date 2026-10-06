@@ -3,7 +3,7 @@ import { encode } from "@msgpack/msgpack";
 import { decodeWsSnapshot, encodeWsAxis } from "../../.artifacts/frontend-test/wsProtocol.js";
 
 const snapshot = [
-  4,
+  5,
   1,
   3,
   "Игра началась!",
@@ -39,9 +39,9 @@ function frame(value) {
 }
 
 assert.equal(snapshot.length, 23);
-assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(-1))), [0x92, 4, 0xff]);
-assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(0))), [0x92, 4, 0]);
-assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(1))), [0x92, 4, 1]);
+assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(-1))), [0x92, 5, 0xff]);
+assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(0))), [0x92, 5, 0]);
+assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(1))), [0x92, 5, 1]);
 assert.throws(() => encodeWsAxis(2), RangeError);
 assert.throws(() => encodeWsAxis(0.5), RangeError);
 
@@ -98,6 +98,7 @@ assert.equal(decodeWsSnapshot(frame(idle))?.pingMs, null);
 for (const [ordinal, name] of [
   [4, "incomingChallenge"],
   [5, "awaitingAcceptance"],
+  [6, "searching"],
 ]) {
   const pending = [...snapshot];
   pending[2] = ordinal;
@@ -111,10 +112,10 @@ function reject(index, value) {
   assert.equal(decodeWsSnapshot(frame(changed)), null);
 }
 
-reject(0, 3); // Unsupported previous protocol version.
+reject(0, 4); // Unsupported previous protocol version.
 reject(1, 3); // Unknown role enum.
 reject(2, "connected"); // JSON enum is not valid on the binary socket.
-reject(2, 6); // Unknown connection state.
+reject(2, 7); // Unknown connection state.
 reject(4, -1); // Invalid UDP port.
 reject(5, ["127.0.0.1", 5]); // Invalid address element.
 reject(7, "0.5"); // Invalid coordinate.
