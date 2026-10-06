@@ -37,8 +37,8 @@ export class GameSession {
     // clock rebase; an older HTTP response must not replace a newer state.
     if (backwardsTick && source !== "websocket") return;
 
+    if (changedRound) this.motion.reset();
     if (changedRound || backwardsTick) {
-      this.motion.reset();
       this.feedback.clearPulse();
       this.onMotionReset();
     }

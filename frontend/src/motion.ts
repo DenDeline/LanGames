@@ -24,6 +24,12 @@ export interface MotionCorrection {
   startedAt: number;
 }
 
+interface PaddleCorrection {
+  offset: number;
+  startedAt: number;
+  endsAt: number;
+}
+
 const MILLISECONDS_PER_SECOND = 1000;
 // Mirror the normalized gameplay geometry in GameConstants.cs for prediction and drawing.
 const TICKS_PER_SECOND = 60;
@@ -48,6 +54,9 @@ const MOTION_CORRECTION_MS = 30;
 const MAX_SMOOTH_CORRECTION = 0.015;
 const MOTION_ERROR_EPSILON = 0.0001;
 const VELOCITY_ERROR_EPSILON = 0.000001;
+const PADDLE_CORRECTION_MS = 80;
+const PADDLE_CORRECTION_EPSILON = 0.001;
+const PADDLE_VISIBLE_ERROR = 0.01;
 // The local paddle only predicts the short browser-to-peer input delivery time.
 const MAX_LOCAL_FRAME_SECONDS = 0.05;
 const LOCAL_PREDICTION_LEAD_Y = (2 * PADDLE_SPEED) / TICKS_PER_SECOND;
@@ -62,6 +71,10 @@ function clamp(value: unknown, min: number, max: number): number {
 export class MotionModel {
   private readonly motionSamples: MotionSample[] = [];
   private motionCorrection: MotionCorrection | null = null;
+  private paddleCorrections: { left: PaddleCorrection | null; right: PaddleCorrection | null } = {
+    left: null,
+    right: null,
+  };
   private localPaddle: LocalPaddle | null = null;
 
   get sampleCount(): number {
@@ -75,7 +88,20 @@ export class MotionModel {
   reset(): void {
     this.motionSamples.length = 0;
     this.motionCorrection = null;
+    this.paddleCorrections.left = null;
+    this.paddleCorrections.right = null;
     this.localPaddle = null;
+  }
+
+  private paddleOffset(side: "left" | "right", now: number): number {
+    const correction = this.paddleCorrections[side];
+    if (!correction) return 0;
+    if (now >= correction.endsAt) {
+      this.paddleCorrections[side] = null;
+      return 0;
+    }
+    const remaining = (correction.endsAt - now) / (correction.endsAt - correction.startedAt);
+    return correction.offset * Math.min(1, remaining);
   }
 
   record(next: PongSnapshot, now: number): void {
@@ -88,6 +114,7 @@ export class MotionModel {
       return;
 
     const last = this.motionSamples.at(-1);
+    const beforeLast = this.motionSamples.length > 1 ? this.motionSamples.at(-2)! : null;
     const sample: MotionSample = {
       tick,
       arrivedAt: now,
@@ -122,20 +149,69 @@ export class MotionModel {
           sample.y - (last.y + (last.vy * tickGap) / TICKS_PER_SECOND),
         )
       : 0;
-    const previousDisplay =
-      sameTrajectory && (stateError > MOTION_ERROR_EPSILON || this.motionCorrection !== null)
-        ? this.displayedMotion(now, next)
-        : null;
-    if (tickGap > MAX_CONTIGUOUS_TICK_GAP) this.motionSamples.length = 0;
+    const previousDisplay = last ? this.displayedMotion(now, next) : null;
+    const hadMotionCorrection = this.motionCorrection !== null;
+    const localSide = next.role === "host" ? "left" : next.role === "guest" ? "right" : null;
+    const previousLocalY = this.localPaddle?.y;
+    if (tickGap < 0 || tickGap > MAX_CONTIGUOUS_TICK_GAP) this.motionSamples.length = 0;
     if (last && tickGap === 0 && this.motionSamples.length > 0) this.motionSamples.pop();
     this.motionSamples.push(sample);
     if (this.motionSamples.length > 2) this.motionSamples.shift();
     this.motionCorrection = null;
-    if (previousDisplay) {
+    if (
+      previousDisplay &&
+      sameTrajectory &&
+      (stateError > MOTION_ERROR_EPSILON || hadMotionCorrection)
+    ) {
       const x = previousDisplay.ballX - sample.x;
       const y = previousDisplay.ballY - sample.y;
       if (Math.hypot(x, y) <= MAX_SMOOTH_CORRECTION)
         this.motionCorrection = { x, y, startedAt: now };
+    }
+
+    if (last && previousDisplay) {
+      // Normal per-tick movement stays immediate. Corrected positions, reversed
+      // extrapolation, and gaps begin at the previous on-screen position.
+      const maxStep = (PADDLE_SPEED * Math.max(0, tickGap)) / TICKS_PER_SECOND;
+      const previousGap = beforeLast ? last.tick - beforeLast.tick : 0;
+      for (const side of ["left", "right"] as const) {
+        const key = side === "left" ? "leftY" : "rightY";
+        const previousVelocity =
+          beforeLast && previousGap > 0 && previousGap <= MAX_CONTIGUOUS_TICK_GAP
+            ? ((last[key] - beforeLast[key]) * TICKS_PER_SECOND) / previousGap
+            : 0;
+        const changedDirection =
+          side !== localSide &&
+          tickGap > 0 &&
+          tickGap <= MAX_CONTIGUOUS_TICK_GAP &&
+          Math.abs(previousVelocity) > VELOCITY_ERROR_EPSILON &&
+          Math.abs(previousVelocity) <= PADDLE_SPEED + VELOCITY_ERROR_EPSILON &&
+          Math.abs(sample[key] - (last[key] + (previousVelocity * tickGap) / TICKS_PER_SECOND)) >
+            PADDLE_VISIBLE_ERROR;
+        const gapJump =
+          tickGap > MAX_CONTIGUOUS_TICK_GAP &&
+          Math.abs(previousDisplay[key] - sample[key]) > PADDLE_VISIBLE_ERROR;
+        const changed =
+          Math.abs(sample[key] - last[key]) > maxStep + PADDLE_CORRECTION_EPSILON ||
+          changedDirection ||
+          gapJump;
+        const rebase = tickGap < 0;
+        const ongoing = this.paddleCorrections[side];
+        if (!changed && !rebase && !ongoing) continue;
+        let previousY = previousDisplay[key];
+        if (side === localSide) {
+          previousY =
+            changed || rebase
+              ? (previousLocalY ?? previousY)
+              : last[key] + this.paddleOffset(side, now);
+        }
+        const offset = previousY - sample[key];
+        const endsAt = changed || rebase ? now + PADDLE_CORRECTION_MS : ongoing?.endsAt;
+        this.paddleCorrections[side] =
+          Math.abs(offset) > PADDLE_CORRECTION_EPSILON && endsAt !== undefined
+            ? { offset, startedAt: now, endsAt }
+            : null;
+      }
     }
   }
 
@@ -198,8 +274,16 @@ export class MotionModel {
     return {
       ballX: clamp(ballX, 0, 1),
       ballY: clamp(ballY, TOP_CONTACT_Y, BOTTOM_CONTACT_Y),
-      leftY: clamp(latest.leftY + leftVelocity * frameSeconds, MIN_PADDLE_Y, MAX_PADDLE_Y),
-      rightY: clamp(latest.rightY + rightVelocity * frameSeconds, MIN_PADDLE_Y, MAX_PADDLE_Y),
+      leftY: clamp(
+        latest.leftY + leftVelocity * frameSeconds + this.paddleOffset("left", now),
+        MIN_PADDLE_Y,
+        MAX_PADDLE_Y,
+      ),
+      rightY: clamp(
+        latest.rightY + rightVelocity * frameSeconds + this.paddleOffset("right", now),
+        MIN_PADDLE_Y,
+        MAX_PADDLE_Y,
+      ),
     };
   }
 
@@ -213,8 +297,9 @@ export class MotionModel {
       return null;
     }
 
+    const side = snapshot.role === "host" ? "left" : "right";
     const authoritativeY = clamp(
-      snapshot.role === "host" ? snapshot.leftY : snapshot.rightY,
+      (side === "left" ? snapshot.leftY : snapshot.rightY) + this.paddleOffset(side, now),
       MIN_PADDLE_Y,
       MAX_PADDLE_Y,
     );

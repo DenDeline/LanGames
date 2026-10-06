@@ -526,6 +526,117 @@ async function main() {
   assert.equal(ui.quickPanel.hidden, true);
   assert.equal(ui.joinPanel.hidden, false);
 
+  // Paddle rollback corrections are visual only and keep both sides continuous.
+  const visualMotion = new MotionModel();
+  let visualResets = 0;
+  const visualSession = new GameSession(
+    visualMotion,
+    { clearPulse() {}, process() {} },
+    () => visualResets++,
+    () => {},
+  );
+  const visualApply = (changes, at, source = "websocket") => {
+    now = at;
+    visualSession.apply(
+      {
+        role: "host",
+        connection: "connected",
+        phase: "playing",
+        roundId: 44,
+        tick: 10,
+        ballX: 0.3,
+        ballY: 0.5,
+        ballVx: 0.6,
+        ballVy: 0,
+        leftY: 0.5,
+        rightY: 0.4,
+        ...changes,
+      },
+      source,
+    );
+  };
+  const visualRemote = (at) => visualMotion.displayedMotion(at, visualSession.snapshot).rightY;
+  const visualLeft = (at) => visualMotion.displayedMotion(at, visualSession.snapshot).leftY;
+  const visualLocal = (at, direction) =>
+    visualMotion.displayedLocalPaddle(at, visualSession.snapshot, direction);
+
+  visualApply({}, 2000);
+  visualLocal(2000, 0);
+  visualApply({ rightY: 0.6 }, 2000);
+  close(visualSession.snapshot.rightY, 0.6);
+  close(visualRemote(2000), 0.4);
+  close(visualRemote(2040), 0.5);
+  close(visualRemote(2080), 0.6);
+
+  visualApply({ tick: 11, rightY: 0.6 }, 2100);
+  visualApply({ tick: 12, rightY: 0.75 }, 2116);
+  close(visualRemote(2116), 0.6);
+  const beforeSecondCorrection = visualRemote(2136);
+  visualApply({ tick: 12, rightY: 0.8 }, 2136);
+  close(visualRemote(2136), beforeSecondCorrection);
+  const beforeOrdinaryUpdate = visualRemote(2152);
+  visualApply({ tick: 13, rightY: 0.8 + 0.85 / 60 }, 2152);
+  close(visualRemote(2152), beforeOrdinaryUpdate);
+  assert.ok(visualRemote(2176) > beforeSecondCorrection);
+  close(visualRemote(2216), visualSession.snapshot.rightY + (2 * 0.85) / 60);
+  visualApply({ tick: 14, rightY: 0.8 + (2 * 0.85) / 60 }, 2240);
+  close(visualRemote(2240), visualSession.snapshot.rightY);
+
+  // A guest clock rebase clears ball history but preserves the visible paddles.
+  visualApply({ role: "guest", tick: 100, leftY: 0.7, rightY: 0.7 }, 2300);
+  const remoteBeforeRebase = visualLeft(2316);
+  const localBeforeRebase = visualLocal(2316, 0);
+  const resetsBeforeRebase = visualResets;
+  visualApply({ role: "guest", tick: 90, leftY: 0.25, rightY: 0.2 }, 2316);
+  assert.equal(visualResets, resetsBeforeRebase + 1);
+  assert.equal(visualMotion.sampleCount, 1);
+  assert.equal(visualMotion.correction, null);
+  close(visualLeft(2316), remoteBeforeRebase);
+  close(visualLocal(2316, 0), localBeforeRebase);
+  close(visualLeft(2396), 0.25);
+
+  // Starting a new round resets the presentation instead of easing across it.
+  visualApply({ roundId: 45, tick: 1, leftY: 0.5, rightY: 0.5 }, 2400);
+  close(visualRemote(2400), 0.5);
+  close(visualLocal(2400, 0), 0.5);
+
+  // The local paddle remains responsive while a large correction is displayed.
+  visualApply({ roundId: 46, tick: 1 }, 2500);
+  close(visualLocal(2500, 1), 0.5);
+  const beforeLocalCorrection = visualLocal(2516, 1);
+  assert.ok(beforeLocalCorrection > 0.5);
+  visualApply({ roundId: 46, tick: 1, leftY: 0.75 }, 2516);
+  close(visualSession.snapshot.leftY, 0.75);
+  close(visualLocal(2516, 1), beforeLocalCorrection);
+  const beforeLocalUpdate = visualLocal(2532, 1);
+  visualApply({ roundId: 46, tick: 2, leftY: 0.75 + 0.85 / 60 }, 2532);
+  close(visualLocal(2532, 1), beforeLocalUpdate);
+  const duringLocalCorrection = visualLocal(2556, 1);
+  assert.ok(duringLocalCorrection > beforeLocalCorrection);
+  assert.ok(duringLocalCorrection < 0.75);
+  close(visualLocal(2596, 1), visualSession.snapshot.leftY);
+  assert.ok(visualLocal(2612, 1) > visualSession.snapshot.leftY);
+
+  // A direction reversal and a gap in snapshots must not teleport the remote paddle.
+  visualApply({ roundId: 47, tick: 10, rightY: 0.5 + 0.85 / 60 }, 2700);
+  visualApply({ roundId: 47, tick: 11, rightY: 0.5 }, 2716);
+  const beforeReversal = visualRemote(2732);
+  visualApply({ roundId: 47, tick: 12, rightY: 0.5 + 0.85 / 60 }, 2732);
+  close(visualRemote(2732), beforeReversal);
+  visualApply({ roundId: 48, tick: 10, rightY: 0.2 }, 2800);
+  visualApply({ roundId: 48, tick: 20, rightY: 0.3 }, 2950);
+  close(visualRemote(2950), 0.2);
+  close(visualRemote(2990), 0.25);
+  close(visualRemote(3030), 0.3);
+
+  visualApply({ roundId: 49, tick: 10, leftY: 0.5 }, 3100);
+  visualLocal(3100, -1);
+  const beforeOppositeCorrection = visualLocal(3116, -1);
+  visualApply({ roundId: 49, tick: 10, leftY: 0.75 }, 3116);
+  close(visualLocal(3116, -1), beforeOppositeCorrection);
+  assert.ok(visualLocal(3132, -1) < beforeOppositeCorrection + 0.05);
+  assert.ok(visualLocal(3196, -1) > 0.7);
+
   console.log(
     "Frontend behavior checks passed: motion, prediction, canvas caching, event parsing, score feedback, and replay deduplication.",
   );
