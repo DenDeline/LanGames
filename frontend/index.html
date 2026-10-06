@@ -58,7 +58,7 @@
             <div class="game-overlay" id="game-overlay" aria-live="polite">
               <span class="overlay-kicker" id="overlay-kicker">Локальный матч</span>
               <strong id="overlay-title">Создайте игру</strong>
-              <span id="overlay-description">Передайте сопернику IP и порт этого компьютера.</span>
+              <span id="overlay-description">Или найдите игру друга.</span>
             </div>
             <span class="canvas-corner canvas-corner-tl" aria-hidden="true"></span>
             <span class="canvas-corner canvas-corner-tr" aria-hidden="true"></span>
@@ -93,7 +93,7 @@
             <div class="panel-header">
               <span class="section-number">01 / ПОДКЛЮЧЕНИЕ</span>
               <h2>Играйте вместе</h2>
-              <p>Запустите приложение на двух устройствах в одной сети.</p>
+              <p>Оба устройства — в одной сети.</p>
             </div>
 
             <div class="tab-list" role="tablist" aria-label="Способ подключения">
@@ -121,7 +121,7 @@
 
             <div class="tab-panel" id="host-panel" role="tabpanel" aria-labelledby="tab-host">
               <form id="host-form">
-                <label for="host-port">UDP-порт</label>
+                <label for="host-port">Порт</label>
                 <div class="input-row">
                   <input
                     id="host-port"
@@ -137,11 +137,10 @@
                 </div>
               </form>
               <div class="share-box" id="share-box" hidden>
-                <span class="share-label">Сообщите второму игроку</span>
+                <span class="share-label">Адрес для друга</span>
                 <div id="share-addresses" class="address-list"></div>
                 <small>Порт: <strong id="share-port">47777</strong></small>
               </div>
-              <p class="form-note">Первый игрок создаёт матч и ждёт подключения.</p>
             </div>
 
             <div
@@ -152,13 +151,13 @@
               hidden
             >
               <form id="join-form">
-                <label for="peer-address">IP первого игрока</label>
+                <label for="peer-address">Адрес друга</label>
                 <div class="discover-row">
                   <input
                     id="peer-address"
                     name="address"
                     type="text"
-                    placeholder="Например, 192.168.1.42 или 2001:db8::42"
+                    placeholder="IPv4 или IPv6"
                     required
                     autocomplete="off"
                     spellcheck="false"
@@ -169,11 +168,11 @@
                     type="button"
                     aria-label="Найти игру в сети"
                   >
-                    Найти в сети
+                    Найти
                   </button>
                 </div>
                 <div id="discovery-results" class="discovery-results" hidden></div>
-                <label for="join-port">UDP-порт</label>
+                <label for="join-port">Порт</label>
                 <div class="input-row">
                   <input
                     id="join-port"
@@ -185,14 +184,15 @@
                     required
                     inputmode="numeric"
                   />
-                  <button class="primary-button" id="join-button" type="submit">Войти</button>
+                  <button class="primary-button" id="join-button" type="submit">
+                    Подключиться
+                  </button>
                 </div>
               </form>
-              <p class="form-note">
-                Поиск через mDNS подставит IP и порт найденной игры независимо от значения поля
-                порта. Если игра не найдена, введите IPv4 или IPv6 и порт вручную. Для link-local
-                IPv6 (fe80::…) укажите зону интерфейса вашего компьютера.
-              </p>
+              <details class="connection-help">
+                <summary>Подсказка для IPv6</summary>
+                <p>Для адреса fe80::… добавьте зону своего интерфейса, например %en0 или %3.</p>
+              </details>
             </div>
           </section>
 
@@ -204,7 +204,7 @@
               >
             </div>
             <p class="session-message" id="session-message" role="status" aria-live="polite">
-              Создайте игру или присоединитесь к сопернику.
+              Создайте игру или найдите друга.
             </p>
             <dl class="session-details">
               <div>
@@ -229,11 +229,6 @@
               </button>
             </div>
           </section>
-
-          <p class="sidebar-tip">
-            <span aria-hidden="true">✦</span> Оба устройства должны находиться в одной локальной
-            сети. Если поиск не нашёл игру, введите IP вручную.
-          </p>
         </aside>
       </main>
       <footer class="footer">LAN PONG <span>●</span> Два игрока. Одна сеть.</footer>

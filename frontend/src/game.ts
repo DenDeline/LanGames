@@ -130,7 +130,7 @@ async function discoverHosts(): Promise<void> {
     if (hosts.length === 0) {
       const empty = document.createElement("p");
       empty.className = "discovery-empty";
-      empty.textContent = "Игр не найдено. Введите IP первого игрока вручную.";
+      empty.textContent = "Игр не найдено. Введите адрес и порт друга.";
       ui.discoveryResults.append(empty);
     } else {
       const first = hosts[0];

@@ -120,11 +120,7 @@ function roleText(snapshot: PongSnapshot): string {
 
 function overlayContent(snapshot: PongSnapshot): [string, string, string] | null {
   if (snapshot.role === "none") {
-    return [
-      "Локальный матч",
-      "Создайте игру",
-      "Создайте матч или присоединитесь к другу в вашей сети.",
-    ];
+    return ["Локальный матч", "Создайте игру", "Или найдите игру друга."];
   }
   if (snapshot.connection === "disconnected") {
     return ["Сеть", "Связь потеряна", "Проверьте сеть или покиньте игру, чтобы начать заново."];
@@ -147,9 +143,9 @@ function overlayContent(snapshot: PongSnapshot): [string, string, string] | null
   }
   if (snapshot.phase === "playing" && snapshot.connection === "connected") return null;
   if (snapshot.connection === "connecting") {
-    return ["Подключение", "Ищем соперника", "Устанавливаем прямое соединение по UDP…"];
+    return ["Подключение", "Подключаемся", "Ждём ответ друга…"];
   }
-  return ["Ожидание", "Ждём соперника", "Передайте второму игроку ваш IP и UDP-порт."];
+  return ["Ожидание", "Ждём друга", "Передайте другу адрес и порт."];
 }
 
 function renderAddresses(snapshot: PongSnapshot): void {

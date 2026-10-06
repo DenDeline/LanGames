@@ -115,11 +115,19 @@ button:disabled {
 .discover-button {
   padding-inline: 10px;
 }
-.form-note {
+.connection-help {
   margin: 14px 0 0;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.5;
+}
+.connection-help summary {
+  width: fit-content;
+  cursor: pointer;
+  color: #b5dcdb;
+}
+.connection-help p {
+  margin: 6px 0 0;
 }
 .share-box {
   margin-top: 17px;

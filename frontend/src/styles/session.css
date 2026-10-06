@@ -96,14 +96,3 @@
 .text-button:hover:not(:disabled) {
   color: var(--coral);
 }
-.sidebar-tip {
-  display: flex;
-  gap: 10px;
-  margin: 3px 4px 0;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.55;
-}
-.sidebar-tip span {
-  color: var(--cyan);
-}

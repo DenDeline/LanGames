@@ -10,9 +10,6 @@
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     align-items: start;
   }
-  .sidebar-tip {
-    grid-column: 1 / -1;
-  }
 }
 @media (max-width: 720px) {
   .app-shell {
