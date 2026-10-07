@@ -22,12 +22,15 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
     private readonly RejectedChallengeCache _rejectedChallenges = new();
     private readonly PeerPingTracker _ping = new();
     private readonly ILocalOpponentController _localOpponent;
+    private readonly HardLocalOpponentController? _hardOpponent;
+    private ILocalOpponentController _activeLocalOpponent;
     private GameEvent[] _confirmedGuestEvents = [];
     private readonly string[] _localAddresses = GetLocalAddresses();
     private readonly Task _clockTask;
     private Task? _shutdownTask;
     private bool _stopping;
     private bool _localOpponentActive;
+    private bool _hardOpponentRequested;
     private int _disposed;
 
     private UdpClient? _socket;
@@ -63,10 +66,13 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
     private DateTime _lastHelloSent = DateTime.MinValue;
     private DateTime _lastRestartSent = DateTime.MinValue;
 
-    public PongPeer(ILogger<PongPeer> logger, ILocalOpponentController localOpponent)
+    public PongPeer(ILogger<PongPeer> logger, ILocalOpponentController localOpponent,
+        HardLocalOpponentController? hardOpponent = null)
     {
         _logger = logger;
         _localOpponent = localOpponent;
+        _hardOpponent = hardOpponent;
+        _activeLocalOpponent = localOpponent;
         _mdns = new MdnsDiscovery(logger);
         _hostTimeline = new HostRollbackTimeline(_game);
         _guestTimeline = new GuestPredictionTimeline(_game);
@@ -85,14 +91,32 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
             var opponentMode = _localOpponentActive ? OpponentMode.Simple
                 : _role != PeerRole.None || _connection == ConnectionState.Searching
                     ? OpponentMode.Lan : OpponentMode.None;
+            // Hard is an internal session choice until the browser contract adds its own mode.
+            var message = _localOpponentActive && _hardOpponentRequested &&
+                          _hardOpponent?.IsFallbackActive == true
+                ? "Режим Hard недоступен. Игра продолжается против Simple."
+                : _message;
             return new PongSnapshot(
-                _role, _connection, _message, _udpPort, _localAddresses,
+                _role, _connection, message, _udpPort, _localAddresses,
                 FormatEndpoint(_peerEndpoint ?? _incomingChallengeEndpoint ?? _targetEndpoint),
                 state.LeftY, state.RightY, state.BallX, state.BallY,
                 state.BallVx, state.BallVy,
                 state.LeftScore, state.RightScore, state.Phase,
                 state.Countdown, state.TickNumber, state.RoundId, _ping.PingMs, events,
                 _localNickname, _peerNickname, opponentMode);
+        }
+    }
+
+    internal (bool Requested, bool FallbackActive, string? Reason) HardOpponentStatus
+    {
+        get
+        {
+            lock (_gate)
+            {
+                var requested = _localOpponentActive && _hardOpponentRequested;
+                return (requested, requested && _hardOpponent?.IsFallbackActive == true,
+                    requested ? _hardOpponent?.FallbackReason : null);
+            }
         }
     }
 
@@ -120,7 +144,11 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
         finally { _transition.Release(); }
     }
 
-    public async Task StartLocalOpponentAsync(string nickname)
+    public Task StartLocalOpponentAsync(string nickname) => StartLocalOpponentCoreAsync(nickname, hard: false);
+
+    internal Task StartHardLocalOpponentAsync(string nickname) => StartLocalOpponentCoreAsync(nickname, hard: true);
+
+    private async Task StartLocalOpponentCoreAsync(string nickname, bool hard)
     {
         var selectedNickname = PlayerNickname.Normalize(nickname);
         await _transition.WaitAsync();
@@ -132,19 +160,26 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
                 if (_role != PeerRole.None || _connection != ConnectionState.Idle ||
                     _matchmakingTask is not null)
                     throw new InvalidOperationException("Сначала покиньте текущую игру.");
+                if (hard && _hardOpponent is null)
+                    throw new InvalidOperationException("Режим Hard недоступен.");
                 CancelQuickMatchmakingLocked(clearLobby: true);
             }
 
             await StopSocketAsync();
+            var opponent = hard ? _hardOpponent! : _localOpponent;
+            // Preparing the ONNX session can take longer than a fixed tick. No match is
+            // active here, so do that work outside the state lock.
+            opponent.Reset();
             lock (_gate)
             {
                 if (_stopping) throw new InvalidOperationException("Приложение завершает работу.");
-                _localOpponent.Reset();
+                _activeLocalOpponent = opponent;
+                _hardOpponentRequested = hard;
                 _localNickname = selectedNickname;
                 _peerNickname = "Компьютер";
                 _role = PeerRole.Host;
                 _connection = ConnectionState.Connected;
-                _message = "Локальная игра началась!";
+                _message = hard ? "Локальная игра против Hard началась!" : "Локальная игра началась!";
                 _game.StartMatch();
                 _localOpponentActive = true;
             }
@@ -178,7 +213,7 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
             _message = "Ожидание второго игрока. Он может найти вашу игру в сети по нику.";
             _udpPort = actualPort;
             _mdns.SetHostPort(actualPort, _localNickname);
-            _receiveTask = Task.Run(() => ReceiveAsync(socket, stop));
+            _receiveTask = StartReceiving(socket, stop);
         }
     }
 
@@ -253,7 +288,7 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
             _connection = ConnectionState.Connecting;
             _message = "Подключаемся к игроку…";
             _udpPort = ((IPEndPoint)socket.Client.LocalEndPoint!).Port;
-            _receiveTask = Task.Run(() => ReceiveAsync(socket, stop));
+            _receiveTask = StartReceiving(socket, stop);
         }
     }
 
@@ -265,7 +300,7 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
             if (_connection != ConnectionState.Connected) throw new InvalidOperationException("Сначала подключитесь к игре.");
             if (_role == PeerRole.Host)
             {
-                if (_localOpponentActive) _localOpponent.Reset();
+                if (_localOpponentActive) _activeLocalOpponent.Reset();
                 _game.StartMatch();
                 if (!_localOpponentActive) _hostTimeline.Reset();
             }

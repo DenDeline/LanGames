@@ -12,11 +12,11 @@ internal sealed record GenerationOptions(string OutputDirectory, ulong Seed, int
 
 internal sealed record EvaluationOptions(string OutputFile, ulong Seed, int Matches, int MaxTicks);
 
-internal sealed record ModelEvaluationOptions(string OutputFile, string StudentModel,
-    ulong Seed, int Matches, int MaxTicks);
+internal sealed record ModelEvaluationOptions(string OutputFile, string? StudentModel,
+    ulong Seed, int Matches, int MaxTicks, string Backend = "offline");
 
-internal sealed record DirectModelEvaluationOptions(string OutputFile, string StudentModel,
-    ulong Seed, int Matches, int MaxTicks, string CountdownMode);
+internal sealed record DirectModelEvaluationOptions(string OutputFile, string? StudentModel,
+    ulong Seed, int Matches, int MaxTicks, string CountdownMode, string Backend = "offline");
 
 internal sealed record TrainingRow(string MatchId, long Tick, float[] Observation,
     int TeacherClass, int BehaviorAxis);
@@ -69,7 +69,8 @@ internal sealed record DirectDuelReport(string MasterSeed, int ScenarioCount,
     double TeacherWilson95Upper, DirectDuelMatch[] Matches);
 
 internal sealed record ModelEvaluationPair(int ScenarioIndex, string Seed, string LeftPolicy,
-    MatchMetrics Student, MatchMetrics Simple)
+    MatchMetrics Student, MatchMetrics Simple, bool StudentFallbackActive,
+    string? StudentFallbackReason)
 {
     public int PairedScoreImprovement => Student.RightScoreMargin - Simple.RightScoreMargin;
 }
@@ -81,23 +82,32 @@ internal sealed record ModelProfileSummary(string LeftPolicy, int ScenarioCount,
     double StudentPairedScoreWinWilson95Lower, double StudentPairedScoreWinWilson95Upper);
 
 internal sealed record ModelEvaluationReport(int ObservationVersion, string SeedPolicy,
-    string MasterSeed, string StudentModelSha256, int ScenarioCount, int MaxTicks,
+    string MasterSeed, string Backend, string? StudentModelSha256,
+    bool FallbackActiveAtLoad, int StudentFallbackMatches, string? FallbackReason,
+    int ScenarioCount, int MaxTicks,
     int StudentWins, int SimpleWins, int StudentScoreMargin, int SimpleScoreMargin,
     int PairedBetter, int PairedWorse, int PairedTies,
     double StudentWinRate, double SimpleWinRate,
     double StudentWinWilson95Lower, double StudentWinWilson95Upper,
     double StudentPairedScoreWinWilson95Lower, double StudentPairedScoreWinWilson95Upper,
-    ModelProfileSummary[] Profiles, ModelEvaluationPair[] Pairs);
+    ModelProfileSummary[] Profiles, ModelEvaluationPair[] Pairs)
+{
+    public bool UsedModelThroughout => StudentModelSha256 is not null &&
+        !FallbackActiveAtLoad && StudentFallbackMatches == 0;
+}
 
 internal sealed record DirectModelDuelMatch(int ScenarioIndex, string Seed,
     string StudentSide, bool Completed, int Ticks, int LeftScore, int RightScore,
-    string OpeningCheckpointHash, string PlayingTrajectoryHash)
+    string OpeningCheckpointHash, string PlayingTrajectoryHash,
+    bool StudentFallbackActive, string? StudentFallbackReason)
 {
     public bool StudentWon => Completed && (StudentSide == "right"
         ? RightScore == WinningScore : LeftScore == WinningScore);
 }
 
-internal sealed record DirectModelDuelReport(string MasterSeed, string StudentModelSha256,
+internal sealed record DirectModelDuelReport(string MasterSeed, string Backend,
+    string? StudentModelSha256, bool FallbackActiveAtLoad, int FallbackGames,
+    string? FallbackReason,
     string SeedPolicy, string OpeningProtocol, string CountdownMode,
     string CountdownProtocol,
     int ScenarioCount, int ScheduledMatches, int OpeningDisturbanceTicks,
@@ -109,7 +119,11 @@ internal sealed record DirectModelDuelReport(string MasterSeed, string StudentMo
     double StudentWinRateCompleted, double StudentWilson95Lower,
     double StudentWilson95Upper, double StudentWinRateScheduled,
     double StudentScheduledWilson95Lower, double StudentScheduledWilson95Upper,
-    string UncertaintyNote, DirectModelDuelMatch[] Matches);
+    string UncertaintyNote, DirectModelDuelMatch[] Matches)
+{
+    public bool UsedModelThroughout => StudentModelSha256 is not null &&
+        !FallbackActiveAtLoad && FallbackGames == 0;
+}
 
 internal sealed record SplitSummary(string Name, int MatchCount, int RowCount,
     string[] MatchIds, string[] MatchSeeds);
@@ -237,14 +251,13 @@ internal static class TrainingDataRunner
             $"Report: {options.OutputFile}");
     }
 
-    public static ModelEvaluationReport EvaluateModel(string modelPath, ulong seed,
-        int scenarioCount, int maxTicks)
+    public static ModelEvaluationReport EvaluateModel(string? modelPath, ulong seed,
+        int scenarioCount, int maxTicks, string backend = "offline")
     {
         ValidateCount(scenarioCount, nameof(scenarioCount));
         ValidateCount(maxTicks, nameof(maxTicks));
-        using var student = new OnnxStudentPolicy(modelPath);
-        using var modelFile = File.OpenRead(modelPath);
-        var modelSha = Convert.ToHexString(SHA256.HashData(modelFile)).ToLowerInvariant();
+        using var student = EvaluatedModelPolicy.Create(backend, modelPath);
+        var fallbackAtLoad = student.IsFallbackActive;
         var pairs = new ModelEvaluationPair[scenarioCount];
         for (var index = 0; index < scenarioCount; index++)
         {
@@ -258,7 +271,8 @@ internal static class TrainingDataRunner
             var simpleMatch = RunMatch(matchId, "model-evaluation", matchSeed,
                 index, "simple", maxTicks, 0, null, null);
             pairs[index] = new ModelEvaluationPair(index, matchSeed.ToString(),
-                LeftPolicyProfile.ForMatch(index).Name, studentMatch, simpleMatch);
+                LeftPolicyProfile.ForMatch(index).Name, studentMatch, simpleMatch,
+                student.IsFallbackActive, student.FallbackReason);
         }
 
         var profileSummaries = LeftPolicyProfile.All
@@ -275,7 +289,9 @@ internal static class TrainingDataRunner
         var (winLower, winUpper) = Wilson95(studentWins, scenarioCount);
         var (pairedLower, pairedUpper) = Wilson95(better, better + worse);
         return new ModelEvaluationReport(RightBotObservationV1.Version, SeedPolicy,
-            seed.ToString(), modelSha, scenarioCount, maxTicks,
+            seed.ToString(), student.Backend, student.ModelSha256,
+            fallbackAtLoad, pairs.Count(pair => pair.StudentFallbackActive),
+            student.FallbackReason, scenarioCount, maxTicks,
             studentWins, simpleWins, studentMargin, simpleMargin,
             better, worse, ties, studentWins / (double)scenarioCount,
             simpleWins / (double)scenarioCount, winLower, winUpper,
@@ -285,29 +301,33 @@ internal static class TrainingDataRunner
     public static void EvaluateModelToFile(ModelEvaluationOptions options)
     {
         var report = EvaluateModel(options.StudentModel, options.Seed,
-            options.Matches, options.MaxTicks);
+            options.Matches, options.MaxTicks, options.Backend);
         var directory = Path.GetDirectoryName(Path.GetFullPath(options.OutputFile))!;
         Directory.CreateDirectory(directory);
         WriteJson(options.OutputFile, report);
-        Console.WriteLine($"Paired left-opponent scenarios: student {report.StudentWins}/" +
+        Console.WriteLine($"Paired left-opponent scenarios ({report.Backend}): student {report.StudentWins}/" +
             $"{report.ScenarioCount}, Simple {report.SimpleWins}/{report.ScenarioCount}; " +
             $"score margins {report.StudentScoreMargin}:{report.SimpleScoreMargin}, " +
             $"paired scores {report.PairedBetter}:{report.PairedWorse}:{report.PairedTies}, " +
+            $"fallback matches {report.StudentFallbackMatches}/{report.ScenarioCount}, " +
             $"student win Wilson 95% [{report.StudentWinWilson95Lower:F3}, " +
             $"{report.StudentWinWilson95Upper:F3}]. Report: {options.OutputFile}");
+        if (report.Backend == "production" && !report.UsedModelThroughout)
+            throw new InvalidOperationException("Production Hard entered Simple fallback; " +
+                $"the evaluation report is at {options.OutputFile}.");
     }
 
-    public static DirectModelDuelReport EvaluateModelDirect(string modelPath, ulong seed,
-        int scenarioCount, int maxTicks, string countdownMode = "seeded-targets")
+    public static DirectModelDuelReport EvaluateModelDirect(string? modelPath, ulong seed,
+        int scenarioCount, int maxTicks, string countdownMode = "seeded-targets",
+        string backend = "offline")
     {
         ValidateCount(scenarioCount, nameof(scenarioCount));
         ValidateCount(maxTicks, nameof(maxTicks));
         if (countdownMode is not ("seeded-targets" or "policies"))
             throw new ArgumentException("Countdown mode must be seeded-targets or policies.",
                 nameof(countdownMode));
-        using var student = new OnnxStudentPolicy(modelPath);
-        using var modelFile = File.OpenRead(modelPath);
-        var modelSha = Convert.ToHexString(SHA256.HashData(modelFile)).ToLowerInvariant();
+        using var student = EvaluatedModelPolicy.Create(backend, modelPath);
+        var fallbackAtLoad = student.IsFallbackActive;
         const int openingTicks = 120;
         var matches = new DirectModelDuelMatch[scenarioCount * 2];
         for (var index = 0; index < scenarioCount; index++)
@@ -326,7 +346,9 @@ internal static class TrainingDataRunner
         var leftCompleted = matches.Count(match => match.StudentSide == "left" && match.Completed);
         var (lower, upper) = Wilson95(studentWins, completed);
         var (scheduledLower, scheduledUpper) = Wilson95(studentWins, matches.Length);
-        return new DirectModelDuelReport(seed.ToString(), modelSha,
+        return new DirectModelDuelReport(seed.ToString(), student.Backend,
+            student.ModelSha256, fallbackAtLoad,
+            matches.Count(match => match.StudentFallbackActive), student.FallbackReason,
             "splitmix64-v1: scenario seed = derive(master, 4, index); " +
             "opening and optional later targets = derive(scenarioSeed, 21, pointIndex)",
             "Both paddles follow the same seed-specific legal target axis for " +
@@ -334,7 +356,7 @@ internal static class TrainingDataRunner
             countdownMode,
             countdownMode == "seeded-targets"
                 ? "Both paddles follow the same point-keyed target during later countdowns."
-                : "The ONNX student and Simple own all actions during later countdowns.",
+                : "The evaluated model policy and Simple own all actions during later countdowns.",
             scenarioCount,
             matches.Length, openingTicks, maxTicks, completed,
             studentWins, completed - studentWins,
@@ -359,13 +381,15 @@ internal static class TrainingDataRunner
     public static void EvaluateModelDirectToFile(DirectModelEvaluationOptions options)
     {
         var report = EvaluateModelDirect(options.StudentModel, options.Seed,
-            options.Matches, options.MaxTicks, options.CountdownMode);
+            options.Matches, options.MaxTicks, options.CountdownMode, options.Backend);
         var directory = Path.GetDirectoryName(Path.GetFullPath(options.OutputFile))!;
         Directory.CreateDirectory(directory);
         WriteJson(options.OutputFile, report);
-        Console.WriteLine($"Direct side-swapped duels ({report.CountdownMode}): " +
+        Console.WriteLine($"Direct side-swapped duels ({report.Backend}, " +
+            $"{report.CountdownMode}): " +
             $"student {report.StudentWins}, " +
             $"Simple {report.SimpleWins}, capped {report.CappedMatches}/" +
+            $"{report.Matches.Length}, fallback {report.FallbackGames}/" +
             $"{report.Matches.Length}; student right {report.StudentRightWins}/" +
             $"{report.StudentRightCompleted}, left {report.StudentLeftWins}/" +
             $"{report.StudentLeftCompleted}; distinct openings " +
@@ -377,6 +401,9 @@ internal static class TrainingDataRunner
             $"[{report.StudentScheduledWilson95Lower:F3}, " +
             $"{report.StudentScheduledWilson95Upper:F3}]. " +
             $"Report: {options.OutputFile}");
+        if (report.Backend == "production" && !report.UsedModelThroughout)
+            throw new InvalidOperationException("Production Hard entered Simple fallback; " +
+                $"the evaluation report is at {options.OutputFile}.");
     }
 
     private static ModelProfileSummary SummarizeProfile(string name, ModelEvaluationPair[] pairs)
@@ -506,7 +533,7 @@ internal static class TrainingDataRunner
 
     private static MatchMetrics RunMatch(string matchId, string split, ulong seed, int scenarioIndex,
         string rightPolicyName, int maxTicks, int sampleEveryTicks, StreamWriter? rows,
-        OnnxStudentPolicy? student)
+        ILocalOpponentController? student)
     {
         var game = new GameEngine();
         game.StartMatch();
@@ -646,7 +673,7 @@ internal static class TrainingDataRunner
 
     private static DirectModelDuelMatch RunDirectModelDuel(int scenarioIndex, ulong seed,
         bool studentRight, int openingTicks, int maxTicks, string countdownMode,
-        OnnxStudentPolicy student)
+        EvaluatedModelPolicy student)
     {
         const ulong hashOffset = 14695981039346656037UL;
         var game = new GameEngine();
@@ -703,7 +730,8 @@ internal static class TrainingDataRunner
         return new DirectModelDuelMatch(scenarioIndex, seed.ToString(),
             studentRight ? "right" : "left", game.Phase == GamePhase.GameOver,
             ticks, game.LeftScore, game.RightScore,
-            openingHash.ToString("x16"), trajectoryHash.ToString("x16"));
+            openingHash.ToString("x16"), trajectoryHash.ToString("x16"),
+            student.IsFallbackActive, student.FallbackReason);
     }
 
     private static double DirectModelPointTarget(ulong seed, int pointIndex)

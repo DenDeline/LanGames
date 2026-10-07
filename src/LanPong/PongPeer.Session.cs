@@ -33,6 +33,8 @@ internal sealed partial class PongPeer
         var detached = (_socket, _socketStop, _receiveTask);
         _socket = null;
         _localOpponentActive = false;
+        _hardOpponentRequested = false;
+        _activeLocalOpponent = _localOpponent;
         _quickHostAutoAccept = false;
         _socketStop = null;
         _receiveTask = null;

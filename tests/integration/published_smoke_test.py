@@ -1,5 +1,6 @@
 """Smoke test a published LanPong executable without requiring the .NET SDK."""
 
+import hashlib
 import json
 import os
 import platform
@@ -11,6 +12,9 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+
+HARD_MODEL_SHA256 = "5d5d3cf0910d967cf2d6dc60e8fe0b63f772060178bf6673f6ddc5cdba98ab5a"
 
 
 def free_port():
@@ -75,6 +79,32 @@ def verify_onnx_smoke(binary):
     print(f"PASS: published ONNX inference returned 2 -> 3 with {libraries[0].name}")
 
 
+def verify_hard_smoke(binary):
+    model = binary.parent / "Models" / "hard-v1.onnx"
+    assert model.is_file() and model.stat().st_size > 0, f"Published Hard model is missing: {model}"
+    digest = hashlib.sha256(model.read_bytes()).hexdigest()
+    assert digest == HARD_MODEL_SHA256, (
+        f"Published Hard model SHA-256 mismatch: expected {HARD_MODEL_SHA256}, got {digest}"
+    )
+
+    # The CLI path loads the packaged model and executes the production controller.
+    with tempfile.TemporaryDirectory() as smoke_cwd:
+        result = subprocess.run(
+            [str(binary), "--hard-smoke"],
+            cwd=smoke_cwd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    expected = f"Hard ONNX smoke passed: SHA-256 {HARD_MODEL_SHA256}, axis "
+    assert result.returncode == 0 and expected in result.stdout, (
+        f"Published Hard inference failed (exit {result.returncode}).\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    print(f"PASS: published Hard ONNX inference used model SHA-256 {digest}")
+
+
 def main():
     value = os.environ.get("LANPONG_TEST_BINARY")
     if not value:
@@ -84,6 +114,7 @@ def main():
         raise FileNotFoundError(f"Published executable does not exist: {binary}")
 
     verify_onnx_smoke(binary)
+    verify_hard_smoke(binary)
 
     port = free_port()
     base_url = f"http://127.0.0.1:{port}"

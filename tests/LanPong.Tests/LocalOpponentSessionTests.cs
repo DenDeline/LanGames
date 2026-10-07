@@ -85,6 +85,84 @@ public sealed class LocalOpponentSessionTests
         await peer.LeaveAsync();
     }
 
+    [Test]
+    public async Task StartHardLocalOpponentAsync_WhenModelIsMissing_ReportsFallbackAndKeepsSessionPlayable()
+    {
+        var missingModel = Path.Combine(Path.GetTempPath(), $"missing-lanpong-{Guid.NewGuid():N}.onnx");
+        using var hard = new HardLocalOpponentController(missingModel);
+        await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
+            new SimpleLocalOpponentController(), hard);
+
+        await Assert.That(peer.HardOpponentStatus.Requested).IsFalse();
+        await peer.StartHardLocalOpponentAsync("Игрок");
+        var started = peer.Snapshot();
+        var status = peer.HardOpponentStatus;
+        await Assert.That(status.Requested).IsTrue();
+        await Assert.That(status.FallbackActive).IsTrue();
+        await Assert.That(string.IsNullOrWhiteSpace(status.Reason)).IsFalse();
+        await Assert.That(started.OpponentMode).IsEqualTo(OpponentMode.Simple);
+        await Assert.That(started.Connection).IsEqualTo(ConnectionState.Connected);
+        await Assert.That(started.UdpPort).IsEqualTo(0);
+        await Assert.That(started.Message.Contains("Simple", StringComparison.Ordinal)).IsTrue();
+
+        var playing = await WaitForAsync(peer, snapshot => snapshot.Tick > started.Tick);
+        await Assert.That(playing.Tick).IsGreaterThan(started.Tick);
+        peer.Restart();
+        await Assert.That(peer.Snapshot().RoundId).IsEqualTo(started.RoundId + 1);
+        await Assert.That(peer.HardOpponentStatus.FallbackActive).IsTrue();
+        await Assert.That(peer.Snapshot().Message.Contains("Simple", StringComparison.Ordinal)).IsTrue();
+
+        await peer.LeaveAsync();
+        await Assert.That(peer.HardOpponentStatus.Requested).IsFalse();
+        await Assert.That(peer.HardOpponentStatus.FallbackActive).IsFalse();
+        await Assert.That(peer.HardOpponentStatus.Reason).IsNull();
+        await Assert.That(peer.Snapshot().OpponentMode).IsEqualTo(OpponentMode.None);
+
+        await peer.StartLocalOpponentAsync("Игрок");
+        await Assert.That(peer.HardOpponentStatus.Requested).IsFalse();
+        await Assert.That(peer.Snapshot().Message.Contains("Hard", StringComparison.Ordinal)).IsFalse();
+        await peer.LeaveAsync();
+    }
+
+    [Test]
+    public async Task JoinAsync_ImmediateLeaveDoesNotRaceReceiverStartup()
+    {
+        await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
+            new SimpleLocalOpponentController());
+
+        for (var attempt = 0; attempt < 32; attempt++)
+        {
+            await peer.JoinAsync("127.0.0.1", 9, "Игрок");
+            await peer.LeaveAsync();
+            var snapshot = peer.Snapshot();
+            await Assert.That(snapshot.Connection).IsEqualTo(ConnectionState.Idle);
+            await Assert.That(snapshot.OpponentMode).IsEqualTo(OpponentMode.None);
+        }
+    }
+
+    [Test]
+    public async Task StartHardLocalOpponentAsync_WhenInferenceFails_UpdatesStatusWithoutStoppingClock()
+    {
+        var inference = new ThrowingInferenceSession();
+        using var hard = new HardLocalOpponentController(inference);
+        await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
+            new SimpleLocalOpponentController(), hard);
+
+        await peer.StartHardLocalOpponentAsync("Игрок");
+        await Assert.That(peer.HardOpponentStatus.Requested).IsTrue();
+        await Assert.That(peer.HardOpponentStatus.FallbackActive).IsFalse();
+
+        var fallback = await WaitForAsync(peer, _ => peer.HardOpponentStatus.FallbackActive,
+            TimeSpan.FromSeconds(5));
+        await Assert.That(fallback.Message.Contains("Simple", StringComparison.Ordinal)).IsTrue();
+        await Assert.That(peer.HardOpponentStatus.Reason).IsNotNull();
+        await Assert.That(inference.Disposed).IsTrue();
+
+        var advanced = await WaitForAsync(peer, snapshot => snapshot.Tick > fallback.Tick);
+        await Assert.That(advanced.Tick).IsGreaterThan(fallback.Tick);
+        await peer.LeaveAsync();
+    }
+
     private static (int FieldCount, int Version, int Role, int Connection, int UdpPort,
         bool NoPeerAddress, int Mode, bool AtEnd) ReadBrowserHeader(ReadOnlyMemory<byte> bytes)
     {
@@ -102,9 +180,10 @@ public sealed class LocalOpponentSessionTests
         return (fieldCount, version, role, connection, udpPort, noPeerAddress, mode, reader.End);
     }
 
-    private static async Task<PongSnapshot> WaitForAsync(PongPeer peer, Func<PongSnapshot, bool> predicate)
+    private static async Task<PongSnapshot> WaitForAsync(PongPeer peer, Func<PongSnapshot, bool> predicate,
+        TimeSpan? timeoutAfter = null)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        using var timeout = new CancellationTokenSource(timeoutAfter ?? TimeSpan.FromSeconds(2));
         while (!timeout.IsCancellationRequested)
         {
             var snapshot = peer.Snapshot();
@@ -121,5 +200,15 @@ public sealed class LocalOpponentSessionTests
         public void Reset() => ResetCount++;
 
         public int GetAxis(GameState state) => -1;
+    }
+
+    private sealed class ThrowingInferenceSession : IHardInferenceSession
+    {
+        public bool Disposed { get; private set; }
+
+        public void Run(ReadOnlySpan<float> observation, Span<float> logits) =>
+            throw new InvalidDataException("Synthetic inference failure.");
+
+        public void Dispose() => Disposed = true;
     }
 }

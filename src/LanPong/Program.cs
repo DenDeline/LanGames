@@ -8,12 +8,23 @@ if (args.Length == 1 && args[0] == "--onnx-smoke")
     OnnxSmoke.Run();
     return;
 }
+if (args.Length == 1 && args[0] == "--hard-smoke")
+{
+    HardModelDiagnostics.Smoke();
+    return;
+}
+if (args.Length == 1 && args[0] == "--hard-benchmark")
+{
+    HardModelDiagnostics.Benchmark();
+    return;
+}
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonSerializerContext.Default));
 builder.Services.AddSingleton<PongPeer>();
 builder.Services.AddSingleton<ILocalOpponentController, SimpleLocalOpponentController>();
+builder.Services.AddSingleton(_ => new HardLocalOpponentController());
 builder.Services.AddHostedService(services => services.GetRequiredService<PongPeer>());
 var app = builder.Build();
 var peer = app.Services.GetRequiredService<PongPeer>();

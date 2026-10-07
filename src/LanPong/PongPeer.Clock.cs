@@ -78,7 +78,7 @@ internal sealed partial class PongPeer
         for (var step = 0; step < NetworkConstants.MaximumSimulationCatchUpSteps &&
                            accumulatedTime >= GameConstants.FixedStepSeconds; step++)
         {
-            var rightAxis = Math.Clamp(_localOpponent.GetAxis(_game.Capture()), -1, 1);
+            var rightAxis = Math.Clamp(_activeLocalOpponent.GetAxis(_game.Capture()), -1, 1);
             _game.Advance(GameConstants.FixedStepSeconds, leftAxis, rightAxis);
             accumulatedTime -= GameConstants.FixedStepSeconds;
         }

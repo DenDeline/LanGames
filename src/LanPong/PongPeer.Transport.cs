@@ -7,23 +7,32 @@ namespace LanPong;
 
 internal sealed partial class PongPeer
 {
-    private async Task ReceiveAsync(UdpClient socket, CancellationTokenSource stop)
+    private Task StartReceiving(UdpClient socket, CancellationTokenSource stop)
+    {
+        // A leave may dispose UdpClient before the scheduled receive task starts.
+        // Capture the underlying socket and its address family while both are live.
+        var receiveSocket = socket.Client;
+        var anyEndpoint = receiveSocket.AddressFamily == AddressFamily.InterNetworkV6
+            ? NetworkConstants.AnyIpv6Endpoint
+            : NetworkConstants.AnyIpv4Endpoint;
+        return Task.Run(() => ReceiveAsync(socket, receiveSocket, anyEndpoint, stop));
+    }
+
+    private async Task ReceiveAsync(UdpClient socket, Socket receiveSocket,
+        IPEndPoint anyEndpoint, CancellationTokenSource stop)
     {
         using var ownedStop = stop;
         var cancellationToken = ownedStop.Token;
         // One receive is outstanding at a time, so the datagram and remote address
         // can be handled before the next receive overwrites either buffer.
         var receiveBuffer = new byte[WirePacketCodec.MaxPacketBytes + 1];
-        var anyEndpoint = socket.Client.AddressFamily == AddressFamily.InterNetworkV6
-            ? NetworkConstants.AnyIpv6Endpoint
-            : NetworkConstants.AnyIpv4Endpoint;
         var receiveFrom = anyEndpoint.Serialize();
         var replyBuffer = new ArrayBufferWriter<byte>();
         while (!cancellationToken.IsCancellationRequested)
         {
             try
             {
-                var receivedBytes = await socket.Client.ReceiveFromAsync(
+                var receivedBytes = await receiveSocket.ReceiveFromAsync(
                     receiveBuffer.AsMemory(), SocketFlags.None, receiveFrom, cancellationToken);
                 if (receivedBytes > WirePacketCodec.MaxPacketBytes || !MayReceiveFrom(socket, receiveFrom)) continue;
                 if (!WirePacketCodec.TryDeserialize(receiveBuffer.AsMemory(0, receivedBytes), out var packet))

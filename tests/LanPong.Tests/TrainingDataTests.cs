@@ -332,6 +332,89 @@ public sealed class TrainingDataTests
     }
 
     [Test]
+    public async Task ProductionModelEvaluation_UsesFrozenHardControllerWithoutFallback()
+    {
+        var modelPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
+            "../../../../../src/LanPong/Models/hard-v1.onnx"));
+        await Assert.That(File.Exists(modelPath)).IsTrue();
+        var pairedOffline = TrainingDataRunner.EvaluateModel(modelPath,
+            20261020, 2, 8_000);
+        var pairedProduction = TrainingDataRunner.EvaluateModel(modelPath,
+            20261020, 2, 8_000, "production");
+        await Assert.That(pairedProduction.Backend).IsEqualTo("production");
+        await Assert.That(pairedProduction.StudentModelSha256)
+            .IsEqualTo(HardLocalOpponentController.ExpectedModelSha256);
+        await Assert.That(pairedProduction.UsedModelThroughout).IsTrue();
+        await Assert.That(pairedProduction.StudentFallbackMatches).IsEqualTo(0);
+        for (var index = 0; index < pairedOffline.Pairs.Length; index++)
+            await Assert.That(pairedProduction.Pairs[index].Student)
+                .IsEqualTo(pairedOffline.Pairs[index].Student);
+
+        var directOffline = TrainingDataRunner.EvaluateModelDirect(modelPath,
+            20261020, 2, 8_000, "policies");
+        var directProduction = TrainingDataRunner.EvaluateModelDirect(modelPath,
+            20261020, 2, 8_000, "policies", "production");
+        await Assert.That(directProduction.Backend).IsEqualTo("production");
+        await Assert.That(directProduction.UsedModelThroughout).IsTrue();
+        await Assert.That(directProduction.FallbackGames).IsEqualTo(0);
+        await Assert.That(directProduction.CappedMatches).IsEqualTo(0);
+        for (var index = 0; index < directOffline.Matches.Length; index++)
+        {
+            await Assert.That(directProduction.Matches[index].PlayingTrajectoryHash)
+                .IsEqualTo(directOffline.Matches[index].PlayingTrajectoryHash);
+            await Assert.That(directProduction.Matches[index].StudentFallbackActive)
+                .IsFalse();
+        }
+
+        var root = Path.Combine(Path.GetTempPath(), $"lanpong-wrong-hard-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var wrongModel = Path.Combine(root, "wrong.onnx");
+            File.WriteAllBytes(wrongModel, FixedStudentModel());
+            var wrongReport = Path.Combine(root, "wrong-report.json");
+            await Assert.That(() => TrainingDataRunner.EvaluateModelToFile(
+                new ModelEvaluationOptions(wrongReport, wrongModel, 20261020,
+                    1, 8_000, "production"))).Throws<InvalidOperationException>();
+            using (var report = JsonDocument.Parse(File.ReadAllText(wrongReport)))
+            {
+                await Assert.That(report.RootElement.GetProperty("fallbackActiveAtLoad").GetBoolean())
+                    .IsTrue();
+                await Assert.That(report.RootElement.GetProperty("studentFallbackMatches").GetInt32())
+                    .IsEqualTo(1);
+                await Assert.That(report.RootElement.GetProperty("usedModelThroughout").GetBoolean())
+                    .IsFalse();
+            }
+
+            var wrongDirectReport = Path.Combine(root, "wrong-direct-report.json");
+            await Assert.That(() => TrainingDataRunner.EvaluateModelDirectToFile(
+                new DirectModelEvaluationOptions(wrongDirectReport, wrongModel,
+                    20261020, 1, 8_000, "policies", "production")))
+                .Throws<InvalidOperationException>();
+            using (var report = JsonDocument.Parse(File.ReadAllText(wrongDirectReport)))
+            {
+                await Assert.That(report.RootElement.GetProperty("fallbackActiveAtLoad").GetBoolean())
+                    .IsTrue();
+                await Assert.That(report.RootElement.GetProperty("fallbackGames").GetInt32())
+                    .IsEqualTo(2);
+                await Assert.That(report.RootElement.GetProperty("usedModelThroughout").GetBoolean())
+                    .IsFalse();
+            }
+
+            var missingModel = Path.Combine(root, "missing.onnx");
+            var missing = TrainingDataRunner.EvaluateModel(missingModel,
+                20261020, 1, 8_000, "production");
+            await Assert.That(missing.FallbackActiveAtLoad).IsTrue();
+            await Assert.That(missing.StudentModelSha256).IsNull();
+            await Assert.That(missing.StudentFallbackMatches).IsEqualTo(1);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Test]
     public async Task Generate_RefusesNonemptyOutputWithoutChangingExistingFiles()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"lanpong-data-test-{Guid.NewGuid():N}");

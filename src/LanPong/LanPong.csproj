@@ -28,5 +28,7 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntime" />
     <Content Include="Models/aot-smoke.onnx" CopyToOutputDirectory="PreserveNewest"
              CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Models/hard-v1.onnx" CopyToOutputDirectory="PreserveNewest"
+             CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
