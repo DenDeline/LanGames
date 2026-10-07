@@ -736,14 +736,23 @@ try:
         send_text(host_ws, '{"axis":1}')
         send_binary(host_ws, b"\x90")  # Wrong array shape.
         send_binary(host_ws, b"\x92\x03\x01")  # Wrong protocol version.
-        send_binary(host_ws, b"\x92\x06\xa2up")  # Non-numeric axis.
-        send_binary(host_ws, b"\x92\x06\x02")  # Axis outside -1..1.
         send_binary(host_ws, b"\xc1")  # Reserved MessagePack prefix.
         send_binary(host_ws, controls[1] + b"\x00")  # A second packed value.
         send_binary(host_ws, controls[1] + bytes(257 - len(controls[1])))
         time.sleep(0.15)
         after_invalid = request(5180, "/api/status")
         assert abs(after_invalid["leftY"] - before["leftY"]) < 0.005, (before, after_invalid)
+
+        # Both frames use the current protocol version, so each reaches axis
+        # validation rather than being rejected by the version check.
+        for malformed_axis in (b"\x92\x07\xa2up", b"\x92\x07\x02"):
+            send_binary(host_ws, malformed_axis)
+            time.sleep(0.15)
+            after_axis = request(5180, "/api/status")
+            assert after_axis["tick"] > after_invalid["tick"], (after_invalid, after_axis)
+            assert abs(after_axis["leftY"] - before["leftY"]) < 0.005, (
+                malformed_axis, before, after_axis)
+            after_invalid = after_axis
 
         for _ in range(8):
             send_binary(host_ws, controls[-1])
