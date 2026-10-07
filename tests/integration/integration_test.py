@@ -409,7 +409,6 @@ class UdpRelay:
         self.dropped_state_packets = 0
         self.dropped_welcome_packets = 0
         self.forwarded_state_packets = 0
-        self.buffered_input_count = 0
         self.latest_buffered_input = None
         self.input_lock = threading.Lock()
         self.thread = threading.Thread(target=self._relay, daemon=True)
@@ -424,13 +423,15 @@ class UdpRelay:
         self.thread.join(timeout=1)
         assert not self.thread.is_alive(), "UDP relay did not stop"
 
-    def release_latest_input(self):
+    def buffered_input(self):
         with self.input_lock:
-            packet = self.latest_buffered_input
-            self.latest_buffered_input = None
-        if packet is not None:
-            self.socket.sendto(packet, ("127.0.0.1", self.host_port))
-        return packet
+            return self.latest_buffered_input
+
+    def release_input(self, packet):
+        with self.input_lock:
+            if self.latest_buffered_input == packet:
+                self.latest_buffered_input = None
+        self.socket.sendto(packet, ("127.0.0.1", self.host_port))
 
     def _relay(self):
         while not self.stop.is_set():
@@ -451,7 +452,6 @@ class UdpRelay:
                     if self.pause_guest_inputs.is_set() and packet.startswith(b"\x92\x04"):
                         with self.input_lock:
                             self.latest_buffered_input = packet
-                            self.buffered_input_count += 1
                     else:
                         self.socket.sendto(packet, ("127.0.0.1", self.host_port))
             except socket.timeout:
@@ -812,18 +812,41 @@ try:
             guest_tick = request(5181, "/api/status")["tick"]
             axis = 1 if before_rollback["rightY"] < 0.5 else -1
             relay.pause_guest_inputs.set()
-            deadline = time.monotonic() + 0.35
+            deadline = time.monotonic() + 2
             target_tick = guest_tick + 6
-            while guest_tick < target_tick and time.monotonic() < deadline:
+            ready_input = None
+            last_input = None
+            decoded_packet = None
+            while time.monotonic() < deadline:
                 send_binary(rollback_ws, controls[axis])
+                packet = relay.buffered_input()
+                if packet is not None:
+                    if packet != decoded_packet:
+                        decoded = msgpack_helper("decode", packet)
+                        assert isinstance(decoded, list) and len(decoded) == 2 and decoded[0] == 4, decoded
+                        fields = decoded[1]
+                        assert isinstance(fields, list) and len(fields) == 6 and fields[0] == 8, decoded
+                        input_tick, input_round, axes = fields[3], fields[4], fields[5]
+                        assert isinstance(input_tick, int) and isinstance(axes, list), decoded
+                        last_input = (input_tick, input_round, axes)
+                        decoded_packet = packet
+                    input_tick, input_round, axes = last_input
+                    if (input_round == before_rollback["roundId"] and
+                            input_tick >= target_tick and axes[:6] == [axis] * 6):
+                        # Revalidate against the host snapshot immediately before
+                        # forwarding these exact bytes, even if a newer packet arrived.
+                        before_release = request(5180, "/api/status")
+                        earliest = max(before_rollback["tick"] + 1, before_release["tick"] - 16)
+                        delayed = sum(value == axis and earliest <= input_tick - index <= before_release["tick"]
+                                      for index, value in enumerate(axes))
+                        if delayed >= 4:
+                            assert abs(before_release["rightY"] - before_rollback["rightY"]) < 0.01, (
+                                before_rollback, before_release)
+                            relay.release_input(packet)
+                            ready_input = packet
+                            break
                 time.sleep(0.012)
-                guest_tick = request(5181, "/api/status")["tick"]
-            assert guest_tick >= target_tick, guest_tick
-            assert relay.buffered_input_count >= 4, relay.buffered_input_count
-            before_release = request(5180, "/api/status")
-            assert abs(before_release["rightY"] - before_rollback["rightY"]) < 0.01, (
-                before_rollback, before_release)
-            assert relay.release_latest_input() is not None
+            assert ready_input is not None, (target_tick, last_input)
 
             def rollback_visible():
                 current = request(5180, "/api/status")
