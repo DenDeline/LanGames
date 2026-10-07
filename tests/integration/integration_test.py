@@ -16,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PROJECT = ROOT / "src" / "LanPong"
 DLL = PROJECT / "bin" / "Release" / "net10.0" / "LanPong.dll"
+TEST_BINARY = Path(os.environ["LANPONG_TEST_BINARY"]).resolve() if os.environ.get("LANPONG_TEST_BINARY") else None
 MSGPACK_HELPER = ROOT / "tests" / "integration" / "msgpack_interop.mjs"
 SNAPSHOT_FIELDS = (
     "version", "role", "connection", "message", "udpPort", "localAddresses",
@@ -322,8 +323,8 @@ def expect_shutdown_close(conn, seconds=2):
 
 def launch(port, log):
     return subprocess.Popen(
-        ["dotnet", str(DLL)],
-        cwd=PROJECT, stdout=log, stderr=subprocess.STDOUT,
+        [str(TEST_BINARY)] if TEST_BINARY else ["dotnet", str(DLL)],
+        cwd=TEST_BINARY.parent if TEST_BINARY else PROJECT, stdout=log, stderr=subprocess.STDOUT,
         env={**os.environ, "ASPNETCORE_URLS": f"http://127.0.0.1:{port}"},
     )
 
@@ -445,9 +446,10 @@ class UdpRelay:
                     raise
 
 
-subprocess.run(["pnpm", "build"], cwd=ROOT, check=True)
-subprocess.run(["dotnet", "build", str(PROJECT / "LanPong.csproj"), "-c", "Release"],
-               cwd=ROOT, check=True)
+if TEST_BINARY is None:
+    subprocess.run(["pnpm", "build"], cwd=ROOT, check=True)
+    subprocess.run(["dotnet", "build", str(PROJECT / "LanPong.csproj"), "-c", "Release"],
+                   cwd=ROOT, check=True)
 log_dir = ROOT / ".artifacts" / "test-logs"
 log_dir.mkdir(parents=True, exist_ok=True)
 logs = [open(log_dir / f"pong-{port}.log", "w") for port in (5180, 5181)]

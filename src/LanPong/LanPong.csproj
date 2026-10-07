@@ -1,4 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableRequestDelegateGenerator>true</EnableRequestDelegateGenerator>
+    <PublishAot>true</PublishAot>
+    <PublishSelfContained>true</PublishSelfContained>
+  </PropertyGroup>
+
   <Target Name="BuildFrontendForPublish"
           BeforeTargets="ResolveProjectStaticWebAssets;ResolveCurrentProjectStaticWebAssetsInputs"
           Condition="'$(_IsPublishing)' == 'true' and '$(NoBuild)' != 'true'">

@@ -179,10 +179,11 @@ internal static class WirePacketCodec
 {
     internal const int MaxPacketBytes = 1200;
 
-    private static readonly MessagePackSerializerOptions Options = MessagePackSerializerOptions.Standard
-        .WithResolver(CompositeResolver.Create(
-            [],
-            [NativeGuidResolver.Instance, StandardResolver.Instance]))
+    // Generated packet formatters avoid Reflection.Emit under Native AOT; native Guid bytes are part of UDP v8.
+    private static readonly MessagePackSerializerOptions Options = new MessagePackSerializerOptions(
+            CompositeResolver.Create(
+                [],
+                [NativeGuidResolver.Instance, GeneratedMessagePackResolver.Instance, BuiltinResolver.Instance]))
         .WithSecurity(MessagePackSecurity.UntrustedData);
 
     internal static byte[] Serialize(WirePacket packet) => MessagePackSerializer.Serialize(packet, Options);

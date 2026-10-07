@@ -1,7 +1,11 @@
 using System.Net.Sockets;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using LanPong;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonSerializerContext.Default));
 builder.Services.AddSingleton<PongPeer>();
 builder.Services.AddHostedService(services => services.GetRequiredService<PongPeer>());
 var app = builder.Build();
@@ -22,7 +26,7 @@ app.MapPost("/api/quick", async (QuickGameRequest request) =>
     }
     catch (Exception ex) when (ex is ArgumentException or SocketException or InvalidOperationException)
     {
-        return Results.BadRequest(new { error = ex.Message });
+        return Results.BadRequest(new ErrorResponse(ex.Message));
     }
 });
 
@@ -35,7 +39,7 @@ app.MapPost("/api/host", async (HostRequest request) =>
     }
     catch (Exception ex) when (ex is ArgumentException or SocketException or InvalidOperationException)
     {
-        return Results.BadRequest(new { error = ex.Message });
+        return Results.BadRequest(new ErrorResponse(ex.Message));
     }
 });
 
@@ -54,7 +58,7 @@ app.MapPost("/api/join", async (JoinRequest request, CancellationToken cancellat
     }
     catch (Exception ex) when (ex is ArgumentException or SocketException or InvalidOperationException)
     {
-        return Results.BadRequest(new { error = ex.Message });
+        return Results.BadRequest(new ErrorResponse(ex.Message));
     }
 });
 
@@ -73,7 +77,7 @@ app.MapPost("/api/accept", async () =>
     }
     catch (InvalidOperationException ex)
     {
-        return Results.BadRequest(new { error = ex.Message });
+        return Results.BadRequest(new ErrorResponse(ex.Message));
     }
 });
 
@@ -86,7 +90,7 @@ app.MapPost("/api/decline", async () =>
     }
     catch (InvalidOperationException ex)
     {
-        return Results.BadRequest(new { error = ex.Message });
+        return Results.BadRequest(new ErrorResponse(ex.Message));
     }
 });
 
@@ -99,7 +103,7 @@ app.MapPost("/api/restart", () =>
     }
     catch (InvalidOperationException ex)
     {
-        return Results.BadRequest(new { error = ex.Message });
+        return Results.BadRequest(new ErrorResponse(ex.Message));
     }
 });
 
@@ -110,7 +114,7 @@ app.MapGet("/api/discover", async (CancellationToken cancellationToken) =>
     try
     {
         var hosts = await peer.DiscoverAsync(stop.Token);
-        return Results.Ok(new { hosts });
+        return Results.Ok(new DiscoverResponse(hosts.ToArray()));
     }
     catch (OperationCanceledException) when (app.Lifetime.ApplicationStopping.IsCancellationRequested)
     {
@@ -125,3 +129,14 @@ app.Run();
 internal sealed record HostRequest(int Port, string Nickname);
 internal sealed record QuickGameRequest(string Nickname);
 internal sealed record JoinRequest(string Address, int Port, string Nickname);
+internal sealed record ErrorResponse(string Error);
+internal sealed record DiscoverResponse(DiscoveredHost[] Hosts);
+
+[JsonSourceGenerationOptions(JsonSerializerDefaults.Web)]
+[JsonSerializable(typeof(PongSnapshot))]
+[JsonSerializable(typeof(HostRequest))]
+[JsonSerializable(typeof(QuickGameRequest))]
+[JsonSerializable(typeof(JoinRequest))]
+[JsonSerializable(typeof(ErrorResponse))]
+[JsonSerializable(typeof(DiscoverResponse))]
+internal partial class AppJsonSerializerContext : JsonSerializerContext;
