@@ -82,6 +82,9 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
                 ? _connection == ConnectionState.Connected && _guestTimeline.Started
                     ? _confirmedGuestEvents : []
                 : state.RecentEvents.ToArray();
+            var opponentMode = _localOpponentActive ? OpponentMode.Simple
+                : _role != PeerRole.None || _connection == ConnectionState.Searching
+                    ? OpponentMode.Lan : OpponentMode.None;
             return new PongSnapshot(
                 _role, _connection, _message, _udpPort, _localAddresses,
                 FormatEndpoint(_peerEndpoint ?? _incomingChallengeEndpoint ?? _targetEndpoint),
@@ -89,7 +92,7 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
                 state.BallVx, state.BallVy,
                 state.LeftScore, state.RightScore, state.Phase,
                 state.Countdown, state.TickNumber, state.RoundId, _ping.PingMs, events,
-                _localNickname, _peerNickname);
+                _localNickname, _peerNickname, opponentMode);
         }
     }
 

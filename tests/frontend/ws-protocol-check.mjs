@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { encode } from "@msgpack/msgpack";
+import { parseSnapshot } from "../../.artifacts/frontend-test/snapshot.js";
 import { decodeWsSnapshot, encodeWsAxis } from "../../.artifacts/frontend-test/wsProtocol.js";
 
 const snapshot = [
-  5,
+  6,
   1,
   3,
   "Игра началась!",
@@ -32,22 +33,24 @@ const snapshot = [
   ],
   "Лиса",
   "Кот",
+  1,
 ];
 
 function frame(value) {
   return Uint8Array.from(encode(value)).buffer;
 }
 
-assert.equal(snapshot.length, 23);
-assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(-1))), [0x92, 5, 0xff]);
-assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(0))), [0x92, 5, 0]);
-assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(1))), [0x92, 5, 1]);
+assert.equal(snapshot.length, 24);
+assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(-1))), [0x92, 6, 0xff]);
+assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(0))), [0x92, 6, 0]);
+assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(1))), [0x92, 6, 1]);
 assert.throws(() => encodeWsAxis(2), RangeError);
 assert.throws(() => encodeWsAxis(0.5), RangeError);
 
 const decoded = decodeWsSnapshot(frame(snapshot));
 assert.deepEqual(decoded, {
   role: "host",
+  opponentMode: "lan",
   connection: "connected",
   message: "Игра началась!",
   udpPort: 47777,
@@ -90,7 +93,9 @@ idle[6] = null;
 idle[15] = 0;
 idle[19] = null;
 idle[22] = null;
+idle[23] = 0;
 assert.equal(decodeWsSnapshot(frame(idle))?.role, "none");
+assert.equal(decodeWsSnapshot(frame(idle))?.opponentMode, "none");
 assert.equal(decodeWsSnapshot(frame(idle))?.peerAddress, null);
 assert.equal(decodeWsSnapshot(frame(idle))?.peerNickname, null);
 assert.equal(decodeWsSnapshot(frame(idle))?.pingMs, null);
@@ -100,7 +105,8 @@ localOpponent[4] = 0;
 localOpponent[6] = null;
 localOpponent[19] = null;
 localOpponent[22] = "Компьютер";
-assert.equal(localOpponent.length, 23);
+localOpponent[23] = 2;
+assert.equal(localOpponent.length, 24);
 const decodedLocalOpponent = decodeWsSnapshot(frame(localOpponent));
 assert.equal(decodedLocalOpponent?.role, "host");
 assert.equal(decodedLocalOpponent?.connection, "connected");
@@ -108,6 +114,12 @@ assert.equal(decodedLocalOpponent?.udpPort, 0);
 assert.equal(decodedLocalOpponent?.peerAddress, null);
 assert.equal(decodedLocalOpponent?.pingMs, null);
 assert.equal(decodedLocalOpponent?.peerNickname, "Компьютер");
+assert.equal(decodedLocalOpponent?.opponentMode, "simple");
+
+for (const mode of ["none", "lan", "simple"]) {
+  assert.equal(parseSnapshot({ opponentMode: mode }).opponentMode, mode);
+}
+assert.equal(parseSnapshot({ opponentMode: "unknown" }).opponentMode, "none");
 
 for (const [ordinal, name] of [
   [4, "incomingChallenge"],
@@ -126,7 +138,7 @@ function reject(index, value) {
   assert.equal(decodeWsSnapshot(frame(changed)), null);
 }
 
-reject(0, 4); // Unsupported previous protocol version.
+reject(0, 5); // Unsupported previous protocol version.
 reject(1, 3); // Unknown role enum.
 reject(2, "connected"); // JSON enum is not valid on the binary socket.
 reject(2, 7); // Unknown connection state.
@@ -138,6 +150,8 @@ reject(20, null); // Events must be an array.
 reject(21, ""); // The local nickname is required.
 reject(21, "x".repeat(25)); // Nicknames are bounded.
 reject(22, 42); // The peer nickname is a string or null.
+reject(23, 3); // Unknown opponent mode.
+reject(23, "simple"); // JSON enum is not valid on the binary socket.
 reject(
   20,
   Array.from({ length: 13 }, (_, index) => [`event-${index}`, 1, 1, 0.5, 0.5]),

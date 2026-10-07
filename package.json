@@ -12,7 +12,7 @@
     "build": "pnpm typecheck && vite build",
     "format": "prettier --write frontend vite.config.js tsconfig.json package.json tests/frontend",
     "format:check": "prettier --check frontend vite.config.js tsconfig.json package.json tests/frontend",
-    "test:frontend": "tsc --project tests/frontend/tsconfig.json && node tests/frontend/frontend-check.cjs && node tests/frontend/ws-protocol-check.mjs"
+    "test:frontend": "tsc --project tests/frontend/tsconfig.json && node tests/frontend/frontend-check.cjs && node tests/frontend/input-check.cjs && node tests/frontend/ws-protocol-check.mjs"
   },
   "devDependencies": {
     "prettier": "3.9.9",

@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#0b1020" />
-    <meta name="description" content="Pong для двух игроков в локальной сети по UDP." />
-    <title>LAN Pong — игра по локальной сети</title>
+    <meta name="description" content="Pong против бота или с другом по локальной сети." />
+    <title>LAN Pong — с ботом или по сети</title>
     <script type="module" src="/src/main.ts"></script>
   </head>
   <body>
@@ -15,7 +15,7 @@
         <div class="brand">
           <span class="brand-mark" aria-hidden="true"><span></span><span></span><i></i></span>
           <div>
-            <p class="eyebrow">Игра для двоих · локальная сеть</p>
+            <p class="eyebrow">Против бота или с другом</p>
             <h1>LAN <span>PONG</span></h1>
           </div>
         </div>
@@ -29,7 +29,7 @@
         <section class="arena-panel" aria-label="Игровое поле">
           <div class="arena-heading">
             <div>
-              <p class="eyebrow">Сетевая партия</p>
+              <p class="eyebrow" id="arena-mode-label">Выберите режим</p>
               <h2 id="arena-title">Пора сыграть</h2>
             </div>
             <span class="role-badge" id="role-badge">Вы не в игре</span>
@@ -56,9 +56,9 @@
               aria-label="Поле Pong: левая и правая ракетки и мяч"
             ></canvas>
             <div class="game-overlay" id="game-overlay" aria-live="polite">
-              <span class="overlay-kicker" id="overlay-kicker">Локальный матч</span>
-              <strong id="overlay-title">Быстрая игра</strong>
-              <span id="overlay-description">Найдём соперника в вашей сети.</span>
+              <span class="overlay-kicker" id="overlay-kicker">Выберите режим</span>
+              <strong id="overlay-title">Пора сыграть</strong>
+              <span id="overlay-description">Сыграйте с ботом или другом по сети.</span>
             </div>
             <span class="canvas-corner canvas-corner-tl" aria-hidden="true"></span>
             <span class="canvas-corner canvas-corner-tr" aria-hidden="true"></span>
@@ -76,7 +76,7 @@
               <label for="volume-range">Громкость</label>
               <input id="volume-range" type="range" min="0" max="100" value="45" />
             </div>
-            <span class="network-hint">Прямое соединение · UDP</span>
+            <span class="network-hint" id="network-hint">Прямое соединение · UDP</span>
           </div>
           <div class="touch-controls" aria-label="Сенсорное управление">
             <button type="button" id="move-up" aria-label="Двигать ракетку вверх">
@@ -88,12 +88,12 @@
           </div>
         </section>
 
-        <aside class="sidebar" aria-label="Подключение и управление матчем">
+        <aside class="sidebar" aria-label="Выбор игры и управление матчем">
           <section class="panel connect-panel">
             <div class="panel-header">
-              <span class="section-number">01 / ПОДКЛЮЧЕНИЕ</span>
-              <h2>Играйте вместе</h2>
-              <p>Оба устройства — в одной сети.</p>
+              <span class="section-number">01 / ВЫБОР ИГРЫ</span>
+              <h2>Выберите соперника</h2>
+              <p>Играйте с ботом здесь или с другом в локальной сети.</p>
             </div>
 
             <div class="nickname-field">
@@ -107,6 +107,15 @@
                 required
               />
             </div>
+
+            <form class="bot-offer" id="bot-form">
+              <span class="bot-label">ОДИН ИГРОК · SIMPLE</span>
+              <p>Простой бот на этом устройстве. Вы управляете левой ракеткой.</p>
+              <button class="primary-button bot-button" id="bot-button" type="submit">
+                Играть против бота
+              </button>
+            </form>
+            <p class="mode-divider">или играйте с другом по сети</p>
 
             <div class="tab-list" role="tablist" aria-label="Способ подключения">
               <button
@@ -217,7 +226,7 @@
               >
             </div>
             <p class="session-message" id="session-message" role="status" aria-live="polite">
-              Начните быструю игру или найдите друга.
+              Выберите игру с ботом или другом.
             </p>
             <dl class="session-details">
               <div>
@@ -260,7 +269,7 @@
           </section>
         </aside>
       </main>
-      <footer class="footer">LAN PONG <span>●</span> Два игрока. Одна сеть.</footer>
+      <footer class="footer">LAN PONG <span>●</span> С ботом или другом.</footer>
     </div>
     <div class="toast" id="toast" role="alert" hidden></div>
   </body>

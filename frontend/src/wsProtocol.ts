@@ -3,6 +3,7 @@ import type { PongSnapshot } from "./snapshot.js";
 
 export type {
   PeerRole,
+  OpponentMode,
   ConnectionState,
   GamePhase,
   GameEventKind,
@@ -12,10 +13,11 @@ export type {
 
 // The WebSocket array layout is independent of the JSON HTTP response shape.
 // Change the version whenever indices or enum ordinals change.
-const VERSION = 5;
-const SNAPSHOT_FIELDS = 23;
+const VERSION = 6;
+const SNAPSHOT_FIELDS = 24;
 const MAX_SNAPSHOT_BYTES = 16 * 1024;
 const ROLES = ["none", "host", "guest"] as const;
+const OPPONENT_MODES = ["none", "lan", "simple"] as const;
 const CONNECTIONS = [
   "idle",
   "waiting",
@@ -94,10 +96,12 @@ export function decodeWsSnapshot(bytes: ArrayBuffer): PongSnapshot | null {
     events,
     localNickname,
     peerNickname,
+    opponentMode,
   ]: unknown[] = frame;
 
   if (
     !isIndex(role, ROLES.length) ||
+    !isIndex(opponentMode, OPPONENT_MODES.length) ||
     !isIndex(connection, CONNECTIONS.length) ||
     !isIndex(phase, PHASES.length) ||
     typeof message !== "string" ||
@@ -150,6 +154,7 @@ export function decodeWsSnapshot(bytes: ArrayBuffer): PongSnapshot | null {
 
   return {
     role: ROLES[role],
+    opponentMode: OPPONENT_MODES[opponentMode],
     connection: CONNECTIONS[connection],
     message,
     udpPort,

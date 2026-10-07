@@ -259,6 +259,11 @@ export function startGame(): void {
     const nickname = getNickname();
     if (nickname !== null) postAction("/api/quick", { nickname });
   });
+  ui.botForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const nickname = getNickname();
+    if (nickname !== null) postAction("/api/local-opponent", { nickname });
+  });
   ui.joinForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const nickname = getNickname();

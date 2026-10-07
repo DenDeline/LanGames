@@ -22,9 +22,10 @@ SNAPSHOT_FIELDS = (
     "version", "role", "connection", "message", "udpPort", "localAddresses",
     "peerAddress", "leftY", "rightY", "ballX", "ballY", "ballVx", "ballVy",
     "leftScore", "rightScore", "phase", "countdown", "tick", "roundId", "pingMs",
-    "recentEvents", "localNickname", "peerNickname",
+    "recentEvents", "localNickname", "peerNickname", "opponentMode",
 )
 ROLES = ("none", "host", "guest")
+OPPONENT_MODES = ("none", "lan", "simple")
 CONNECTIONS = (
     "idle", "waiting", "connecting", "connected", "incomingChallenge", "awaitingAcceptance",
     "searching",
@@ -93,8 +94,9 @@ def decode_snapshot(frame):
     values = msgpack_helper("decode", frame[1])
     assert isinstance(values, list) and len(values) == len(SNAPSHOT_FIELDS), values
     snapshot = dict(zip(SNAPSHOT_FIELDS, values))
-    assert snapshot["version"] == 5, snapshot
+    assert snapshot["version"] == 6, snapshot
     snapshot["role"] = ROLES[snapshot["role"]]
+    snapshot["opponentMode"] = OPPONENT_MODES[snapshot["opponentMode"]]
     snapshot["connection"] = CONNECTIONS[snapshot["connection"]]
     snapshot["phase"] = PHASES[snapshot["phase"]]
     assert isinstance(snapshot["localAddresses"], list), snapshot
@@ -461,6 +463,8 @@ try:
     wait_until("web servers", lambda: request(5180, "/api/status") and request(5181, "/api/status"))
     page = urllib.request.urlopen("http://127.0.0.1:5180/").read()
     assert b"game-canvas" in page
+    assert b'id="bot-form"' in page and b'id="bot-button"' in page
+    assert b'id="tab-host"' in page and b'id="tab-join"' in page
     assets = re.findall(rb'(?:src|href)="(/assets/[^"]+)"', page)
     assert len(assets) >= 2, assets
     for asset in assets:
@@ -470,6 +474,7 @@ try:
     for port in (5180, 5181):
         idle = request(port, "/api/status")
         assert idle["role"] == "none" and idle["connection"] == "idle", idle
+        assert idle["opponentMode"] == "none", idle
         assert idle["phase"] == "waiting", idle
 
     for nickname in (None, "", "   "):
@@ -486,6 +491,7 @@ try:
 
     local = request(5180, "/api/local-opponent", {"nickname": "LocalPlayer"})
     assert local["role"] == "host" and local["connection"] == "connected", local
+    assert local["opponentMode"] == "simple", local
     assert local["udpPort"] == 0 and local["peerAddress"] is None, local
     assert local["pingMs"] is None and local["peerNickname"] == "Компьютер", local
     assert local["phase"] == "countdown", local
@@ -493,6 +499,7 @@ try:
     with websocket(5180) as local_ws:
         local_frame = decode_snapshot(recv_frame(local_ws))
         assert local_frame["role"] == "host" and local_frame["connection"] == "connected", local_frame
+        assert local_frame["opponentMode"] == "simple", local_frame
         assert local_frame["udpPort"] == 0 and local_frame["peerAddress"] is None, local_frame
         controls = control_packets()
         for _ in range(8):
@@ -516,11 +523,13 @@ try:
         assert restarted["phase"] == "countdown" and restarted["leftScore"] == 0, restarted
     left_local = request(5180, "/api/leave", {})
     assert left_local["role"] == "none" and left_local["connection"] == "idle", left_local
+    assert left_local["opponentMode"] == "none", left_local
     assert left_local["phase"] == "waiting" and left_local["tick"] == 0, left_local
 
     require_mdns_loopback = os.environ.get("LANPONG_REQUIRE_MDNS_LOOPBACK") == "1"
     host = request(5180, "/api/host", host_payload())
     assert host["role"] == "host" and host["connection"] == "waiting", host
+    assert host["opponentMode"] == "lan", host
     assert host["localNickname"] == HOST_NICKNAME and host["peerNickname"] is None, host
     # A datagram with a valid Hello prefix must still be rejected in full when
     # the receive buffer truncates it at the packet-size boundary.
@@ -637,16 +646,18 @@ try:
         controls = control_packets()
         snapshot, host_serve = wait_for_ws_event(host_ws, 1)
         assert snapshot["role"] == "host" and snapshot["connection"] == "connected", snapshot
+        assert snapshot["opponentMode"] == "lan", snapshot
         assert "tick" in snapshot and "leftY" in snapshot and "rightY" in snapshot, snapshot
         guest_snapshot, guest_serve = wait_for_ws_event(guest_ws, 1, host_serve[0])
         assert guest_snapshot["role"] == "guest" and guest_snapshot["connection"] == "connected", guest_snapshot
+        assert guest_snapshot["opponentMode"] == "lan", guest_snapshot
         assert guest_serve == host_serve, (host_serve, guest_serve)
 
         send_text(host_ws, '{"axis":1}')
         send_binary(host_ws, b"\x90")  # Wrong array shape.
         send_binary(host_ws, b"\x92\x03\x01")  # Wrong protocol version.
-        send_binary(host_ws, b"\x92\x05\xa2up")  # Non-numeric axis.
-        send_binary(host_ws, b"\x92\x05\x02")  # Axis outside -1..1.
+        send_binary(host_ws, b"\x92\x06\xa2up")  # Non-numeric axis.
+        send_binary(host_ws, b"\x92\x06\x02")  # Axis outside -1..1.
         send_binary(host_ws, b"\xc1")  # Reserved MessagePack prefix.
         send_binary(host_ws, controls[1] + b"\x00")  # A second packed value.
         send_binary(host_ws, controls[1] + bytes(257 - len(controls[1])))

@@ -23,6 +23,19 @@ public sealed class PeerEnumWireTests
             await Assert.That(json.RootElement.GetProperty("role").GetString()).IsEqualTo(name);
         }
 
+        foreach (var (mode, name) in new[]
+                 {
+                     (OpponentMode.None, "none"),
+                     (OpponentMode.Lan, "lan"),
+                     (OpponentMode.Simple, "simple")
+                 })
+        {
+            using var json = JsonDocument.Parse(JsonSerializer.Serialize(
+                Snapshot(PeerRole.Host, ConnectionState.Connected, GamePhase.Playing) with
+                { OpponentMode = mode }, AppJsonSerializerContext.Default.PongSnapshot));
+            await Assert.That(json.RootElement.GetProperty("opponentMode").GetString()).IsEqualTo(name);
+        }
+
         foreach (var (connection, name) in new[]
                  {
                      (ConnectionState.Idle, "idle"),
@@ -92,7 +105,7 @@ public sealed class PeerEnumWireTests
         LeftY: 0.5, RightY: 0.5, BallX: 0.5, BallY: 0.5,
         BallVx: 0, BallVy: 0, LeftScore: 0, RightScore: 0,
         Phase: phase, Countdown: 0, Tick: 0, RoundId: 0, PingMs: null, RecentEvents: [],
-        LocalNickname: "Игрок", PeerNickname: null);
+        LocalNickname: "Игрок", PeerNickname: null, OpponentMode: OpponentMode.None);
 
     private static (bool IsInteger, int Value) ReadPackedPhase(byte[] bytes)
     {

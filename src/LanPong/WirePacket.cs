@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Diagnostics.CodeAnalysis;
+using System.Text.Json.Serialization;
 using MessagePack;
 using MessagePack.Resolvers;
 
@@ -254,6 +255,19 @@ internal static class WirePacketCodec
     }
 }
 
+/// <summary>The kind of opponent shown by the browser, independent of the UDP packet format.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<OpponentMode>))]
+public enum OpponentMode
+{
+    // These values are carried by the versioned browser WebSocket MessagePack protocol.
+    [JsonStringEnumMemberName("none")]
+    None = 0,
+    [JsonStringEnumMemberName("lan")]
+    Lan = 1,
+    [JsonStringEnumMemberName("simple")]
+    Simple = 2
+}
+
 public sealed record PongSnapshot(
     PeerRole Role,
     ConnectionState Connection,
@@ -276,6 +290,7 @@ public sealed record PongSnapshot(
     double? PingMs,
     GameEvent[] RecentEvents,
     string LocalNickname,
-    string? PeerNickname);
+    string? PeerNickname,
+    OpponentMode OpponentMode);
 
 public sealed record DiscoveredHost(string Address, int Port, string Nickname, string InstanceName);

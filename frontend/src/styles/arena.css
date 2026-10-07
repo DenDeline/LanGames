@@ -250,6 +250,9 @@ kbd {
 .network-hint {
   white-space: nowrap;
 }
+.network-hint[hidden] {
+  display: none;
+}
 .sound-controls {
   display: inline-flex;
   align-items: center;

@@ -1,4 +1,5 @@
 export type PeerRole = "none" | "host" | "guest";
+export type OpponentMode = "none" | "lan" | "simple";
 export type ConnectionState =
   | "idle"
   | "waiting"
@@ -21,6 +22,7 @@ export interface GameEvent {
 
 export interface PongSnapshot {
   role: PeerRole;
+  opponentMode: OpponentMode;
   connection: ConnectionState;
   message: string;
   udpPort: number;
@@ -46,6 +48,7 @@ export interface PongSnapshot {
 
 export const defaultSnapshot: PongSnapshot = {
   role: "none",
+  opponentMode: "none",
   connection: "idle",
   message: "",
   udpPort: 0,
@@ -116,6 +119,9 @@ export function parseSnapshot(data: Record<string, unknown>): PongSnapshot {
   const rawEvents = data.recentEvents ?? data.events;
   return {
     role: isOneOf(data.role, ["none", "host", "guest"]) ? data.role : defaultSnapshot.role,
+    opponentMode: isOneOf(data.opponentMode, ["none", "lan", "simple"])
+      ? data.opponentMode
+      : defaultSnapshot.opponentMode,
     connection: isOneOf(data.connection, [
       "idle",
       "waiting",

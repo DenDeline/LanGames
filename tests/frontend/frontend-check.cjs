@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { readFileSync } = require("node:fs");
 
 async function main() {
   const [
@@ -429,11 +430,12 @@ async function main() {
     setTab,
     ui,
   } = await import("../../.artifacts/frontend-test/view.js");
+  const lanSnapshot = { ...session.snapshot, opponentMode: "lan" };
   ui.playerNickname.value = "Мой ник";
   saveNickname();
   renderView(
     {
-      ...session.snapshot,
+      ...lanSnapshot,
       role: "host",
       connection: "waiting",
       udpPort: 59123,
@@ -448,10 +450,12 @@ async function main() {
   assert.equal(ui.shareNickname.textContent, "Лиса");
   assert.equal(ui.sharePort.textContent, "59123");
   assert.equal(ui.shareBox.hidden, false);
+  assert.equal(ui.arenaModeLabel.textContent, "Сетевая партия");
+  assert.equal(ui.networkHint.hidden, false);
   assert.equal(ui.playerNickname.value, "Лиса");
   assert.equal(ui.playerNickname.disabled, true);
   renderView(
-    { ...session.snapshot, role: "guest", localNickname: "Кот", peerNickname: "Лиса" },
+    { ...lanSnapshot, role: "guest", localNickname: "Кот", peerNickname: "Лиса" },
     false,
     false,
   );
@@ -460,7 +464,7 @@ async function main() {
   assert.equal(ui.playerNickname.value, "Кот");
   renderView(
     {
-      ...session.snapshot,
+      ...lanSnapshot,
       role: "host",
       connection: "incomingChallenge",
       peerAddress: "192.168.1.43:47777",
@@ -479,7 +483,7 @@ async function main() {
   assert.equal(ui.overlayTitle.textContent, "Примите вызов");
   renderView(
     {
-      ...session.snapshot,
+      ...lanSnapshot,
       role: "host",
       connection: "connected",
       phase: "gameover",
@@ -494,7 +498,57 @@ async function main() {
   assert.equal(ui.overlayTitle.textContent, "Победа: Лиса");
   assert.equal(ui.shareBox.hidden, true);
   renderView(
-    { ...session.snapshot, role: "guest", connection: "awaitingAcceptance", phase: "waiting" },
+    {
+      ...session.snapshot,
+      opponentMode: "simple",
+      role: "host",
+      connection: "connected",
+      phase: "playing",
+      localNickname: "Лиса",
+      peerNickname: "",
+      peerAddress: null,
+      pingMs: 8,
+      udpPort: 59123,
+    },
+    false,
+    false,
+  );
+  assert.equal(ui.connectionLabel.textContent, "Игра против бота");
+  assert.equal(ui.connectionPill.dataset.mode, "simple");
+  assert.equal(ui.arenaModeLabel.textContent, "Против бота · Simple");
+  assert.equal(ui.leftPlayer.textContent, "Лиса");
+  assert.equal(ui.rightPlayer.textContent, "Бот Simple");
+  assert.equal(ui.roleDetail.textContent, "Вы — слева");
+  assert.equal(ui.peerDetail.textContent, "Бот Simple");
+  assert.equal(ui.pingRow.hidden, true);
+  assert.equal(ui.networkHint.hidden, true);
+  assert.equal(ui.shareBox.hidden, true);
+  assert.equal(ui.challengeRequest.hidden, true);
+  assert.equal(ui.botButton.disabled, true);
+  assert.equal(ui.leaveButton.textContent, "К выбору игры");
+  assert.equal(ui.restartButton.disabled, true);
+  assert.equal(ui.overlay.hidden, true);
+  renderView(
+    {
+      ...session.snapshot,
+      opponentMode: "simple",
+      role: "host",
+      connection: "connected",
+      phase: "gameover",
+      leftScore: 5,
+      rightScore: 3,
+      localNickname: "Лиса",
+      peerNickname: "",
+    },
+    false,
+    false,
+  );
+  assert.equal(ui.overlayTitle.textContent, "Победа: Лиса");
+  assert.equal(ui.restartButton.textContent, "Реванш с ботом");
+  assert.equal(ui.restartButton.disabled, false);
+  assert.equal(ui.shareBox.hidden, true);
+  renderView(
+    { ...lanSnapshot, role: "guest", connection: "awaitingAcceptance", phase: "waiting" },
     false,
     false,
   );
@@ -509,7 +563,7 @@ async function main() {
   );
   assert.equal(parseSnapshot({ connection: "searching" }).connection, "searching");
   renderView(
-    { ...session.snapshot, role: "none", connection: "searching", message: "", udpPort: 0 },
+    { ...lanSnapshot, role: "none", connection: "searching", message: "", udpPort: 0 },
     false,
     false,
   );
@@ -518,10 +572,23 @@ async function main() {
   assert.equal(ui.joinButton.disabled, true);
   assert.equal(ui.leaveButton.disabled, false);
   assert.equal(ui.leaveButton.textContent, "Отменить поиск");
-  renderView({ ...session.snapshot, role: "none", connection: "idle" }, false, false);
+  renderView(
+    {
+      ...session.snapshot,
+      role: "none",
+      connection: "idle",
+      message: "Нажмите «Быстрая игра» или подключитесь к другу.",
+    },
+    false,
+    false,
+  );
   assert.equal(ui.playerNickname.value, "Мой ник");
   assert.equal(ui.playerNickname.disabled, false);
   assert.equal(ui.quickButton.disabled, false);
+  assert.equal(ui.botButton.disabled, false);
+  assert.equal(ui.networkHint.hidden, true);
+  assert.equal(ui.arenaModeLabel.textContent, "Выберите режим");
+  assert.equal(ui.sessionMessage.textContent, "Выберите игру с ботом или другом.");
   setTab("join");
   assert.equal(ui.quickPanel.hidden, true);
   assert.equal(ui.joinPanel.hidden, false);
@@ -637,8 +704,74 @@ async function main() {
   assert.ok(visualLocal(3132, -1) < beforeOppositeCorrection + 0.05);
   assert.ok(visualLocal(3196, -1) > 0.7);
 
+  // A mode switch resets prediction even when the round and tick are unchanged.
+  visualApply({ opponentMode: "lan", roundId: 50, tick: 10 }, 3200);
+  visualApply({ opponentMode: "lan", roundId: 50, tick: 11 }, 3216);
+  assert.equal(visualMotion.sampleCount, 2);
+  const resetsBeforeModeSwitch = visualResets;
+  visualApply({ opponentMode: "simple", roundId: 50, tick: 11 }, 3232);
+  assert.equal(visualSession.snapshot.opponentMode, "simple");
+  assert.equal(visualResets, resetsBeforeModeSwitch + 1);
+  assert.equal(visualMotion.sampleCount, 1);
+
+  // The visible bot form submits a nickname to the local opponent endpoint.
+  const html = readFileSync(`${__dirname}/../../frontend/index.html`, "utf8");
+  assert.match(html, /<form[^>]+id="bot-form"[\s\S]*?<button[^>]+id="bot-button"/);
+  assert.match(html, /id="tab-host"/);
+  assert.match(html, /id="tab-join"/);
+  window.addEventListener = () => {};
+  document.addEventListener = () => {};
+  globalThis.setInterval = () => 0;
+  globalThis.requestAnimationFrame = () => 0;
+  globalThis.location = { protocol: "http:", host: "127.0.0.1:47777" };
+  globalThis.WebSocket = class {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    readyState = 0;
+    addEventListener() {}
+  };
+  const requests = [];
+  const idleSnapshot = {
+    ...session.snapshot,
+    role: "none",
+    opponentMode: "none",
+    connection: "idle",
+    phase: "waiting",
+    localNickname: "",
+    roundId: 60,
+    tick: 0,
+  };
+  globalThis.fetch = async (path, options) => {
+    requests.push({ path, options });
+    const data =
+      path === "/api/local-opponent"
+        ? {
+            ...idleSnapshot,
+            role: "host",
+            opponentMode: "simple",
+            connection: "connected",
+            phase: "countdown",
+            localNickname: "Browser Tester",
+            roundId: 61,
+          }
+        : idleSnapshot;
+    return { ok: true, text: async () => JSON.stringify(data) };
+  };
+  const { startGame } = await import("../../.artifacts/frontend-test/game.js");
+  ui.playerNickname.value = "Browser Tester";
+  startGame();
+  ui.botForm.dispatch("submit");
+  await new Promise((resolve) => setImmediate(resolve));
+  const botRequest = requests.find((request) => request.path === "/api/local-opponent");
+  assert.ok(botRequest);
+  assert.equal(botRequest.options.method, "POST");
+  assert.deepEqual(JSON.parse(botRequest.options.body), { nickname: "Browser Tester" });
+  assert.equal(ui.arenaModeLabel.textContent, "Против бота · Simple");
+  assert.equal(ui.leftPlayer.textContent, "Browser Tester");
+  assert.equal(ui.rightPlayer.textContent, "Бот Simple");
+
   console.log(
-    "Frontend behavior checks passed: motion, prediction, canvas caching, event parsing, score feedback, and replay deduplication.",
+    "Frontend behavior checks passed: motion, prediction, events, Simple and LAN views, and bot form submission.",
   );
 }
 

@@ -15,6 +15,7 @@ public sealed class LocalOpponentSessionTests
         await peer.StartLocalOpponentAsync("Игрок");
         var started = peer.Snapshot();
         await Assert.That(started.Role).IsEqualTo(PeerRole.Host);
+        await Assert.That(started.OpponentMode).IsEqualTo(OpponentMode.Simple);
         await Assert.That(started.Connection).IsEqualTo(ConnectionState.Connected);
         await Assert.That(started.Phase).IsEqualTo(GamePhase.Countdown);
         await Assert.That(started.UdpPort).IsEqualTo(0);
@@ -50,31 +51,34 @@ public sealed class LocalOpponentSessionTests
     }
 
     [Test]
-    public async Task StartLocalOpponentAsync_UsesExistingBrowserSnapshotLayoutAndCanReturnToLanHosting()
+    public async Task StartLocalOpponentAsync_UsesVersionedBrowserSnapshotAndCanReturnToLanHosting()
     {
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, new TestOpponent());
         await peer.StartLocalOpponentAsync("Игрок");
         var local = peer.Snapshot();
         var buffer = new ArrayBufferWriter<byte>();
         BrowserWebSocketProtocol.WriteSnapshot(local, buffer);
-        var (fieldCount, version, role, connection, udpPort, noPeerAddress, atEnd) =
+        var (fieldCount, version, role, connection, udpPort, noPeerAddress, mode, atEnd) =
             ReadBrowserHeader(buffer.WrittenMemory);
 
-        await Assert.That(fieldCount).IsEqualTo(23);
-        await Assert.That(version).IsEqualTo(5);
+        await Assert.That(fieldCount).IsEqualTo(24);
+        await Assert.That(version).IsEqualTo(6);
         await Assert.That(role).IsEqualTo((int)PeerRole.Host);
         await Assert.That(connection).IsEqualTo((int)ConnectionState.Connected);
         await Assert.That(udpPort).IsEqualTo(0);
         await Assert.That(noPeerAddress).IsTrue();
+        await Assert.That(mode).IsEqualTo((int)OpponentMode.Simple);
         await Assert.That(atEnd).IsTrue();
 
         await peer.LeaveAsync();
+        await Assert.That(peer.Snapshot().OpponentMode).IsEqualTo(OpponentMode.None);
         int port;
         using (var reserved = new System.Net.Sockets.UdpClient(0))
             port = ((System.Net.IPEndPoint)reserved.Client.LocalEndPoint!).Port;
         await peer.HostAsync(port, "Игрок");
         var lobby = peer.Snapshot();
         await Assert.That(lobby.Role).IsEqualTo(PeerRole.Host);
+        await Assert.That(lobby.OpponentMode).IsEqualTo(OpponentMode.Lan);
         await Assert.That(lobby.Connection).IsEqualTo(ConnectionState.Waiting);
         await Assert.That(lobby.UdpPort).IsEqualTo(port);
         await Assert.That(lobby.Phase).IsEqualTo(GamePhase.Waiting);
@@ -82,7 +86,7 @@ public sealed class LocalOpponentSessionTests
     }
 
     private static (int FieldCount, int Version, int Role, int Connection, int UdpPort,
-        bool NoPeerAddress, bool AtEnd) ReadBrowserHeader(ReadOnlyMemory<byte> bytes)
+        bool NoPeerAddress, int Mode, bool AtEnd) ReadBrowserHeader(ReadOnlyMemory<byte> bytes)
     {
         var reader = new MessagePackReader(new ReadOnlySequence<byte>(bytes));
         var fieldCount = reader.ReadArrayHeader();
@@ -93,8 +97,9 @@ public sealed class LocalOpponentSessionTests
         var udpPort = reader.ReadInt32();
         reader.Skip(); // Local addresses.
         var noPeerAddress = reader.TryReadNil();
-        while (!reader.End) reader.Skip();
-        return (fieldCount, version, role, connection, udpPort, noPeerAddress, reader.End);
+        for (var field = 7; field < 23; field++) reader.Skip();
+        var mode = reader.ReadInt32();
+        return (fieldCount, version, role, connection, udpPort, noPeerAddress, mode, reader.End);
     }
 
     private static async Task<PongSnapshot> WaitForAsync(PongPeer peer, Func<PongSnapshot, bool> predicate)

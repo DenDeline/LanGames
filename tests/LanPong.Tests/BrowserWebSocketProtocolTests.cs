@@ -14,14 +14,14 @@ public sealed class BrowserWebSocketProtocolTests
             0.425, 0.563, 0.712375, 0.2218, 0.4321, -0.348,
             3, 4, GamePhase.Playing, 0.25, 123456, 7, 8.42,
             [new GameEvent("123456:0:2", GameEventKind.Paddle, 123456, 0.712375, 0.2218)],
-            "Хозяин", "Гость");
+            "Хозяин", "Гость", OpponentMode.Lan);
         var buffer = new ArrayBufferWriter<byte>();
 
         BrowserWebSocketProtocol.WriteSnapshot(original, buffer);
         var (fieldCount, version, decoded, atEnd) = ReadSnapshot(buffer.WrittenMemory);
 
-        await Assert.That(fieldCount).IsEqualTo(23);
-        await Assert.That(version).IsEqualTo(5);
+        await Assert.That(fieldCount).IsEqualTo(24);
+        await Assert.That(version).IsEqualTo(6);
         await Assert.That(atEnd).IsTrue();
         await Assert.That(decoded with
         {
@@ -30,6 +30,16 @@ public sealed class BrowserWebSocketProtocolTests
         }).IsEqualTo(original);
         await Assert.That(decoded.LocalAddresses.SequenceEqual(original.LocalAddresses)).IsTrue();
         await Assert.That(decoded.RecentEvents.SequenceEqual(original.RecentEvents)).IsTrue();
+
+        var local = original with { OpponentMode = OpponentMode.Simple, UdpPort = 0,
+            PeerAddress = null, PingMs = null, PeerNickname = "Компьютер" };
+        buffer = new ArrayBufferWriter<byte>();
+        BrowserWebSocketProtocol.WriteSnapshot(local, buffer);
+        var (localFields, localVersion, localDecoded, localAtEnd) = ReadSnapshot(buffer.WrittenMemory);
+        await Assert.That(localFields).IsEqualTo(24);
+        await Assert.That(localVersion).IsEqualTo(6);
+        await Assert.That(localDecoded.OpponentMode).IsEqualTo(OpponentMode.Simple);
+        await Assert.That(localAtEnd).IsTrue();
     }
 
     [Test]
@@ -37,16 +47,16 @@ public sealed class BrowserWebSocketProtocolTests
     {
         foreach (var axis in new[] { -1, 0, 1 })
         {
-            var bytes = new byte[] { 0x92, 0x05, unchecked((byte)axis) };
+            var bytes = new byte[] { 0x92, 0x06, unchecked((byte)axis) };
             await Assert.That(BrowserWebSocketProtocol.TryReadAxis(bytes, out var parsed)).IsTrue();
             await Assert.That(parsed).IsEqualTo(axis);
         }
 
         byte[][] invalid =
         [
-            [], [0x92, 0x05], [0x92, 0x04, 0x01], [0x92, 0x05, 0x02],
-            [0x91, 0x05], [0x93, 0x05, 0x01, 0x00], [0x92, 0x05, 0xa1, 0x31],
-            [0x92, 0x05, 0x01, 0x00], [0xc1], "{\"axis\":1}"u8.ToArray()
+            [], [0x92, 0x06], [0x92, 0x05, 0x01], [0x92, 0x06, 0x02],
+            [0x91, 0x06], [0x93, 0x06, 0x01, 0x00], [0x92, 0x06, 0xa1, 0x31],
+            [0x92, 0x06, 0x01, 0x00], [0xc1], "{\"axis\":1}"u8.ToArray()
         ];
         foreach (var bytes in invalid)
             await Assert.That(BrowserWebSocketProtocol.TryReadAxis(bytes, out _)).IsFalse();
@@ -96,9 +106,10 @@ public sealed class BrowserWebSocketProtocolTests
         }
         var localNickname = reader.ReadString()!;
         var peerNickname = reader.TryReadNil() ? null : reader.ReadString();
+        var opponentMode = (OpponentMode)reader.ReadInt32();
         var snapshot = new PongSnapshot(role, connection, message, udpPort, addresses, peerAddress,
             leftY, rightY, ballX, ballY, ballVx, ballVy, leftScore, rightScore, phase,
-            countdown, tick, roundId, pingMs, events, localNickname, peerNickname);
+            countdown, tick, roundId, pingMs, events, localNickname, peerNickname, opponentMode);
         return (fieldCount, version, snapshot, reader.End);
     }
 }

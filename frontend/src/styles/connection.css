@@ -55,6 +55,36 @@
 .nickname-field {
   margin-bottom: 20px;
 }
+.bot-offer {
+  margin-bottom: 15px;
+  padding: 15px;
+  border: 1px solid #3d756f;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #193d42a8, #142638a8);
+}
+.bot-label {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--cyan);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+.bot-offer p {
+  margin: 0 0 12px;
+  color: #c4d5dd;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.bot-button {
+  width: 100%;
+}
+.mode-divider {
+  margin: 0 0 15px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
 .quick-description {
   margin: 0 0 14px;
   color: var(--muted);
