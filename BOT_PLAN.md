@@ -1,6 +1,6 @@
 # Bot implementation plan
 
-Status: steps 1–8 complete and reviewed; one focused protocol test cleanup remains before closeout. The coordinator owns this plan and reviews code; implementation belongs to a separate Codex worker task. The worker takes one step at a time and ends each step with a conventional commit. The coordinator reconciled this plan after steps 1–3, 4–6, and 7–8.
+Status: all nine steps complete and reviewed; the bot goal is accepted. The coordinator owns this plan and reviews code; implementation belongs to a separate Codex worker task. The worker took one step at a time and ended each step with a conventional commit. The coordinator reconciled this plan after steps 1–3, 4–6, and 7–8.
 
 ## Goal and acceptance
 
@@ -72,7 +72,9 @@ One integration-test fixture still sends two malformed control frames using WebS
 
 9. **Protocol test fixture cleanup.** Update the two malformed-control integration frames to version 7, verify the test asserts axis rejection under the current protocol, run the relevant integration/protocol checks, and commit `test(protocol): validate malformed v7 controls`. Keep this step scoped to the test fixture unless a real protocol defect is revealed.
 
-**Final review after step 9:** confirm the integration assertions test malformed axes under version 7, the working tree is clean, and the acceptance criteria above remain supported before closing the goal.
+**Final review after step 9:** the integration assertions test malformed axes under version 7, the working tree is clean, and the acceptance criteria above remain supported.
+
+Step 9 committed as `1f13bfe`. The integration fixture now sends both malformed axes with protocol version 7 and checks each rejection while the game tick advances; a following valid control moves the paddle. The worker reported 106/106 passing C# tests, passing frontend protocol checks, and a passing full integration suite. The coordinator reviewed the single-file diff and clean worktree. Simple and Hard are playable against the computer, the Hard production acceptance gate passed, and no remaining release blocker was found. Linux x64 and Windows x64 release smokes remain configured CI checks; this macOS host did not execute those targets.
 
 ## Review gates for every step
 
