@@ -23,9 +23,10 @@ SNAPSHOT_FIELDS = (
     "peerAddress", "leftY", "rightY", "ballX", "ballY", "ballVx", "ballVy",
     "leftScore", "rightScore", "phase", "countdown", "tick", "roundId", "pingMs",
     "recentEvents", "localNickname", "peerNickname", "opponentMode",
+    "requestedOpponentMode", "opponentFallbackActive",
 )
 ROLES = ("none", "host", "guest")
-OPPONENT_MODES = ("none", "lan", "simple")
+OPPONENT_MODES = ("none", "lan", "simple", "hard")
 CONNECTIONS = (
     "idle", "waiting", "connecting", "connected", "incomingChallenge", "awaitingAcceptance",
     "searching",
@@ -94,9 +95,11 @@ def decode_snapshot(frame):
     values = msgpack_helper("decode", frame[1])
     assert isinstance(values, list) and len(values) == len(SNAPSHOT_FIELDS), values
     snapshot = dict(zip(SNAPSHOT_FIELDS, values))
-    assert snapshot["version"] == 6, snapshot
+    assert snapshot["version"] == 7, snapshot
     snapshot["role"] = ROLES[snapshot["role"]]
     snapshot["opponentMode"] = OPPONENT_MODES[snapshot["opponentMode"]]
+    snapshot["requestedOpponentMode"] = OPPONENT_MODES[snapshot["requestedOpponentMode"]]
+    assert type(snapshot["opponentFallbackActive"]) is bool, snapshot
     snapshot["connection"] = CONNECTIONS[snapshot["connection"]]
     snapshot["phase"] = PHASES[snapshot["phase"]]
     assert isinstance(snapshot["localAddresses"], list), snapshot
@@ -119,6 +122,15 @@ def decode_snapshot(frame):
                    for value in (x, y)), event
         previous_tick = tick
     return snapshot
+
+
+def expect_opponent(snapshot, requested, actual, fallback=False):
+    assert snapshot["version"] == 7, snapshot
+    assert snapshot["requestedOpponentMode"] == requested, snapshot
+    assert snapshot["opponentMode"] == actual, snapshot
+    assert snapshot["opponentFallbackActive"] is fallback, snapshot
+    if fallback:
+        assert "Hard" in snapshot["message"] and "Simple" in snapshot["message"], snapshot
 
 
 def wait_for_ws_event(conn, kind, event_id=None, seconds=3):
@@ -323,11 +335,12 @@ def expect_shutdown_close(conn, seconds=2):
     raise AssertionError("Server WebSocket close frame was not received")
 
 
-def launch(port, log):
+def launch(port, log, extra_env=None):
     return subprocess.Popen(
         [str(TEST_BINARY)] if TEST_BINARY else ["dotnet", str(DLL)],
         cwd=TEST_BINARY.parent if TEST_BINARY else PROJECT, stdout=log, stderr=subprocess.STDOUT,
-        env={**os.environ, "ASPNETCORE_URLS": f"http://127.0.0.1:{port}"},
+        env={**os.environ, "ASPNETCORE_URLS": f"http://127.0.0.1:{port}",
+             **(extra_env or {})},
     )
 
 
@@ -464,6 +477,8 @@ try:
     page = urllib.request.urlopen("http://127.0.0.1:5180/").read()
     assert b"game-canvas" in page
     assert b'id="bot-form"' in page and b'id="bot-button"' in page
+    assert b'id="hard-form"' in page and b'id="hard-button"' in page
+    assert b'id="opponent-fallback"' in page
     assert b'id="tab-host"' in page and b'id="tab-join"' in page
     assets = re.findall(rb'(?:src|href)="(/assets/[^"]+)"', page)
     assert len(assets) >= 2, assets
@@ -474,7 +489,7 @@ try:
     for port in (5180, 5181):
         idle = request(port, "/api/status")
         assert idle["role"] == "none" and idle["connection"] == "idle", idle
-        assert idle["opponentMode"] == "none", idle
+        expect_opponent(idle, "none", "none")
         assert idle["phase"] == "waiting", idle
 
     for nickname in (None, "", "   "):
@@ -488,10 +503,12 @@ try:
     for nickname in (None, "", "   "):
         expect_bad_request(5180, "/api/local-opponent", {"nickname": nickname})
     expect_bad_request(5180, "/api/local-opponent", {})
+    expect_bad_request(5180, "/api/local-opponent", {"nickname": "Player", "mode": "expert"})
+    expect_bad_request(5180, "/api/local-opponent", {"nickname": "Player", "mode": "lan"})
 
     local = request(5180, "/api/local-opponent", {"nickname": "LocalPlayer"})
     assert local["role"] == "host" and local["connection"] == "connected", local
-    assert local["opponentMode"] == "simple", local
+    expect_opponent(local, "simple", "simple")
     assert local["udpPort"] == 0 and local["peerAddress"] is None, local
     assert local["pingMs"] is None and local["peerNickname"] == "Компьютер", local
     assert local["phase"] == "countdown", local
@@ -499,7 +516,7 @@ try:
     with websocket(5180) as local_ws:
         local_frame = decode_snapshot(recv_frame(local_ws))
         assert local_frame["role"] == "host" and local_frame["connection"] == "connected", local_frame
-        assert local_frame["opponentMode"] == "simple", local_frame
+        expect_opponent(local_frame, "simple", "simple")
         assert local_frame["udpPort"] == 0 and local_frame["peerAddress"] is None, local_frame
         controls = control_packets()
         for _ in range(8):
@@ -519,17 +536,80 @@ try:
 
         wait_until("Simple bot tracks the live serve", simple_tracks_serve)
         restarted = request(5180, "/api/restart", {})
+        expect_opponent(restarted, "simple", "simple")
         assert restarted["roundId"] == local["roundId"] + 1, restarted
         assert restarted["phase"] == "countdown" and restarted["leftScore"] == 0, restarted
     left_local = request(5180, "/api/leave", {})
     assert left_local["role"] == "none" and left_local["connection"] == "idle", left_local
-    assert left_local["opponentMode"] == "none", left_local
+    expect_opponent(left_local, "none", "none")
     assert left_local["phase"] == "waiting" and left_local["tick"] == 0, left_local
+
+    hard = request(5180, "/api/local-opponent", {"nickname": "HardPlayer", "mode": "hard"})
+    assert hard["role"] == "host" and hard["connection"] == "connected", hard
+    expect_opponent(hard, "hard", "hard")
+    assert hard["phase"] == "countdown" and hard["peerNickname"] == "Компьютер", hard
+    with websocket(5180) as hard_ws:
+        hard_frame = decode_snapshot(recv_frame(hard_ws))
+        expect_opponent(hard_frame, "hard", "hard")
+        for _ in range(8):
+            send_binary(hard_ws, controls[-1])
+            time.sleep(0.03)
+
+        def hard_playing():
+            state = request(5180, "/api/status")
+            return state if (state["phase"] == "playing" and
+                             state["tick"] > hard["tick"] + 60 and
+                             state["leftY"] < 0.48) else None
+
+        played_hard = wait_until("Hard match enters play and accepts browser control", hard_playing)
+        expect_opponent(played_hard, "hard", "hard")
+        hard_rematch = request(5180, "/api/restart", {})
+        expect_opponent(hard_rematch, "hard", "hard")
+        assert hard_rematch["roundId"] == hard["roundId"] + 1, hard_rematch
+        assert hard_rematch["phase"] == "countdown" and hard_rematch["leftScore"] == 0
+    hard_left = request(5180, "/api/leave", {})
+    expect_opponent(hard_left, "none", "none")
+    assert hard_left["role"] == "none" and hard_left["connection"] == "idle", hard_left
+
+    # A separate process with an absent model must stay playable and report the
+    # requested and actual modes independently over both HTTP and WebSocket.
+    missing_model = log_dir / "missing-hard-v1.onnx"
+    assert not missing_model.exists(), missing_model
+    fallback_log = open(log_dir / "pong-hard-missing-model.log", "w")
+    fallback_process = launch(
+        5182, fallback_log,
+        {"LANPONG_HARD_MODEL_PATH": str(missing_model)},
+    )
+    try:
+        wait_until("fallback web server", lambda: request(5182, "/api/status"))
+        fallback = request(5182, "/api/local-opponent", {"nickname": "Fallback", "mode": "hard"})
+        expect_opponent(fallback, "hard", "simple", fallback=True)
+        assert fallback["role"] == "host" and fallback["connection"] == "connected", fallback
+        with websocket(5182) as fallback_ws:
+            fallback_frame = decode_snapshot(recv_frame(fallback_ws))
+            expect_opponent(fallback_frame, "hard", "simple", fallback=True)
+
+            def fallback_advanced():
+                state = request(5182, "/api/status")
+                return state if state["tick"] >= fallback["tick"] + 12 else None
+
+            advanced = wait_until("fallback match clock keeps advancing", fallback_advanced)
+            expect_opponent(advanced, "hard", "simple", fallback=True)
+            fallback_rematch = request(5182, "/api/restart", {})
+            expect_opponent(fallback_rematch, "hard", "simple", fallback=True)
+            assert fallback_rematch["roundId"] == fallback["roundId"] + 1, fallback_rematch
+        fallback_left = request(5182, "/api/leave", {})
+        expect_opponent(fallback_left, "none", "none")
+    finally:
+        if fallback_process.poll() is None:
+            fallback_process.terminate()
+        fallback_process.wait(timeout=5)
+        fallback_log.close()
 
     require_mdns_loopback = os.environ.get("LANPONG_REQUIRE_MDNS_LOOPBACK") == "1"
     host = request(5180, "/api/host", host_payload())
     assert host["role"] == "host" and host["connection"] == "waiting", host
-    assert host["opponentMode"] == "lan", host
+    expect_opponent(host, "lan", "lan")
     assert host["localNickname"] == HOST_NICKNAME and host["peerNickname"] is None, host
     # A datagram with a valid Hello prefix must still be rejected in full when
     # the receive buffer truncates it at the packet-size boundary.
@@ -646,11 +726,11 @@ try:
         controls = control_packets()
         snapshot, host_serve = wait_for_ws_event(host_ws, 1)
         assert snapshot["role"] == "host" and snapshot["connection"] == "connected", snapshot
-        assert snapshot["opponentMode"] == "lan", snapshot
+        expect_opponent(snapshot, "lan", "lan")
         assert "tick" in snapshot and "leftY" in snapshot and "rightY" in snapshot, snapshot
         guest_snapshot, guest_serve = wait_for_ws_event(guest_ws, 1, host_serve[0])
         assert guest_snapshot["role"] == "guest" and guest_snapshot["connection"] == "connected", guest_snapshot
-        assert guest_snapshot["opponentMode"] == "lan", guest_snapshot
+        expect_opponent(guest_snapshot, "lan", "lan")
         assert guest_serve == host_serve, (host_serve, guest_serve)
 
         send_text(host_ws, '{"axis":1}')
@@ -947,7 +1027,7 @@ try:
     accept_challenge()
     terminate_connected_process(processes[0], 5180, 5181, "idle", "none", "host")
 
-    print("PASS: local Simple bot start/input/tracking/rematch/leave, static UI, discovery, pending challenge acceptance/decline/cancel, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, binary MessagePack WebSocket snapshots, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, Quick Game port selection/cancellation/auto-accept/matching, and graceful host/guest shutdown")
+    print("PASS: local Simple and Hard start/input/play/rematch/leave, missing-model Hard-to-Simple fallback with persistent status, versioned HTTP and MessagePack WebSocket contract, static UI, discovery, pending challenge acceptance/decline/cancel, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, Quick Game port selection/cancellation/auto-accept/matching, and graceful host/guest shutdown")
 finally:
     for process in processes:
         if process.poll() is None:

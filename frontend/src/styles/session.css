@@ -42,6 +42,20 @@
   font-size: 13px;
   line-height: 1.55;
 }
+.opponent-fallback {
+  margin: -3px 0 15px;
+  padding: 10px 12px;
+  border: 1px solid #b78064;
+  border-radius: 8px;
+  background: #603b2b66;
+  color: #ffe2c5;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+.opponent-fallback[hidden] {
+  display: none;
+}
 .session-details {
   display: grid;
   gap: 0;

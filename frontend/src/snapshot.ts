@@ -1,5 +1,5 @@
 export type PeerRole = "none" | "host" | "guest";
-export type OpponentMode = "none" | "lan" | "simple";
+export type OpponentMode = "none" | "lan" | "simple" | "hard";
 export type ConnectionState =
   | "idle"
   | "waiting"
@@ -22,7 +22,9 @@ export interface GameEvent {
 
 export interface PongSnapshot {
   role: PeerRole;
+  requestedOpponentMode: OpponentMode;
   opponentMode: OpponentMode;
+  opponentFallbackActive: boolean;
   connection: ConnectionState;
   message: string;
   udpPort: number;
@@ -48,7 +50,9 @@ export interface PongSnapshot {
 
 export const defaultSnapshot: PongSnapshot = {
   role: "none",
+  requestedOpponentMode: "none",
   opponentMode: "none",
+  opponentFallbackActive: false,
   connection: "idle",
   message: "",
   udpPort: 0,
@@ -73,6 +77,7 @@ export const defaultSnapshot: PongSnapshot = {
 };
 
 const EVENT_KINDS: GameEventKind[] = ["serve", "paddle", "wall", "goal", "match"];
+const OPPONENT_MODES: OpponentMode[] = ["none", "lan", "simple", "hard"];
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -116,12 +121,23 @@ export function parseGameEvent(value: unknown): GameEvent | null {
 }
 
 export function parseSnapshot(data: Record<string, unknown>): PongSnapshot {
+  // Older versionless test fixtures remain readable, but a declared HTTP contract
+  // version must match this browser build. WebSocket frames are checked separately.
+  if (data.version !== undefined && data.version !== 7)
+    throw new RangeError("Unsupported snapshot version");
   const rawEvents = data.recentEvents ?? data.events;
   return {
     role: isOneOf(data.role, ["none", "host", "guest"]) ? data.role : defaultSnapshot.role,
-    opponentMode: isOneOf(data.opponentMode, ["none", "lan", "simple"])
+    requestedOpponentMode: isOneOf(data.requestedOpponentMode, OPPONENT_MODES)
+      ? data.requestedOpponentMode
+      : defaultSnapshot.requestedOpponentMode,
+    opponentMode: isOneOf(data.opponentMode, OPPONENT_MODES)
       ? data.opponentMode
       : defaultSnapshot.opponentMode,
+    opponentFallbackActive:
+      typeof data.opponentFallbackActive === "boolean"
+        ? data.opponentFallbackActive
+        : defaultSnapshot.opponentFallbackActive,
     connection: isOneOf(data.connection, [
       "idle",
       "waiting",

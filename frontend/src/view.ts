@@ -27,6 +27,7 @@ export const ui = {
   pingRow: element("ping-row"),
   pingValue: element("ping-value"),
   sessionMessage: element("session-message"),
+  opponentFallback: element("opponent-fallback"),
   challengeRequest: element("challenge-request"),
   challengePeer: element("challenge-peer"),
   acceptButton: element<HTMLButtonElement>("accept-button"),
@@ -39,12 +40,14 @@ export const ui = {
   joinPanel: element("join-panel"),
   quickForm: element<HTMLFormElement>("quick-form"),
   botForm: element<HTMLFormElement>("bot-form"),
+  hardForm: element<HTMLFormElement>("hard-form"),
   joinForm: element<HTMLFormElement>("join-form"),
   playerNickname: element<HTMLInputElement>("player-nickname"),
   joinPort: element<HTMLInputElement>("join-port"),
   peerAddress: element<HTMLInputElement>("peer-address"),
   quickButton: element<HTMLButtonElement>("quick-button"),
   botButton: element<HTMLButtonElement>("bot-button"),
+  hardButton: element<HTMLButtonElement>("hard-button"),
   joinButton: element<HTMLButtonElement>("join-button"),
   discoverButton: element<HTMLButtonElement>("discover-button"),
   discoveryResults: element("discovery-results"),
@@ -153,9 +156,29 @@ export function setTab(tab: "quick" | "join"): void {
   ui.joinPanel.hidden = isQuick;
 }
 
+function isLocalBot(snapshot: PongSnapshot): boolean {
+  return (
+    snapshot.requestedOpponentMode === "simple" ||
+    snapshot.requestedOpponentMode === "hard" ||
+    snapshot.opponentMode === "simple" ||
+    snapshot.opponentMode === "hard"
+  );
+}
+
+function isHardFallback(snapshot: PongSnapshot): boolean {
+  return (
+    snapshot.requestedOpponentMode === "hard" &&
+    snapshot.opponentMode === "simple" &&
+    snapshot.opponentFallbackActive
+  );
+}
+
+function botModeLabel(snapshot: PongSnapshot): string {
+  return snapshot.opponentMode === "hard" ? "Hard" : "Simple";
+}
+
 function connectionText(snapshot: PongSnapshot): string {
-  if (snapshot.opponentMode === "simple" && snapshot.connection === "connected")
-    return "Игра против бота";
+  if (isLocalBot(snapshot) && snapshot.connection === "connected") return "Игра против бота";
   switch (snapshot.connection) {
     case "waiting":
       return "Ожидаем соперника";
@@ -177,7 +200,7 @@ function connectionText(snapshot: PongSnapshot): string {
 }
 
 function roleText(snapshot: PongSnapshot): string {
-  if (snapshot.opponentMode === "simple") return "Вы — слева";
+  if (isLocalBot(snapshot)) return "Вы — слева";
   if (snapshot.connection === "searching") return "Поиск соперника";
   switch (snapshot.role) {
     case "host":
@@ -213,16 +236,16 @@ function overlayContent(snapshot: PongSnapshot): [string, string, string] | null
     return [
       "Матч завершён",
       winner,
-      snapshot.opponentMode === "simple"
+      isLocalBot(snapshot)
         ? "Нажмите «Реванш с ботом», чтобы сыграть ещё раз."
         : "Нажмите «Новый матч», чтобы сыграть ещё раз.",
     ];
   }
   if (snapshot.phase === "countdown") {
     return [
-      snapshot.opponentMode === "simple" ? "Против бота · Simple" : "Приготовьтесь",
+      isLocalBot(snapshot) ? `Против бота · ${botModeLabel(snapshot)}` : "Приготовьтесь",
       String(Math.max(1, Math.ceil(Number(snapshot.countdown) || 0))),
-      snapshot.opponentMode === "simple"
+      isLocalBot(snapshot)
         ? "Вы слева. Двигайтесь клавишами W / S или ↑ / ↓."
         : "Ракетка движется клавишами W / S или ↑ / ↓.",
     ];
@@ -245,7 +268,7 @@ function localDisplayName(snapshot: PongSnapshot): string {
 }
 
 function peerDisplayName(snapshot: PongSnapshot): string {
-  if (snapshot.opponentMode === "simple") return "Бот Simple";
+  if (isLocalBot(snapshot)) return `Бот ${botModeLabel(snapshot)}`;
   return snapshot.peerNickname?.trim() || "Соперник";
 }
 
@@ -283,7 +306,9 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   // Network snapshots arrive much more often than score, ping text, or controls change.
   const uiSignature = JSON.stringify([
     snapshot.role,
+    snapshot.requestedOpponentMode,
     snapshot.opponentMode,
+    snapshot.opponentFallbackActive,
     snapshot.connection,
     snapshot.message,
     snapshot.udpPort,
@@ -302,7 +327,8 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   if (uiSignature === lastUiSignature) return;
   lastUiSignature = uiSignature;
   const connected = snapshot.connection === "connected";
-  const simple = snapshot.opponentMode === "simple";
+  const localBot = isLocalBot(snapshot);
+  const hardFallback = isHardFallback(snapshot);
   const incomingChallenge =
     snapshot.opponentMode === "lan" &&
     snapshot.role === "host" &&
@@ -311,6 +337,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
 
   ui.connectionPill.dataset.state = snapshot.connection;
   ui.connectionPill.dataset.mode = snapshot.opponentMode;
+  ui.connectionPill.dataset.requestedMode = snapshot.requestedOpponentMode;
   writeText(ui.connectionLabel, status);
   ui.liveIndicator.dataset.state = snapshot.connection;
   writeText(ui.liveLabel, status);
@@ -319,11 +346,13 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   writeText(ui.roleDetail, roleText(snapshot));
   writeText(
     ui.arenaModeLabel,
-    simple
-      ? "Против бота · Simple"
-      : snapshot.opponentMode === "lan"
-        ? "Сетевая партия"
-        : "Выберите режим",
+    hardFallback
+      ? "Hard недоступен · играет Simple"
+      : localBot
+        ? `Против бота · ${botModeLabel(snapshot)}`
+        : snapshot.opponentMode === "lan"
+          ? "Сетевая партия"
+          : "Выберите режим",
   );
   ui.networkHint.hidden = snapshot.opponentMode !== "lan";
   writeText(
@@ -346,7 +375,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   ui.rightScore.parentElement?.classList.toggle("is-local", snapshot.role === "guest");
   writeText(
     ui.peerDetail,
-    simple
+    localBot
       ? peerDisplayName(snapshot)
       : snapshot.peerNickname ||
           (snapshot.peerAddress
@@ -357,7 +386,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
                 ? "Ожидаем подключения"
                 : "—"),
   );
-  ui.pingRow.hidden = !connected || simple;
+  ui.pingRow.hidden = !connected || localBot;
   const ping = snapshot.pingMs;
   writeText(
     ui.pingValue,
@@ -367,14 +396,20 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   );
   writeText(
     ui.sessionMessage,
-    simple
+    localBot
       ? snapshot.phase === "gameover"
         ? "Матч с ботом завершён. Возьмите реванш или вернитесь к выбору игры."
-        : "Вы управляете левой ракеткой. Справа играет простой бот."
+        : `Вы управляете левой ракеткой. Справа играет бот ${botModeLabel(snapshot)}.`
       : snapshot.opponentMode === "none"
         ? "Выберите игру с ботом или другом."
         : snapshot.message || status + ".",
   );
+  ui.opponentFallback.hidden = !hardFallback;
+  if (hardFallback)
+    writeText(
+      ui.opponentFallback,
+      "Hard недоступен — сейчас играет Simple. Вы можете продолжить матч.",
+    );
   ui.challengeRequest.hidden = !incomingChallenge;
   if (incomingChallenge) writeText(ui.challengePeer, peerDisplayName(snapshot));
   ui.acceptButton.disabled = busy || !incomingChallenge;
@@ -383,7 +418,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   writeText(ui.rightScore, Math.max(0, Math.trunc(Number(snapshot.rightScore) || 0)));
   writeText(
     ui.arenaTitle,
-    simple
+    localBot
       ? snapshot.phase === "playing"
         ? "Игра против бота"
         : snapshot.phase === "gameover"
@@ -410,6 +445,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
 
   ui.quickButton.disabled = busy || active;
   ui.botButton.disabled = busy || active;
+  ui.hardButton.disabled = busy || active;
   writeText(
     ui.quickButton,
     snapshot.connection === "searching"
@@ -424,7 +460,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   ui.playerNickname.disabled = busy || active;
   ui.peerAddress.disabled = busy || active;
   ui.restartButton.disabled = busy || !connected || snapshot.phase !== "gameover";
-  writeText(ui.restartButton, simple ? "Реванш с ботом" : "Новый матч");
+  writeText(ui.restartButton, localBot ? "Реванш с ботом" : "Новый матч");
   ui.leaveButton.disabled = busy || !active;
   writeText(
     ui.leaveButton,
@@ -432,7 +468,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
       ? "Отменить поиск"
       : snapshot.connection === "awaitingAcceptance" || snapshot.connection === "connecting"
         ? "Отменить вызов"
-        : simple
+        : localBot
           ? "К выбору игры"
           : "Покинуть игру",
   );

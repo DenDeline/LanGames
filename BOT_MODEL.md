@@ -111,8 +111,8 @@ seeded countdown target after each point, a perturbation stress test that
 produced 100 distinct playing trajectories per side. The scheduled-game win
 rate is 100% in both protocols; the descriptive Wilson 95% interval is
 `[0.981, 1]`. Each side-swapped pair shares a seed, so the 200 games are not
-200 independent scenarios. Step 7 still needs evaluation with the actual
-integrated Hard controller.
+200 independent scenarios. The later integrated-controller result is recorded
+in [BOT_HARD_RUNTIME.md](BOT_HARD_RUNTIME.md).
 
 To repeat these checks against the committed model from the repository root:
 
@@ -131,5 +131,6 @@ dotnet run --project tools/LanPong.TrainingData -c Release -- direct-evaluate-mo
   --seed 20261021 --matches 100 --countdown-mode seeded-targets
 ```
 
-The separate Step 7 200-match acceptance seed is reserved as `20261107` and
-has not been inspected here.
+The later production-controller acceptance run on reserved seed `20261107` is
+recorded in [BOT_HARD_RUNTIME.md](BOT_HARD_RUNTIME.md); this section preserves
+the earlier offline model-selection checks.

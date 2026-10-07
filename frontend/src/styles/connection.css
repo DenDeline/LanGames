@@ -56,11 +56,27 @@
   margin-bottom: 20px;
 }
 .bot-offer {
-  margin-bottom: 15px;
+  margin-bottom: 10px;
   padding: 15px;
   border: 1px solid #3d756f;
   border-radius: 10px;
   background: linear-gradient(135deg, #193d42a8, #142638a8);
+}
+.hard-offer {
+  border-color: #987761;
+  background: linear-gradient(135deg, #43302f99, #1b2b3a99);
+}
+.hard-offer .bot-label {
+  color: #ffc491;
+}
+.hard-offer .primary-button {
+  border-color: #ffd2ab;
+  background: #ffc491;
+  color: #402416;
+  box-shadow: 0 5px 18px #ffc49120;
+}
+.hard-offer .primary-button:hover:not(:disabled) {
+  background: #ffd2ab;
 }
 .bot-label {
   display: block;
@@ -80,7 +96,7 @@
   width: 100%;
 }
 .mode-divider {
-  margin: 0 0 15px;
+  margin: 5px 0 15px;
   color: var(--muted);
   font-size: 11px;
   text-align: center;

@@ -16,6 +16,9 @@ public sealed class LocalOpponentSessionTests
         var started = peer.Snapshot();
         await Assert.That(started.Role).IsEqualTo(PeerRole.Host);
         await Assert.That(started.OpponentMode).IsEqualTo(OpponentMode.Simple);
+        await Assert.That(started.RequestedOpponentMode).IsEqualTo(OpponentMode.Simple);
+        await Assert.That(started.OpponentFallbackActive).IsFalse();
+        await Assert.That(started.Version).IsEqualTo(7);
         await Assert.That(started.Connection).IsEqualTo(ConnectionState.Connected);
         await Assert.That(started.Phase).IsEqualTo(GamePhase.Countdown);
         await Assert.That(started.UdpPort).IsEqualTo(0);
@@ -58,20 +61,24 @@ public sealed class LocalOpponentSessionTests
         var local = peer.Snapshot();
         var buffer = new ArrayBufferWriter<byte>();
         BrowserWebSocketProtocol.WriteSnapshot(local, buffer);
-        var (fieldCount, version, role, connection, udpPort, noPeerAddress, mode, atEnd) =
+        var (fieldCount, version, role, connection, udpPort, noPeerAddress, mode,
+            requestedMode, fallback, atEnd) =
             ReadBrowserHeader(buffer.WrittenMemory);
 
-        await Assert.That(fieldCount).IsEqualTo(24);
-        await Assert.That(version).IsEqualTo(6);
+        await Assert.That(fieldCount).IsEqualTo(26);
+        await Assert.That(version).IsEqualTo(7);
         await Assert.That(role).IsEqualTo((int)PeerRole.Host);
         await Assert.That(connection).IsEqualTo((int)ConnectionState.Connected);
         await Assert.That(udpPort).IsEqualTo(0);
         await Assert.That(noPeerAddress).IsTrue();
         await Assert.That(mode).IsEqualTo((int)OpponentMode.Simple);
+        await Assert.That(requestedMode).IsEqualTo((int)OpponentMode.Simple);
+        await Assert.That(fallback).IsFalse();
         await Assert.That(atEnd).IsTrue();
 
         await peer.LeaveAsync();
         await Assert.That(peer.Snapshot().OpponentMode).IsEqualTo(OpponentMode.None);
+        await Assert.That(peer.Snapshot().RequestedOpponentMode).IsEqualTo(OpponentMode.None);
         int port;
         using (var reserved = new System.Net.Sockets.UdpClient(0))
             port = ((System.Net.IPEndPoint)reserved.Client.LocalEndPoint!).Port;
@@ -79,6 +86,8 @@ public sealed class LocalOpponentSessionTests
         var lobby = peer.Snapshot();
         await Assert.That(lobby.Role).IsEqualTo(PeerRole.Host);
         await Assert.That(lobby.OpponentMode).IsEqualTo(OpponentMode.Lan);
+        await Assert.That(lobby.RequestedOpponentMode).IsEqualTo(OpponentMode.Lan);
+        await Assert.That(lobby.OpponentFallbackActive).IsFalse();
         await Assert.That(lobby.Connection).IsEqualTo(ConnectionState.Waiting);
         await Assert.That(lobby.UdpPort).IsEqualTo(port);
         await Assert.That(lobby.Phase).IsEqualTo(GamePhase.Waiting);
@@ -101,15 +110,22 @@ public sealed class LocalOpponentSessionTests
         await Assert.That(status.FallbackActive).IsTrue();
         await Assert.That(string.IsNullOrWhiteSpace(status.Reason)).IsFalse();
         await Assert.That(started.OpponentMode).IsEqualTo(OpponentMode.Simple);
+        await Assert.That(started.RequestedOpponentMode).IsEqualTo(OpponentMode.Hard);
+        await Assert.That(started.OpponentFallbackActive).IsTrue();
         await Assert.That(started.Connection).IsEqualTo(ConnectionState.Connected);
         await Assert.That(started.UdpPort).IsEqualTo(0);
         await Assert.That(started.Message.Contains("Simple", StringComparison.Ordinal)).IsTrue();
+        await Assert.That(started.Message.Contains("FileNotFoundException", StringComparison.Ordinal))
+            .IsFalse();
 
         var playing = await WaitForAsync(peer, snapshot => snapshot.Tick > started.Tick);
         await Assert.That(playing.Tick).IsGreaterThan(started.Tick);
         peer.Restart();
         await Assert.That(peer.Snapshot().RoundId).IsEqualTo(started.RoundId + 1);
         await Assert.That(peer.HardOpponentStatus.FallbackActive).IsTrue();
+        await Assert.That(peer.Snapshot().RequestedOpponentMode).IsEqualTo(OpponentMode.Hard);
+        await Assert.That(peer.Snapshot().OpponentFallbackActive).IsTrue();
+        await Assert.That(peer.Snapshot().OpponentMode).IsEqualTo(OpponentMode.Simple);
         await Assert.That(peer.Snapshot().Message.Contains("Simple", StringComparison.Ordinal)).IsTrue();
 
         await peer.LeaveAsync();
@@ -117,11 +133,44 @@ public sealed class LocalOpponentSessionTests
         await Assert.That(peer.HardOpponentStatus.FallbackActive).IsFalse();
         await Assert.That(peer.HardOpponentStatus.Reason).IsNull();
         await Assert.That(peer.Snapshot().OpponentMode).IsEqualTo(OpponentMode.None);
+        await Assert.That(peer.Snapshot().RequestedOpponentMode).IsEqualTo(OpponentMode.None);
+        await Assert.That(peer.Snapshot().OpponentFallbackActive).IsFalse();
 
         await peer.StartLocalOpponentAsync("Игрок");
         await Assert.That(peer.HardOpponentStatus.Requested).IsFalse();
+        await Assert.That(peer.Snapshot().RequestedOpponentMode).IsEqualTo(OpponentMode.Simple);
         await Assert.That(peer.Snapshot().Message.Contains("Hard", StringComparison.Ordinal)).IsFalse();
         await peer.LeaveAsync();
+    }
+
+    [Test]
+    public async Task StartHardLocalOpponentAsync_WithFrozenModel_ReportsHardAcrossRematch()
+    {
+        using var hard = new HardLocalOpponentController(
+            Path.Combine(AppContext.BaseDirectory, "Models", "hard-v1.onnx"));
+        await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
+            new SimpleLocalOpponentController(), hard);
+
+        await peer.StartHardLocalOpponentAsync("Игрок");
+        var started = peer.Snapshot();
+        await Assert.That(started.OpponentMode).IsEqualTo(OpponentMode.Hard);
+        await Assert.That(started.RequestedOpponentMode).IsEqualTo(OpponentMode.Hard);
+        await Assert.That(started.OpponentFallbackActive).IsFalse();
+        await Assert.That(hard.ModelSha256).IsEqualTo(HardLocalOpponentController.ExpectedModelSha256);
+        await WaitForAsync(peer, snapshot => snapshot.Tick > started.Tick);
+
+        peer.Restart();
+        var restarted = peer.Snapshot();
+        await Assert.That(restarted.RoundId).IsEqualTo(started.RoundId + 1);
+        await Assert.That(restarted.OpponentMode).IsEqualTo(OpponentMode.Hard);
+        await Assert.That(restarted.RequestedOpponentMode).IsEqualTo(OpponentMode.Hard);
+        await Assert.That(restarted.OpponentFallbackActive).IsFalse();
+
+        await peer.LeaveAsync();
+        var left = peer.Snapshot();
+        await Assert.That(left.OpponentMode).IsEqualTo(OpponentMode.None);
+        await Assert.That(left.RequestedOpponentMode).IsEqualTo(OpponentMode.None);
+        await Assert.That(left.OpponentFallbackActive).IsFalse();
     }
 
     [Test]
@@ -151,10 +200,16 @@ public sealed class LocalOpponentSessionTests
         await peer.StartHardLocalOpponentAsync("Игрок");
         await Assert.That(peer.HardOpponentStatus.Requested).IsTrue();
         await Assert.That(peer.HardOpponentStatus.FallbackActive).IsFalse();
+        await Assert.That(peer.Snapshot().OpponentMode).IsEqualTo(OpponentMode.Hard);
+        await Assert.That(peer.Snapshot().RequestedOpponentMode).IsEqualTo(OpponentMode.Hard);
+        await Assert.That(peer.Snapshot().OpponentFallbackActive).IsFalse();
 
         var fallback = await WaitForAsync(peer, _ => peer.HardOpponentStatus.FallbackActive,
             TimeSpan.FromSeconds(5));
         await Assert.That(fallback.Message.Contains("Simple", StringComparison.Ordinal)).IsTrue();
+        await Assert.That(fallback.OpponentMode).IsEqualTo(OpponentMode.Simple);
+        await Assert.That(fallback.RequestedOpponentMode).IsEqualTo(OpponentMode.Hard);
+        await Assert.That(fallback.OpponentFallbackActive).IsTrue();
         await Assert.That(peer.HardOpponentStatus.Reason).IsNotNull();
         await Assert.That(inference.Disposed).IsTrue();
 
@@ -164,7 +219,8 @@ public sealed class LocalOpponentSessionTests
     }
 
     private static (int FieldCount, int Version, int Role, int Connection, int UdpPort,
-        bool NoPeerAddress, int Mode, bool AtEnd) ReadBrowserHeader(ReadOnlyMemory<byte> bytes)
+        bool NoPeerAddress, int Mode, int RequestedMode, bool Fallback, bool AtEnd)
+        ReadBrowserHeader(ReadOnlyMemory<byte> bytes)
     {
         var reader = new MessagePackReader(new ReadOnlySequence<byte>(bytes));
         var fieldCount = reader.ReadArrayHeader();
@@ -177,7 +233,10 @@ public sealed class LocalOpponentSessionTests
         var noPeerAddress = reader.TryReadNil();
         for (var field = 7; field < 23; field++) reader.Skip();
         var mode = reader.ReadInt32();
-        return (fieldCount, version, role, connection, udpPort, noPeerAddress, mode, reader.End);
+        var requestedMode = reader.ReadInt32();
+        var fallback = reader.ReadBoolean();
+        return (fieldCount, version, role, connection, udpPort, noPeerAddress,
+            mode, requestedMode, fallback, reader.End);
     }
 
     private static async Task<PongSnapshot> WaitForAsync(PongPeer peer, Func<PongSnapshot, bool> predicate,

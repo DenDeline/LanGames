@@ -13,11 +13,11 @@ export type {
 
 // The WebSocket array layout is independent of the JSON HTTP response shape.
 // Change the version whenever indices or enum ordinals change.
-const VERSION = 6;
-const SNAPSHOT_FIELDS = 24;
+const VERSION = 7;
+const SNAPSHOT_FIELDS = 26;
 const MAX_SNAPSHOT_BYTES = 16 * 1024;
 const ROLES = ["none", "host", "guest"] as const;
-const OPPONENT_MODES = ["none", "lan", "simple"] as const;
+const OPPONENT_MODES = ["none", "lan", "simple", "hard"] as const;
 const CONNECTIONS = [
   "idle",
   "waiting",
@@ -97,11 +97,15 @@ export function decodeWsSnapshot(bytes: ArrayBuffer): PongSnapshot | null {
     localNickname,
     peerNickname,
     opponentMode,
+    requestedOpponentMode,
+    opponentFallbackActive,
   ]: unknown[] = frame;
 
   if (
     !isIndex(role, ROLES.length) ||
     !isIndex(opponentMode, OPPONENT_MODES.length) ||
+    !isIndex(requestedOpponentMode, OPPONENT_MODES.length) ||
+    typeof opponentFallbackActive !== "boolean" ||
     !isIndex(connection, CONNECTIONS.length) ||
     !isIndex(phase, PHASES.length) ||
     typeof message !== "string" ||
@@ -155,6 +159,8 @@ export function decodeWsSnapshot(bytes: ArrayBuffer): PongSnapshot | null {
   return {
     role: ROLES[role],
     opponentMode: OPPONENT_MODES[opponentMode],
+    requestedOpponentMode: OPPONENT_MODES[requestedOpponentMode],
+    opponentFallbackActive,
     connection: CONNECTIONS[connection],
     message,
     udpPort,

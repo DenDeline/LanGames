@@ -265,7 +265,9 @@ public enum OpponentMode
     [JsonStringEnumMemberName("lan")]
     Lan = 1,
     [JsonStringEnumMemberName("simple")]
-    Simple = 2
+    Simple = 2,
+    [JsonStringEnumMemberName("hard")]
+    Hard = 3
 }
 
 public sealed record PongSnapshot(
@@ -291,6 +293,12 @@ public sealed record PongSnapshot(
     GameEvent[] RecentEvents,
     string LocalNickname,
     string? PeerNickname,
-    OpponentMode OpponentMode);
+    OpponentMode OpponentMode,
+    OpponentMode RequestedOpponentMode = OpponentMode.None,
+    bool OpponentFallbackActive = false)
+{
+    // HTTP snapshots and browser WebSocket snapshots share the same contract version.
+    public int Version => BrowserWebSocketProtocol.Version;
+}
 
 public sealed record DiscoveredHost(string Address, int Port, string Nickname, string InstanceName);

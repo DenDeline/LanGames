@@ -423,6 +423,35 @@ async function main() {
   applyChallenge("incomingChallenge");
   assert.equal(playedTones, 9);
 
+  // A Hard-to-Simple fallback is an opponent change inside the same session.
+  // A new game event on that frame must still play, rather than be baselined.
+  apply({ role: "none", connection: "idle", events: [] });
+  const hardServe = { id: "23:1:1", kind: "serve", tick: 1, x: 0.5, y: 0.5 };
+  const fallbackGoal = { id: "23:2:4", kind: "goal", tick: 2, x: 1, y: 0.4 };
+  apply({
+    role: "host",
+    connection: "connected",
+    requestedOpponentMode: "hard",
+    opponentMode: "hard",
+    roundId: 23,
+    tick: 1,
+    events: [hardServe],
+  });
+  now += 10;
+  apply({
+    role: "host",
+    connection: "connected",
+    requestedOpponentMode: "hard",
+    opponentMode: "simple",
+    opponentFallbackActive: true,
+    roundId: 23,
+    tick: 2,
+    leftScore: 1,
+    events: [hardServe, fallbackGoal],
+  });
+  assert.equal(feedback.pulse.kind, "goal");
+  assert.equal(feedback.hasSeenEvent(fallbackGoal.id), true);
+
   // The view presents the local player on the side selected by the snapshot.
   const {
     render: renderView,
@@ -430,7 +459,12 @@ async function main() {
     setTab,
     ui,
   } = await import("../../.artifacts/frontend-test/view.js");
-  const lanSnapshot = { ...session.snapshot, opponentMode: "lan" };
+  const lanSnapshot = {
+    ...session.snapshot,
+    requestedOpponentMode: "lan",
+    opponentMode: "lan",
+    opponentFallbackActive: false,
+  };
   ui.playerNickname.value = "Мой ник";
   saveNickname();
   renderView(
@@ -500,7 +534,9 @@ async function main() {
   renderView(
     {
       ...session.snapshot,
+      requestedOpponentMode: "simple",
       opponentMode: "simple",
+      opponentFallbackActive: false,
       role: "host",
       connection: "connected",
       phase: "playing",
@@ -525,13 +561,17 @@ async function main() {
   assert.equal(ui.shareBox.hidden, true);
   assert.equal(ui.challengeRequest.hidden, true);
   assert.equal(ui.botButton.disabled, true);
+  assert.equal(ui.hardButton.disabled, true);
+  assert.equal(ui.opponentFallback.hidden, true);
   assert.equal(ui.leaveButton.textContent, "К выбору игры");
   assert.equal(ui.restartButton.disabled, true);
   assert.equal(ui.overlay.hidden, true);
   renderView(
     {
       ...session.snapshot,
+      requestedOpponentMode: "simple",
       opponentMode: "simple",
+      opponentFallbackActive: false,
       role: "host",
       connection: "connected",
       phase: "gameover",
@@ -547,6 +587,61 @@ async function main() {
   assert.equal(ui.restartButton.textContent, "Реванш с ботом");
   assert.equal(ui.restartButton.disabled, false);
   assert.equal(ui.shareBox.hidden, true);
+  renderView(
+    {
+      ...session.snapshot,
+      requestedOpponentMode: "hard",
+      opponentMode: "hard",
+      role: "host",
+      connection: "connected",
+      phase: "playing",
+      localNickname: "Лиса",
+      message: "Игра против Hard.",
+    },
+    false,
+    false,
+  );
+  assert.equal(ui.arenaModeLabel.textContent, "Против бота · Hard");
+  assert.equal(ui.rightPlayer.textContent, "Бот Hard");
+  assert.equal(ui.peerDetail.textContent, "Бот Hard");
+  assert.equal(ui.connectionPill.dataset.requestedMode, "hard");
+  assert.equal(ui.opponentFallback.hidden, true);
+  renderView(
+    {
+      ...session.snapshot,
+      requestedOpponentMode: "hard",
+      opponentMode: "simple",
+      opponentFallbackActive: true,
+      role: "host",
+      connection: "connected",
+      phase: "playing",
+      localNickname: "Лиса",
+      message: "Сообщение игрового цикла",
+    },
+    false,
+    false,
+  );
+  assert.equal(ui.arenaModeLabel.textContent, "Hard недоступен · играет Simple");
+  assert.equal(ui.rightPlayer.textContent, "Бот Simple");
+  assert.equal(ui.opponentFallback.hidden, false);
+  assert.match(ui.opponentFallback.textContent, /Hard недоступен.*Simple/);
+  renderView(
+    {
+      ...session.snapshot,
+      requestedOpponentMode: "hard",
+      opponentMode: "simple",
+      opponentFallbackActive: true,
+      role: "host",
+      connection: "connected",
+      phase: "gameover",
+      localNickname: "Лиса",
+      message: "Матч завершён",
+    },
+    false,
+    false,
+  );
+  assert.equal(ui.opponentFallback.hidden, false);
+  assert.equal(ui.restartButton.textContent, "Реванш с ботом");
   renderView(
     { ...lanSnapshot, role: "guest", connection: "awaitingAcceptance", phase: "waiting" },
     false,
@@ -576,6 +671,9 @@ async function main() {
     {
       ...session.snapshot,
       role: "none",
+      requestedOpponentMode: "none",
+      opponentMode: "none",
+      opponentFallbackActive: false,
       connection: "idle",
       message: "Нажмите «Быстрая игра» или подключитесь к другу.",
     },
@@ -586,6 +684,8 @@ async function main() {
   assert.equal(ui.playerNickname.disabled, false);
   assert.equal(ui.quickButton.disabled, false);
   assert.equal(ui.botButton.disabled, false);
+  assert.equal(ui.hardButton.disabled, false);
+  assert.equal(ui.opponentFallback.hidden, true);
   assert.equal(ui.networkHint.hidden, true);
   assert.equal(ui.arenaModeLabel.textContent, "Выберите режим");
   assert.equal(ui.sessionMessage.textContent, "Выберите игру с ботом или другом.");
@@ -705,18 +805,40 @@ async function main() {
   assert.ok(visualLocal(3196, -1) > 0.7);
 
   // A mode switch resets prediction even when the round and tick are unchanged.
-  visualApply({ opponentMode: "lan", roundId: 50, tick: 10 }, 3200);
-  visualApply({ opponentMode: "lan", roundId: 50, tick: 11 }, 3216);
+  visualApply({ requestedOpponentMode: "lan", opponentMode: "lan", roundId: 50, tick: 10 }, 3200);
+  visualApply({ requestedOpponentMode: "lan", opponentMode: "lan", roundId: 50, tick: 11 }, 3216);
   assert.equal(visualMotion.sampleCount, 2);
   const resetsBeforeModeSwitch = visualResets;
-  visualApply({ opponentMode: "simple", roundId: 50, tick: 11 }, 3232);
+  visualApply(
+    { requestedOpponentMode: "simple", opponentMode: "simple", roundId: 50, tick: 11 },
+    3232,
+  );
   assert.equal(visualSession.snapshot.opponentMode, "simple");
   assert.equal(visualResets, resetsBeforeModeSwitch + 1);
   assert.equal(visualMotion.sampleCount, 1);
 
-  // The visible bot form submits a nickname to the local opponent endpoint.
+  // Mid-rally Hard fallback keeps the requested session identity and motion history.
+  visualApply({ requestedOpponentMode: "hard", opponentMode: "hard", roundId: 51, tick: 10 }, 3250);
+  visualApply({ requestedOpponentMode: "hard", opponentMode: "hard", roundId: 51, tick: 11 }, 3266);
+  const resetsBeforeFallback = visualResets;
+  visualApply(
+    {
+      requestedOpponentMode: "hard",
+      opponentMode: "simple",
+      opponentFallbackActive: true,
+      roundId: 51,
+      tick: 12,
+    },
+    3282,
+  );
+  assert.equal(visualResets, resetsBeforeFallback);
+  assert.equal(visualMotion.sampleCount, 2);
+
+  // Both visible bot forms submit an explicit mode to the local opponent endpoint.
   const html = readFileSync(`${__dirname}/../../frontend/index.html`, "utf8");
   assert.match(html, /<form[^>]+id="bot-form"[\s\S]*?<button[^>]+id="bot-button"/);
+  assert.match(html, /<form[^>]+id="hard-form"[\s\S]*?<button[^>]+id="hard-button"/);
+  assert.match(html, /id="opponent-fallback"/);
   assert.match(html, /id="tab-host"/);
   assert.match(html, /id="tab-join"/);
   window.addEventListener = () => {};
@@ -733,8 +855,11 @@ async function main() {
   const requests = [];
   const idleSnapshot = {
     ...session.snapshot,
+    version: 7,
     role: "none",
+    requestedOpponentMode: "none",
     opponentMode: "none",
+    opponentFallbackActive: false,
     connection: "idle",
     phase: "waiting",
     localNickname: "",
@@ -743,12 +868,14 @@ async function main() {
   };
   globalThis.fetch = async (path, options) => {
     requests.push({ path, options });
+    const requestedMode = path === "/api/local-opponent" ? JSON.parse(options.body).mode : "none";
     const data =
       path === "/api/local-opponent"
         ? {
             ...idleSnapshot,
             role: "host",
-            opponentMode: "simple",
+            requestedOpponentMode: requestedMode,
+            opponentMode: requestedMode,
             connection: "connected",
             phase: "countdown",
             localNickname: "Browser Tester",
@@ -765,13 +892,33 @@ async function main() {
   const botRequest = requests.find((request) => request.path === "/api/local-opponent");
   assert.ok(botRequest);
   assert.equal(botRequest.options.method, "POST");
-  assert.deepEqual(JSON.parse(botRequest.options.body), { nickname: "Browser Tester" });
+  assert.deepEqual(JSON.parse(botRequest.options.body), {
+    nickname: "Browser Tester",
+    mode: "simple",
+  });
   assert.equal(ui.arenaModeLabel.textContent, "Против бота · Simple");
   assert.equal(ui.leftPlayer.textContent, "Browser Tester");
   assert.equal(ui.rightPlayer.textContent, "Бот Simple");
 
+  ui.leaveButton.dispatch("click");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(ui.hardButton.disabled, false);
+  ui.hardForm.dispatch("submit");
+  await new Promise((resolve) => setImmediate(resolve));
+  const hardRequest = requests.find(
+    (request) =>
+      request.path === "/api/local-opponent" && JSON.parse(request.options.body).mode === "hard",
+  );
+  assert.ok(hardRequest);
+  assert.deepEqual(JSON.parse(hardRequest.options.body), {
+    nickname: "Browser Tester",
+    mode: "hard",
+  });
+  assert.equal(ui.arenaModeLabel.textContent, "Против бота · Hard");
+  assert.equal(ui.rightPlayer.textContent, "Бот Hard");
+
   console.log(
-    "Frontend behavior checks passed: motion, prediction, events, Simple and LAN views, and bot form submission.",
+    "Frontend behavior checks passed: motion, prediction, events, Simple and Hard views, fallback, LAN, and bot forms.",
   );
 }
 

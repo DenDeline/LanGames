@@ -12,6 +12,9 @@ public sealed class PeerEnumWireTests
     [Test]
     public async Task Snapshot_EnumValuesKeepTheBrowserJsonContract()
     {
+        var modeOrdinals = Enum.GetValues<OpponentMode>().Select(mode => (int)mode);
+        await Assert.That(string.Join(',', modeOrdinals)).IsEqualTo("0,1,2,3");
+
         foreach (var (role, name) in new[]
                  {
                      (PeerRole.None, "none"),
@@ -27,13 +30,35 @@ public sealed class PeerEnumWireTests
                  {
                      (OpponentMode.None, "none"),
                      (OpponentMode.Lan, "lan"),
-                     (OpponentMode.Simple, "simple")
+                     (OpponentMode.Simple, "simple"),
+                     (OpponentMode.Hard, "hard")
                  })
         {
             using var json = JsonDocument.Parse(JsonSerializer.Serialize(
                 Snapshot(PeerRole.Host, ConnectionState.Connected, GamePhase.Playing) with
                 { OpponentMode = mode }, AppJsonSerializerContext.Default.PongSnapshot));
             await Assert.That(json.RootElement.GetProperty("opponentMode").GetString()).IsEqualTo(name);
+            await Assert.That(json.RootElement.GetProperty("version").GetInt32()).IsEqualTo(7);
+            await Assert.That(json.RootElement.GetProperty("requestedOpponentMode").GetString())
+                .IsEqualTo("none");
+            await Assert.That(json.RootElement.GetProperty("opponentFallbackActive").GetBoolean())
+                .IsFalse();
+        }
+
+        using (var json = JsonDocument.Parse(JsonSerializer.Serialize(
+                   Snapshot(PeerRole.Host, ConnectionState.Connected, GamePhase.Playing) with
+                   {
+                       OpponentMode = OpponentMode.Simple,
+                       RequestedOpponentMode = OpponentMode.Hard,
+                       OpponentFallbackActive = true
+                   }, AppJsonSerializerContext.Default.PongSnapshot)))
+        {
+            await Assert.That(json.RootElement.GetProperty("opponentMode").GetString())
+                .IsEqualTo("simple");
+            await Assert.That(json.RootElement.GetProperty("requestedOpponentMode").GetString())
+                .IsEqualTo("hard");
+            await Assert.That(json.RootElement.GetProperty("opponentFallbackActive").GetBoolean())
+                .IsTrue();
         }
 
         foreach (var (connection, name) in new[]

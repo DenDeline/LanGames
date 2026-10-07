@@ -2,6 +2,7 @@
   <PropertyGroup>
     <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
     <EnableRequestDelegateGenerator>true</EnableRequestDelegateGenerator>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PublishAot>true</PublishAot>
     <PublishSelfContained>true</PublishSelfContained>
   </PropertyGroup>
@@ -19,6 +20,14 @@
     <ItemGroup>
       <Content Include="wwwroot/**/*" />
     </ItemGroup>
+  </Target>
+
+  <!-- ONNX Runtime 1.30 also copies Windows PE DLLs into Unix Native AOT output.
+       They cannot load on these target platforms; keep each target's native library. -->
+  <Target Name="PruneWindowsOnnxRuntimeLibrariesFromUnixPublish"
+          AfterTargets="Publish"
+          Condition="'$(RuntimeIdentifier)' == 'osx-arm64' or '$(RuntimeIdentifier)' == 'linux-x64'">
+    <Delete Files="$(PublishDir)onnxruntime.dll;$(PublishDir)onnxruntime_providers_shared.dll" />
   </Target>
 
   <ItemGroup>

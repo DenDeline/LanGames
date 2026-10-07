@@ -112,7 +112,14 @@
               <span class="bot-label">ОДИН ИГРОК · SIMPLE</span>
               <p>Простой бот на этом устройстве. Вы управляете левой ракеткой.</p>
               <button class="primary-button bot-button" id="bot-button" type="submit">
-                Играть против бота
+                Играть · Simple
+              </button>
+            </form>
+            <form class="bot-offer hard-offer" id="hard-form">
+              <span class="bot-label">ОДИН ИГРОК · HARD</span>
+              <p>Более сильный бот на этом устройстве. Вы управляете левой ракеткой.</p>
+              <button class="primary-button bot-button" id="hard-button" type="submit">
+                Играть · Hard
               </button>
             </form>
             <p class="mode-divider">или играйте с другом по сети</p>
@@ -227,6 +234,15 @@
             </div>
             <p class="session-message" id="session-message" role="status" aria-live="polite">
               Выберите игру с ботом или другом.
+            </p>
+            <p
+              class="opponent-fallback"
+              id="opponent-fallback"
+              role="status"
+              aria-live="polite"
+              hidden
+            >
+              Hard недоступен — сейчас играет Simple.
             </p>
             <dl class="session-details">
               <div>

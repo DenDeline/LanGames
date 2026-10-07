@@ -6,13 +6,13 @@ namespace LanPong;
 /// <summary>The local browser WebSocket protocol, independent of the UDP wire protocol.</summary>
 internal static class BrowserWebSocketProtocol
 {
-    internal const int Version = 6;
-    internal const int SnapshotFieldCount = 24;
+    internal const int Version = 7;
+    internal const int SnapshotFieldCount = 26;
 
     // [version, role, connection, message, udpPort, localAddresses, peerAddress,
     //  leftY, rightY, ballX, ballY, ballVx, ballVy, leftScore, rightScore,
     //  phase, countdown, tick, roundId, pingMs, recentEvents, localNickname, peerNickname,
-    //  opponentMode]
+    //  opponentMode, requestedOpponentMode, opponentFallbackActive]
     // recentEvents: [[id, kind, tick, x, y], ...]
     internal static void WriteSnapshot(PongSnapshot snapshot, IBufferWriter<byte> buffer)
     {
@@ -55,6 +55,8 @@ internal static class BrowserWebSocketProtocol
         if (snapshot.PeerNickname is { } peerNickname) writer.Write(peerNickname);
         else writer.WriteNil();
         writer.Write((int)snapshot.OpponentMode);
+        writer.Write((int)snapshot.RequestedOpponentMode);
+        writer.Write(snapshot.OpponentFallbackActive);
         writer.Flush();
     }
 

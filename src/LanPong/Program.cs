@@ -24,7 +24,9 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonSerializerContext.Default));
 builder.Services.AddSingleton<PongPeer>();
 builder.Services.AddSingleton<ILocalOpponentController, SimpleLocalOpponentController>();
-builder.Services.AddSingleton(_ => new HardLocalOpponentController());
+// Diagnostic/test override; HardLocalOpponentController still requires the frozen SHA-256.
+builder.Services.AddSingleton(_ => new HardLocalOpponentController(
+    Environment.GetEnvironmentVariable("LANPONG_HARD_MODEL_PATH")));
 builder.Services.AddHostedService(services => services.GetRequiredService<PongPeer>());
 var app = builder.Build();
 var peer = app.Services.GetRequiredService<PongPeer>();
@@ -52,7 +54,17 @@ app.MapPost("/api/local-opponent", async (LocalOpponentRequest request) =>
 {
     try
     {
-        await peer.StartLocalOpponentAsync(request.Nickname);
+        switch (request.Mode ?? OpponentMode.Simple)
+        {
+            case OpponentMode.Simple:
+                await peer.StartLocalOpponentAsync(request.Nickname);
+                break;
+            case OpponentMode.Hard:
+                await peer.StartHardLocalOpponentAsync(request.Nickname);
+                break;
+            default:
+                return Results.BadRequest(new ErrorResponse("Выберите режим Simple или Hard."));
+        }
         return Results.Ok(peer.Snapshot());
     }
     catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
@@ -159,7 +171,7 @@ app.Run();
 
 internal sealed record HostRequest(int Port, string Nickname);
 internal sealed record QuickGameRequest(string Nickname);
-internal sealed record LocalOpponentRequest(string Nickname);
+internal sealed record LocalOpponentRequest(string Nickname, OpponentMode? Mode = null);
 internal sealed record JoinRequest(string Address, int Port, string Nickname);
 internal sealed record ErrorResponse(string Error);
 internal sealed record DiscoverResponse(DiscoveredHost[] Hosts);

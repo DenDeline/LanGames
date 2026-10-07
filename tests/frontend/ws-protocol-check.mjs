@@ -4,7 +4,7 @@ import { parseSnapshot } from "../../.artifacts/frontend-test/snapshot.js";
 import { decodeWsSnapshot, encodeWsAxis } from "../../.artifacts/frontend-test/wsProtocol.js";
 
 const snapshot = [
-  6,
+  7,
   1,
   3,
   "Игра началась!",
@@ -34,16 +34,18 @@ const snapshot = [
   "Лиса",
   "Кот",
   1,
+  1,
+  false,
 ];
 
 function frame(value) {
   return Uint8Array.from(encode(value)).buffer;
 }
 
-assert.equal(snapshot.length, 24);
-assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(-1))), [0x92, 6, 0xff]);
-assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(0))), [0x92, 6, 0]);
-assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(1))), [0x92, 6, 1]);
+assert.equal(snapshot.length, 26);
+assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(-1))), [0x92, 7, 0xff]);
+assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(0))), [0x92, 7, 0]);
+assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(1))), [0x92, 7, 1]);
 assert.throws(() => encodeWsAxis(2), RangeError);
 assert.throws(() => encodeWsAxis(0.5), RangeError);
 
@@ -51,6 +53,8 @@ const decoded = decodeWsSnapshot(frame(snapshot));
 assert.deepEqual(decoded, {
   role: "host",
   opponentMode: "lan",
+  requestedOpponentMode: "lan",
+  opponentFallbackActive: false,
   connection: "connected",
   message: "Игра началась!",
   udpPort: 47777,
@@ -94,8 +98,10 @@ idle[15] = 0;
 idle[19] = null;
 idle[22] = null;
 idle[23] = 0;
+idle[24] = 0;
 assert.equal(decodeWsSnapshot(frame(idle))?.role, "none");
 assert.equal(decodeWsSnapshot(frame(idle))?.opponentMode, "none");
+assert.equal(decodeWsSnapshot(frame(idle))?.requestedOpponentMode, "none");
 assert.equal(decodeWsSnapshot(frame(idle))?.peerAddress, null);
 assert.equal(decodeWsSnapshot(frame(idle))?.peerNickname, null);
 assert.equal(decodeWsSnapshot(frame(idle))?.pingMs, null);
@@ -106,7 +112,8 @@ localOpponent[6] = null;
 localOpponent[19] = null;
 localOpponent[22] = "Компьютер";
 localOpponent[23] = 2;
-assert.equal(localOpponent.length, 24);
+localOpponent[24] = 2;
+assert.equal(localOpponent.length, 26);
 const decodedLocalOpponent = decodeWsSnapshot(frame(localOpponent));
 assert.equal(decodedLocalOpponent?.role, "host");
 assert.equal(decodedLocalOpponent?.connection, "connected");
@@ -115,11 +122,29 @@ assert.equal(decodedLocalOpponent?.peerAddress, null);
 assert.equal(decodedLocalOpponent?.pingMs, null);
 assert.equal(decodedLocalOpponent?.peerNickname, "Компьютер");
 assert.equal(decodedLocalOpponent?.opponentMode, "simple");
+assert.equal(decodedLocalOpponent?.requestedOpponentMode, "simple");
 
-for (const mode of ["none", "lan", "simple"]) {
+const hardOpponent = [...localOpponent];
+hardOpponent[23] = 3;
+hardOpponent[24] = 3;
+assert.equal(decodeWsSnapshot(frame(hardOpponent))?.opponentMode, "hard");
+assert.equal(decodeWsSnapshot(frame(hardOpponent))?.opponentFallbackActive, false);
+
+const hardFallback = [...hardOpponent];
+hardFallback[23] = 2;
+hardFallback[25] = true;
+assert.equal(decodeWsSnapshot(frame(hardFallback))?.opponentMode, "simple");
+assert.equal(decodeWsSnapshot(frame(hardFallback))?.requestedOpponentMode, "hard");
+assert.equal(decodeWsSnapshot(frame(hardFallback))?.opponentFallbackActive, true);
+
+for (const mode of ["none", "lan", "simple", "hard"]) {
   assert.equal(parseSnapshot({ opponentMode: mode }).opponentMode, mode);
+  assert.equal(parseSnapshot({ requestedOpponentMode: mode }).requestedOpponentMode, mode);
 }
 assert.equal(parseSnapshot({ opponentMode: "unknown" }).opponentMode, "none");
+assert.equal(parseSnapshot({ opponentFallbackActive: true }).opponentFallbackActive, true);
+assert.equal(parseSnapshot({ version: 7 }).opponentFallbackActive, false);
+assert.throws(() => parseSnapshot({ version: 6 }), RangeError);
 
 for (const [ordinal, name] of [
   [4, "incomingChallenge"],
@@ -138,7 +163,7 @@ function reject(index, value) {
   assert.equal(decodeWsSnapshot(frame(changed)), null);
 }
 
-reject(0, 5); // Unsupported previous protocol version.
+reject(0, 6); // Unsupported previous protocol version.
 reject(1, 3); // Unknown role enum.
 reject(2, "connected"); // JSON enum is not valid on the binary socket.
 reject(2, 7); // Unknown connection state.
@@ -150,8 +175,11 @@ reject(20, null); // Events must be an array.
 reject(21, ""); // The local nickname is required.
 reject(21, "x".repeat(25)); // Nicknames are bounded.
 reject(22, 42); // The peer nickname is a string or null.
-reject(23, 3); // Unknown opponent mode.
+reject(23, 4); // Unknown opponent mode.
 reject(23, "simple"); // JSON enum is not valid on the binary socket.
+reject(24, 4); // Unknown requested opponent mode.
+reject(24, "hard"); // JSON enum is not valid on the binary socket.
+reject(25, 1); // Fallback flag must be a boolean.
 reject(
   20,
   Array.from({ length: 13 }, (_, index) => [`event-${index}`, 1, 1, 0.5, 0.5]),

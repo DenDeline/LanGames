@@ -88,12 +88,14 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
                 ? _connection == ConnectionState.Connected && _guestTimeline.Started
                     ? _confirmedGuestEvents : []
                 : state.RecentEvents.ToArray();
-            var opponentMode = _localOpponentActive ? OpponentMode.Simple
+            var requestedOpponentMode = _localOpponentActive
+                ? _hardOpponentRequested ? OpponentMode.Hard : OpponentMode.Simple
                 : _role != PeerRole.None || _connection == ConnectionState.Searching
                     ? OpponentMode.Lan : OpponentMode.None;
-            // Hard is an internal session choice until the browser contract adds its own mode.
-            var message = _localOpponentActive && _hardOpponentRequested &&
-                          _hardOpponent?.IsFallbackActive == true
+            var opponentFallbackActive = requestedOpponentMode == OpponentMode.Hard &&
+                                         _hardOpponent?.IsFallbackActive == true;
+            var opponentMode = opponentFallbackActive ? OpponentMode.Simple : requestedOpponentMode;
+            var message = opponentFallbackActive
                 ? "Режим Hard недоступен. Игра продолжается против Simple."
                 : _message;
             return new PongSnapshot(
@@ -103,7 +105,8 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
                 state.BallVx, state.BallVy,
                 state.LeftScore, state.RightScore, state.Phase,
                 state.Countdown, state.TickNumber, state.RoundId, _ping.PingMs, events,
-                _localNickname, _peerNickname, opponentMode);
+                _localNickname, _peerNickname, opponentMode,
+                requestedOpponentMode, opponentFallbackActive);
         }
     }
 

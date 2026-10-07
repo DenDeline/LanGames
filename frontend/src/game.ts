@@ -85,7 +85,7 @@ async function refreshStatus(): Promise<void> {
 
 async function postAction(
   path: string,
-  body?: { port?: number; address?: string; nickname?: string },
+  body?: { port?: number; address?: string; nickname?: string; mode?: "simple" | "hard" },
 ): Promise<void> {
   if (busy) return;
   busy = true;
@@ -262,7 +262,12 @@ export function startGame(): void {
   ui.botForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const nickname = getNickname();
-    if (nickname !== null) postAction("/api/local-opponent", { nickname });
+    if (nickname !== null) postAction("/api/local-opponent", { nickname, mode: "simple" });
+  });
+  ui.hardForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const nickname = getNickname();
+    if (nickname !== null) postAction("/api/local-opponent", { nickname, mode: "hard" });
   });
   ui.joinForm.addEventListener("submit", (event) => {
     event.preventDefault();
