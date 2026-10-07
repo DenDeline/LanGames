@@ -2,6 +2,7 @@ bin/
 obj/
 .idea/
 .artifacts/
+:memory:.ses
 TestResults/
 .pnpm-store/
 src/LanPong/wwwroot/

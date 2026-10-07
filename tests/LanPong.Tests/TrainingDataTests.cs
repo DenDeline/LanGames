@@ -220,6 +220,118 @@ public sealed class TrainingDataTests
     }
 
     [Test]
+    public async Task ModelEvaluation_IsPairedSeededAndReportsModelProvenance()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"lanpong-model-eval-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var modelPath = Path.Combine(root, "fixed-student.onnx");
+        try
+        {
+            File.WriteAllBytes(modelPath, FixedStudentModel());
+            var first = TrainingDataRunner.EvaluateModel(modelPath, 20261021, 5, 20_000);
+            var replay = TrainingDataRunner.EvaluateModel(modelPath, 20261021, 5, 20_000);
+            await Assert.That(JsonSerializer.Serialize(replay))
+                .IsEqualTo(JsonSerializer.Serialize(first));
+            await Assert.That(first.StudentModelSha256)
+                .IsEqualTo(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(modelPath)))
+                    .ToLowerInvariant());
+            await Assert.That(first.Profiles.Length).IsEqualTo(LeftPolicyProfile.All.Length);
+            await Assert.That(first.Profiles.Sum(profile => profile.ScenarioCount)).IsEqualTo(5);
+            await Assert.That(first.PairedBetter + first.PairedWorse + first.PairedTies)
+                .IsEqualTo(5);
+            await Assert.That(first.StudentWinWilson95Lower is >= 0 and <= 1).IsTrue();
+            await Assert.That(first.StudentWinWilson95Upper is >= 0 and <= 1).IsTrue();
+            foreach (var pair in first.Pairs)
+            {
+                await Assert.That(pair.Student.Seed).IsEqualTo(pair.Simple.Seed);
+                await Assert.That(pair.Student.LeftPolicy).IsEqualTo(pair.Simple.LeftPolicy);
+                await Assert.That(pair.Student.RightPolicy).IsEqualTo("student");
+                await Assert.That(pair.Simple.RightPolicy).IsEqualTo("simple");
+                await Assert.That(pair.Student.RightWon ||
+                    pair.Student.LeftScore == GameConstants.WinningScore).IsTrue();
+                await Assert.That(pair.Simple.RightWon ||
+                    pair.Simple.LeftScore == GameConstants.WinningScore).IsTrue();
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Test]
+    public async Task DirectModelEvaluation_SwapsSidesAndSeparatesCappedGames()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"lanpong-direct-model-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var modelPath = Path.Combine(root, "fixed-student.onnx");
+        try
+        {
+            File.WriteAllBytes(modelPath, FixedStudentModel());
+            var first = TrainingDataRunner.EvaluateModelDirect(modelPath, 20261022, 2, 8_000);
+            var replay = TrainingDataRunner.EvaluateModelDirect(modelPath, 20261022, 2, 8_000);
+            await Assert.That(JsonSerializer.Serialize(replay))
+                .IsEqualTo(JsonSerializer.Serialize(first));
+            await Assert.That(first.StudentModelSha256)
+                .IsEqualTo(Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(modelPath)))
+                    .ToLowerInvariant());
+            await Assert.That(first.Matches.Length).IsEqualTo(4);
+            await Assert.That(first.ScheduledMatches).IsEqualTo(4);
+            await Assert.That(first.CompletedMatches + first.CappedMatches).IsEqualTo(4);
+            await Assert.That(first.StudentWins + first.SimpleWins)
+                .IsEqualTo(first.CompletedMatches);
+            await Assert.That(first.StudentRightCompleted + first.StudentLeftCompleted)
+                .IsEqualTo(first.CompletedMatches);
+            await Assert.That(first.StudentRightWins + first.StudentLeftWins)
+                .IsEqualTo(first.StudentWins);
+            await Assert.That(first.StudentWilson95Lower is >= 0 and <= 1).IsTrue();
+            await Assert.That(first.StudentWilson95Upper is >= 0 and <= 1).IsTrue();
+            await Assert.That(first.StudentWinRateScheduled)
+                .IsEqualTo(first.StudentWins / 4.0);
+            await Assert.That(first.StudentScheduledWilson95Lower is >= 0 and <= 1)
+                .IsTrue();
+            await Assert.That(first.StudentScheduledWilson95Upper is >= 0 and <= 1)
+                .IsTrue();
+            await Assert.That(first.DistinctOpeningCheckpoints).IsGreaterThan(1);
+            await Assert.That(first.DistinctStudentRightTrajectories).IsGreaterThan(1);
+            await Assert.That(first.DistinctStudentLeftTrajectories).IsGreaterThan(1);
+            await Assert.That(first.CountdownMode).IsEqualTo("seeded-targets");
+            for (var index = 0; index < 2; index++)
+            {
+                await Assert.That(first.Matches[index * 2].Seed)
+                    .IsEqualTo(first.Matches[index * 2 + 1].Seed);
+                await Assert.That(first.Matches[index * 2].StudentSide).IsEqualTo("right");
+                await Assert.That(first.Matches[index * 2 + 1].StudentSide).IsEqualTo("left");
+            }
+
+            var policies = TrainingDataRunner.EvaluateModelDirect(modelPath,
+                20261022, 2, 8_000, "policies");
+            await Assert.That(policies.CountdownMode).IsEqualTo("policies");
+            await Assert.That(policies.CountdownProtocol.Contains("own all actions"))
+                .IsTrue();
+            await Assert.That(policies.CompletedMatches + policies.CappedMatches)
+                .IsEqualTo(policies.ScheduledMatches);
+            await Assert.That(policies.StudentWinRateScheduled)
+                .IsEqualTo(policies.StudentWins / (double)policies.ScheduledMatches);
+            for (var index = 0; index < first.Matches.Length; index++)
+                await Assert.That(policies.Matches[index].OpeningCheckpointHash)
+                    .IsEqualTo(first.Matches[index].OpeningCheckpointHash);
+            await Assert.That(Enumerable.Range(0, first.Matches.Length).Any(index =>
+                policies.Matches[index].PlayingTrajectoryHash !=
+                first.Matches[index].PlayingTrajectoryHash)).IsTrue();
+
+            var capped = TrainingDataRunner.EvaluateModelDirect(modelPath, 20261022, 2, 1);
+            await Assert.That(capped.CappedMatches).IsEqualTo(capped.ScheduledMatches);
+            await Assert.That(capped.StudentWins).IsEqualTo(0);
+            await Assert.That(capped.StudentWinRateScheduled).IsEqualTo(0);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Test]
     public async Task Generate_RefusesNonemptyOutputWithoutChangingExistingFiles()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"lanpong-data-test-{Guid.NewGuid():N}");

@@ -83,8 +83,8 @@ dotnet run --project tools/LanPong.TrainingData -c Release -- generate \
 The tool also accepts `--behavior teacher` (default) or `--behavior simple`,
 `--sample-every` in fixed ticks (default 9; a multiple of the nine-tick inference
 cadence), and `--max-ticks` (default 20,000).
-The student command is supported now; the trained student artifact belongs to
-Step 6.
+The trained artifact and its evaluation are documented in
+[BOT_MODEL.md](BOT_MODEL.md).
 
 ## Dataset provenance
 

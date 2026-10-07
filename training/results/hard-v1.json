@@ -1,0 +1,628 @@
+{
+  "schemaVersion": 1,
+  "selectedArtifact": {
+    "path": "src/LanPong/Models/hard-v1.onnx",
+    "sha256": "5d5d3cf0910d967cf2d6dc60e8fe0b63f772060178bf6673f6ddc5cdba98ab5a",
+    "bytes": 30393,
+    "layers": [
+      10,
+      64,
+      64,
+      3
+    ],
+    "onnxOpset": 18,
+    "fixedInputShape": [
+      1,
+      10
+    ],
+    "fixedOutputShape": [
+      1,
+      3
+    ]
+  },
+  "environment": {
+    "python": "3.12.14",
+    "pytorch": "2.14.1",
+    "numpy": "2.2.6",
+    "onnx": "1.23.2",
+    "onnxruntime": "1.30.0",
+    "onnxscript": "0.7.2",
+    "requirementsLockSha256": "1922f31f0406bca6717dbda6bb5ceb2e316cbd4dd7efe2d6112923d59ab387f3"
+  },
+  "datasets": {
+    "base": {
+      "masterSeed": "20261010",
+      "behavior": "teacher",
+      "manifestSha256": "8d30dc327839773a0c8a3cfc378b852304136bb5b85216bec36bb159726444f4",
+      "trainRows": 24845,
+      "validationRows": 5104,
+      "testRows": 6013,
+      "studentModelSha256": null
+    },
+    "studentRollout": {
+      "masterSeed": "20261013",
+      "behavior": "student",
+      "manifestSha256": "1a526ec05460daed7f683dee74b9765d62a12a1c085b82663544635b19b201be",
+      "trainRows": 24266,
+      "validationRows": 5577,
+      "testRows": 5276,
+      "studentModelSha256": "36ead9cdca238c755ed7810b2b1414ba0cf798f9e83e31e3bee8d7a4ae137807"
+    }
+  },
+  "training": {
+    "base": {
+      "seed": 20261014,
+      "bestEpoch": 57,
+      "checkpointSha256": "d8445296cb2bc5c94ce55730eb86b5e093e573643d7765bb0d26b584ace1091c",
+      "onnxParity": {
+        "checkedObservations": 5104,
+        "maxAbsoluteLogitError": 8.58306884765625e-06,
+        "meanAbsoluteLogitError": 6.633796374444501e-07,
+        "actionMismatches": 0,
+        "absoluteTolerance": 0.0001,
+        "relativeTolerance": 0.0001,
+        "onnxSha256": "36ead9cdca238c755ed7810b2b1414ba0cf798f9e83e31e3bee8d7a4ae137807"
+      },
+      "validation": {
+        "rowCount": 5104,
+        "classSupport": [
+          528,
+          4049,
+          527
+        ],
+        "confusionTrueRowsPredictedColumns": [
+          [
+            432,
+            92,
+            4
+          ],
+          [
+            26,
+            3991,
+            32
+          ],
+          [
+            3,
+            86,
+            438
+          ]
+        ],
+        "accuracy": 0.9523902821316614,
+        "perClassRecall": [
+          0.8181818181818182,
+          0.9856754754260311,
+          0.8311195445920304
+        ],
+        "macroRecall": 0.8783256127332932,
+        "macroF1": 0.9066723774661
+      },
+      "validationNearContact": {
+        "rowCount": 313,
+        "classSupport": [
+          57,
+          207,
+          49
+        ],
+        "confusionTrueRowsPredictedColumns": [
+          [
+            26,
+            27,
+            4
+          ],
+          [
+            14,
+            186,
+            7
+          ],
+          [
+            3,
+            28,
+            18
+          ]
+        ],
+        "accuracy": 0.7348242811501597,
+        "perClassRecall": [
+          0.45614035087719296,
+          0.8985507246376812,
+          0.3673469387755102
+        ],
+        "macroRecall": 0.5740126714301281,
+        "macroF1": 0.6039652014652014
+      }
+    },
+    "studentRelabel": {
+      "seed": 20261015,
+      "bestEpoch": 55,
+      "checkpointSha256": "104fdd2031ff23490e187d6b0a4c68117cd266f1c565c9baa3ecaca49d20f656",
+      "trainRows": 49111,
+      "validationRows": 10681,
+      "onnxParity": {
+        "checkedObservations": 10681,
+        "maxAbsoluteLogitError": 2.288818359375e-05,
+        "meanAbsoluteLogitError": 1.2972089962204336e-06,
+        "actionMismatches": 0,
+        "absoluteTolerance": 0.0001,
+        "relativeTolerance": 0.0001,
+        "onnxSha256": "5d5d3cf0910d967cf2d6dc60e8fe0b63f772060178bf6673f6ddc5cdba98ab5a"
+      }
+    }
+  },
+  "selectedModelEvaluation": {
+    "validation": {
+      "base": {
+        "classification": {
+          "rowCount": 5104,
+          "classSupport": [
+            528,
+            4049,
+            527
+          ],
+          "confusionTrueRowsPredictedColumns": [
+            [
+              485,
+              36,
+              7
+            ],
+            [
+              82,
+              3921,
+              46
+            ],
+            [
+              8,
+              44,
+              475
+            ]
+          ],
+          "accuracy": 0.9563087774294671,
+          "perClassRecall": [
+            0.9185606060606061,
+            0.9683872561126204,
+            0.9013282732447818
+          ],
+          "macroRecall": 0.9294253784726694,
+          "macroF1": 0.9180183962039191
+        },
+        "nearContactClassification": {
+          "rowCount": 313,
+          "classSupport": [
+            57,
+            207,
+            49
+          ],
+          "confusionTrueRowsPredictedColumns": [
+            [
+              40,
+              10,
+              7
+            ],
+            [
+              27,
+              173,
+              7
+            ],
+            [
+              8,
+              12,
+              29
+            ]
+          ],
+          "accuracy": 0.7731629392971247,
+          "perClassRecall": [
+            0.7017543859649122,
+            0.8357487922705314,
+            0.5918367346938775
+          ],
+          "macroRecall": 0.7097799709764404,
+          "macroF1": 0.699063968694079
+        },
+        "onnxParity": {
+          "checkedObservations": 5104,
+          "maxAbsoluteLogitError": 1.52587890625e-05,
+          "meanAbsoluteLogitError": 1.3102127240927075e-06,
+          "actionMismatches": 0,
+          "absoluteTolerance": 0.0001,
+          "relativeTolerance": 0.0001,
+          "onnxSha256": "5d5d3cf0910d967cf2d6dc60e8fe0b63f772060178bf6673f6ddc5cdba98ab5a"
+        }
+      },
+      "rollout": {
+        "classification": {
+          "rowCount": 5577,
+          "classSupport": [
+            812,
+            4038,
+            727
+          ],
+          "confusionTrueRowsPredictedColumns": [
+            [
+              644,
+              160,
+              8
+            ],
+            [
+              56,
+              3919,
+              63
+            ],
+            [
+              3,
+              109,
+              615
+            ]
+          ],
+          "accuracy": 0.92845615922539,
+          "perClassRecall": [
+            0.7931034482758621,
+            0.970529965329371,
+            0.8459422283356258
+          ],
+          "macroRecall": 0.8698585473136197,
+          "macroF1": 0.8911619405307453
+        },
+        "nearContactClassification": {
+          "rowCount": 377,
+          "classSupport": [
+            78,
+            231,
+            68
+          ],
+          "confusionTrueRowsPredictedColumns": [
+            [
+              53,
+              17,
+              8
+            ],
+            [
+              19,
+              201,
+              11
+            ],
+            [
+              3,
+              22,
+              43
+            ]
+          ],
+          "accuracy": 0.7877984084880637,
+          "perClassRecall": [
+            0.6794871794871795,
+            0.8701298701298701,
+            0.6323529411764706
+          ],
+          "macroRecall": 0.7273233302645067,
+          "macroF1": 0.735950701256059
+        },
+        "onnxParity": {
+          "checkedObservations": 5577,
+          "maxAbsoluteLogitError": 2.288818359375e-05,
+          "meanAbsoluteLogitError": 1.2853082580477349e-06,
+          "actionMismatches": 0,
+          "absoluteTolerance": 0.0001,
+          "relativeTolerance": 0.0001,
+          "onnxSha256": "5d5d3cf0910d967cf2d6dc60e8fe0b63f772060178bf6673f6ddc5cdba98ab5a"
+        }
+      }
+    },
+    "postSelectionTest": {
+      "base": {
+        "classification": {
+          "rowCount": 6013,
+          "classSupport": [
+            643,
+            4727,
+            643
+          ],
+          "confusionTrueRowsPredictedColumns": [
+            [
+              592,
+              43,
+              8
+            ],
+            [
+              71,
+              4587,
+              69
+            ],
+            [
+              3,
+              67,
+              573
+            ]
+          ],
+          "accuracy": 0.9565940462331615,
+          "perClassRecall": [
+            0.9206842923794712,
+            0.9703829067061561,
+            0.8911353032659409
+          ],
+          "macroRecall": 0.9274008341171894,
+          "macroF1": 0.9214300495794935
+        },
+        "nearContactClassification": {
+          "rowCount": 390,
+          "classSupport": [
+            71,
+            245,
+            74
+          ],
+          "confusionTrueRowsPredictedColumns": [
+            [
+              51,
+              12,
+              8
+            ],
+            [
+              24,
+              203,
+              18
+            ],
+            [
+              3,
+              29,
+              42
+            ]
+          ],
+          "accuracy": 0.7589743589743589,
+          "perClassRecall": [
+            0.7183098591549296,
+            0.8285714285714286,
+            0.5675675675675675
+          ],
+          "macroRecall": 0.7048162850979752,
+          "macroF1": 0.7021263009448888
+        },
+        "onnxParity": {
+          "checkedObservations": 6013,
+          "maxAbsoluteLogitError": 1.52587890625e-05,
+          "meanAbsoluteLogitError": 1.3091573691781377e-06,
+          "actionMismatches": 0,
+          "absoluteTolerance": 0.0001,
+          "relativeTolerance": 0.0001,
+          "onnxSha256": "5d5d3cf0910d967cf2d6dc60e8fe0b63f772060178bf6673f6ddc5cdba98ab5a"
+        }
+      },
+      "rollout": {
+        "classification": {
+          "rowCount": 5276,
+          "classSupport": [
+            791,
+            3869,
+            616
+          ],
+          "confusionTrueRowsPredictedColumns": [
+            [
+              617,
+              165,
+              9
+            ],
+            [
+              44,
+              3757,
+              68
+            ],
+            [
+              9,
+              80,
+              527
+            ]
+          ],
+          "accuracy": 0.928923426838514,
+          "perClassRecall": [
+            0.7800252844500632,
+            0.9710519514086328,
+            0.8555194805194806
+          ],
+          "macroRecall": 0.868865572126059,
+          "macroF1": 0.8877350075231604
+        },
+        "nearContactClassification": {
+          "rowCount": 347,
+          "classSupport": [
+            68,
+            218,
+            61
+          ],
+          "confusionTrueRowsPredictedColumns": [
+            [
+              44,
+              15,
+              9
+            ],
+            [
+              23,
+              186,
+              9
+            ],
+            [
+              9,
+              16,
+              36
+            ]
+          ],
+          "accuracy": 0.7665706051873199,
+          "perClassRecall": [
+            0.6470588235294118,
+            0.8532110091743119,
+            0.5901639344262295
+          ],
+          "macroRecall": 0.6968112557099845,
+          "macroF1": 0.6974568271419845
+        },
+        "onnxParity": {
+          "checkedObservations": 5276,
+          "maxAbsoluteLogitError": 2.288818359375e-05,
+          "meanAbsoluteLogitError": 1.2797299859812483e-06,
+          "actionMismatches": 0,
+          "absoluteTolerance": 0.0001,
+          "relativeTolerance": 0.0001,
+          "onnxSha256": "5d5d3cf0910d967cf2d6dc60e8fe0b63f772060178bf6673f6ddc5cdba98ab5a"
+        }
+      }
+    },
+    "gameplayDevelopment": {
+      "base": [
+        {
+          "masterSeed": "20261020",
+          "scenarioCount": 100,
+          "studentWins": 96,
+          "simpleWins": 58,
+          "studentScoreMargin": 635,
+          "simpleScoreMargin": 79,
+          "pairedBetter": 87,
+          "pairedWorse": 2,
+          "pairedTies": 11,
+          "studentWinWilson95Lower": 0.9016292856411208,
+          "studentWinWilson95Upper": 0.9843366960084523
+        },
+        {
+          "masterSeed": "20261022",
+          "scenarioCount": 100,
+          "studentWins": 99,
+          "simpleWins": 58,
+          "studentScoreMargin": 658,
+          "simpleScoreMargin": 59,
+          "pairedBetter": 90,
+          "pairedWorse": 0,
+          "pairedTies": 10,
+          "studentWinWilson95Lower": 0.9455138038212946,
+          "studentWinWilson95Upper": 0.9982325679358593
+        }
+      ],
+      "studentRelabel": [
+        {
+          "masterSeed": "20261020",
+          "scenarioCount": 100,
+          "studentWins": 100,
+          "simpleWins": 58,
+          "studentScoreMargin": 643,
+          "simpleScoreMargin": 79,
+          "pairedBetter": 88,
+          "pairedWorse": 2,
+          "pairedTies": 10,
+          "studentWinWilson95Lower": 0.9630065017930143,
+          "studentWinWilson95Upper": 1
+        },
+        {
+          "masterSeed": "20261022",
+          "scenarioCount": 100,
+          "studentWins": 98,
+          "simpleWins": 58,
+          "studentScoreMargin": 619,
+          "simpleScoreMargin": 59,
+          "pairedBetter": 87,
+          "pairedWorse": 3,
+          "pairedTies": 10,
+          "studentWinWilson95Lower": 0.929988209271456,
+          "studentWinWilson95Upper": 0.9944980324498376
+        }
+      ],
+      "directPolicies": [
+        {
+          "seedPolicy": "splitmix64-v1: scenario seed = derive(master, 4, index); opening and optional later targets = derive(scenarioSeed, 21, pointIndex)",
+          "openingProtocol": "Both paddles follow the same seed-specific legal target axis for 120 fixed ticks before policy takeover.",
+          "countdownMode": "policies",
+          "countdownProtocol": "The ONNX student and Simple own all actions during later countdowns.",
+          "masterSeed": "20261020",
+          "scenarioCount": 100,
+          "scheduledMatches": 200,
+          "completedMatches": 200,
+          "studentWins": 200,
+          "simpleWins": 0,
+          "cappedMatches": 0,
+          "studentRightWins": 100,
+          "studentLeftWins": 100,
+          "distinctOpeningCheckpoints": 45,
+          "distinctStudentRightTrajectories": 45,
+          "distinctStudentLeftTrajectories": 45,
+          "studentWinRateScheduled": 1,
+          "studentScheduledWilson95Lower": 0.9811546736227335,
+          "studentScheduledWilson95Upper": 1,
+          "uncertaintyNote": "Wilson intervals treat games as independent and are descriptive because side-swapped games share a scenario seed. The scheduled interval counts capped games as non-wins."
+        },
+        {
+          "seedPolicy": "splitmix64-v1: scenario seed = derive(master, 4, index); opening and optional later targets = derive(scenarioSeed, 21, pointIndex)",
+          "openingProtocol": "Both paddles follow the same seed-specific legal target axis for 120 fixed ticks before policy takeover.",
+          "countdownMode": "policies",
+          "countdownProtocol": "The ONNX student and Simple own all actions during later countdowns.",
+          "masterSeed": "20261022",
+          "scenarioCount": 100,
+          "scheduledMatches": 200,
+          "completedMatches": 200,
+          "studentWins": 200,
+          "simpleWins": 0,
+          "cappedMatches": 0,
+          "studentRightWins": 100,
+          "studentLeftWins": 100,
+          "distinctOpeningCheckpoints": 42,
+          "distinctStudentRightTrajectories": 42,
+          "distinctStudentLeftTrajectories": 42,
+          "studentWinRateScheduled": 1,
+          "studentScheduledWilson95Lower": 0.9811546736227335,
+          "studentScheduledWilson95Upper": 1,
+          "uncertaintyNote": "Wilson intervals treat games as independent and are descriptive because side-swapped games share a scenario seed. The scheduled interval counts capped games as non-wins."
+        }
+      ]
+    },
+    "gameplayFrozen": {
+      "paired": {
+        "masterSeed": "20261021",
+        "scenarioCount": 100,
+        "studentWins": 100,
+        "simpleWins": 58,
+        "studentScoreMargin": 641,
+        "simpleScoreMargin": 116,
+        "pairedBetter": 87,
+        "pairedWorse": 1,
+        "pairedTies": 12,
+        "studentWinWilson95Lower": 0.9630065017930143,
+        "studentWinWilson95Upper": 1
+      },
+      "directSideSwapped": {
+        "seedPolicy": "splitmix64-v1: scenario seed = derive(master, 4, index); opening and optional later targets = derive(scenarioSeed, 21, pointIndex)",
+        "openingProtocol": "Both paddles follow the same seed-specific legal target axis for 120 fixed ticks before policy takeover.",
+        "countdownMode": "seeded-targets",
+        "countdownProtocol": "Both paddles follow the same point-keyed target during later countdowns.",
+        "masterSeed": "20261021",
+        "scenarioCount": 100,
+        "scheduledMatches": 200,
+        "completedMatches": 200,
+        "studentWins": 200,
+        "simpleWins": 0,
+        "cappedMatches": 0,
+        "studentRightWins": 100,
+        "studentLeftWins": 100,
+        "distinctOpeningCheckpoints": 40,
+        "distinctStudentRightTrajectories": 100,
+        "distinctStudentLeftTrajectories": 100,
+        "studentWinRateScheduled": 1,
+        "studentScheduledWilson95Lower": 0.9811546736227335,
+        "studentScheduledWilson95Upper": 1,
+        "uncertaintyNote": "Wilson intervals treat games as independent and are descriptive because side-swapped games share a scenario seed. The scheduled interval counts capped games as non-wins."
+      },
+      "directPolicies": {
+        "seedPolicy": "splitmix64-v1: scenario seed = derive(master, 4, index); opening and optional later targets = derive(scenarioSeed, 21, pointIndex)",
+        "openingProtocol": "Both paddles follow the same seed-specific legal target axis for 120 fixed ticks before policy takeover.",
+        "countdownMode": "policies",
+        "countdownProtocol": "The ONNX student and Simple own all actions during later countdowns.",
+        "masterSeed": "20261021",
+        "scenarioCount": 100,
+        "scheduledMatches": 200,
+        "completedMatches": 200,
+        "studentWins": 200,
+        "simpleWins": 0,
+        "cappedMatches": 0,
+        "studentRightWins": 100,
+        "studentLeftWins": 100,
+        "distinctOpeningCheckpoints": 40,
+        "distinctStudentRightTrajectories": 40,
+        "distinctStudentLeftTrajectories": 40,
+        "studentWinRateScheduled": 1,
+        "studentScheduledWilson95Lower": 0.9811546736227335,
+        "studentScheduledWilson95Upper": 1,
+        "uncertaintyNote": "Wilson intervals treat games as independent and are descriptive because side-swapped games share a scenario seed. The scheduled interval counts capped games as non-wins."
+      }
+    },
+    "reservedStep7AcceptanceSeed": "20261107"
+  }
+}

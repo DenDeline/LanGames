@@ -35,6 +35,26 @@ internal static class TrainingCli
                         Int(values, "matches", 8),
                         Int(values, "max-ticks", 20_000)));
                     return 0;
+                case "evaluate-model":
+                    RejectUnknown(values, "output", "student-model", "seed", "matches", "max-ticks");
+                    TrainingDataRunner.EvaluateModelToFile(new ModelEvaluationOptions(
+                        Required(values, "output"),
+                        Required(values, "student-model"),
+                        ULong(values, "seed", DefaultSeed),
+                        Int(values, "matches", 24),
+                        Int(values, "max-ticks", 20_000)));
+                    return 0;
+                case "direct-evaluate-model":
+                    RejectUnknown(values, "output", "student-model", "seed", "matches",
+                        "max-ticks", "countdown-mode");
+                    TrainingDataRunner.EvaluateModelDirectToFile(new DirectModelEvaluationOptions(
+                        Required(values, "output"),
+                        Required(values, "student-model"),
+                        ULong(values, "seed", DefaultSeed),
+                        Int(values, "matches", 8),
+                        Int(values, "max-ticks", 20_000),
+                        Optional(values, "countdown-mode") ?? "seeded-targets"));
+                    return 0;
                 case "generate":
                     RejectUnknown(values, "output", "seed", "train", "validation", "test",
                         "gate-matches", "max-ticks", "sample-every", "behavior", "student-model");
@@ -116,6 +136,21 @@ internal static class TrainingCli
               Diagnostic direct Teacher-vs-Simple duels with both side assignments,
               using the same seeded, legal opening disturbance for each pair.
               Capped games are reported, never counted as wins.
+
+            evaluate-model --output FILE --student-model MODEL
+              [--seed 20261007] [--matches 24] [--max-ticks 20000]
+              Compare an exported ONNX student and Simple as right policies
+              against paired seeded left opponents. Report per-profile wins,
+              score margins, Wilson intervals, model SHA-256, and match results.
+
+            direct-evaluate-model --output FILE --student-model MODEL
+              [--seed 20261007] [--matches 8] [--max-ticks 20000]
+              [--countdown-mode seeded-targets|policies]
+              Direct student-vs-Simple duels, one game per side assignment for
+              each seed. The default moves both paddles toward seeded targets
+              between points; policies lets each bot control its countdown.
+              Report completed and capped games, side wins, Wilson interval,
+              model SHA-256, protocol, and match results.
 
             generate --output DIRECTORY [--seed 20261007] [--train 48]
               [--validation 12] [--test 12] [--gate-matches 24]
