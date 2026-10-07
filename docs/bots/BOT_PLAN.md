@@ -81,3 +81,9 @@ Step 9 committed as `1f13bfe`. The integration fixture now sends both malformed 
 - One worker step is active at a time; the next starts after the previous commit and coordinator review.
 - Each step includes only tests that verify behavior or a concrete risk, and reports the exact commands/results.
 - The coordinator may edit this Markdown plan or other Markdown research notes, but does not edit implementation files.
+
+## Post-release CI test follow-up (2026-10-07)
+
+Ubuntu CI at `e129aa4` reported three `TrainingDataTests` failures from one shared prerequisite: evaluation match `eval-00003`, seed `10073682660221144741`, remained in a rally at the 20,000-tick test limit. The same seed completes on macOS ARM64, so this test limit is not a portable completion guarantee. Dataset generation invokes the gate before any labels are written or the student model is loaded.
+
+**Temporary worker step:** raise the evaluation limit in the three affected test setups to 100,000 fixed ticks while retaining the completed-match assertions and the production generator's default limit. Include the active right policy and left profile in the cap exception so an Ubuntu recurrence identifies the branch. Run the 106 C# tests locally; verify on Ubuntu CI when available. Commit one conventional test fix and stop. This does not establish cross-platform bit-exact physics or guarantee every seeded rally terminates; a durable policy/physics decision needs Ubuntu trajectory evidence and may require revalidating the training artifacts.
