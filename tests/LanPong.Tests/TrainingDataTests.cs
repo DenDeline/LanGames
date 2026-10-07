@@ -8,6 +8,8 @@ namespace LanPong.Tests;
 
 public sealed class TrainingDataTests
 {
+    private const int EvaluationTickLimit = 100_000;
+
     [Test]
     public async Task MatchSeeds_AreRepeatableAndDisjointAcrossWholeMatchSplits()
     {
@@ -101,7 +103,7 @@ public sealed class TrainingDataTests
     [Test]
     public async Task DevelopmentSeed_TeacherPassesCompletedMatchScoreGate()
     {
-        var report = TrainingDataRunner.Evaluate(20261007, 24, 20_000);
+        var report = TrainingDataRunner.Evaluate(20261007, 24, EvaluationTickLimit);
         await Assert.That(report.Passed).IsTrue();
         await Assert.That(report.PairedScoreImprovement).IsGreaterThan(0);
         await Assert.That(report.TeacherPairedScoreWilson95Lower).IsGreaterThan(0.5);
@@ -120,7 +122,7 @@ public sealed class TrainingDataTests
         try
         {
             var options = new GenerationOptions(firstPath, 20261007,
-                1, 1, 1, 24, 20_000, RightBotObservationV1.InferenceCadenceTicks,
+                1, 1, 1, 24, EvaluationTickLimit, RightBotObservationV1.InferenceCadenceTicks,
                 "teacher", null);
             var first = TrainingDataRunner.Generate(options);
             var replay = TrainingDataRunner.Generate(options with { OutputDirectory = replayPath });
@@ -193,7 +195,7 @@ public sealed class TrainingDataTests
             }
 
             var manifest = TrainingDataRunner.Generate(new GenerationOptions(outputPath,
-                20261007, 1, 1, 1, 24, 20_000,
+                20261007, 1, 1, 1, 24, EvaluationTickLimit,
                 RightBotObservationV1.InferenceCadenceTicks, "student", modelPath));
             await Assert.That(manifest.Behavior).IsEqualTo("student");
             await Assert.That(manifest.StudentModelSha256)

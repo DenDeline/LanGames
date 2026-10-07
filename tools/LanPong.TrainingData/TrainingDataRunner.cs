@@ -615,7 +615,8 @@ internal static class TrainingDataRunner
 
         if (game.Phase != GamePhase.GameOver)
             throw new InvalidOperationException($"Match {matchId} with seed {seed} " +
-                $"did not finish within {maxTicks} fixed ticks: phase={game.Phase}, " +
+                $"did not finish within {maxTicks} fixed ticks: " +
+                $"rightPolicy={rightPolicyName}, leftProfile={left.Name}, phase={game.Phase}, " +
                 $"score={game.LeftScore}:{game.RightScore}, serves={serves}, " +
                 $"goals={goals}, leftHits={leftHits}, rightHits={rightHits}.");
         var final = game.Capture();
