@@ -505,6 +505,12 @@ try:
 
         moved = wait_until("local match advances browser-controlled left paddle", moved_left)
         assert moved["tick"] > local["tick"] and moved["rightY"] == 0.5, moved
+
+        def simple_tracks_serve():
+            snapshot = request(5180, "/api/status")
+            return snapshot if snapshot["phase"] == "playing" and snapshot["rightY"] > 0.52 else None
+
+        wait_until("Simple bot tracks the live serve", simple_tracks_serve)
         restarted = request(5180, "/api/restart", {})
         assert restarted["roundId"] == local["roundId"] + 1, restarted
         assert restarted["phase"] == "countdown" and restarted["leftScore"] == 0, restarted
@@ -930,7 +936,7 @@ try:
     accept_challenge()
     terminate_connected_process(processes[0], 5180, 5181, "idle", "none", "host")
 
-    print("PASS: local opponent start/input/rematch/leave, static UI, discovery, pending challenge acceptance/decline/cancel, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, binary MessagePack WebSocket snapshots, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, Quick Game port selection/cancellation/auto-accept/matching, and graceful host/guest shutdown")
+    print("PASS: local Simple bot start/input/tracking/rematch/leave, static UI, discovery, pending challenge acceptance/decline/cancel, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, binary MessagePack WebSocket snapshots, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, Quick Game port selection/cancellation/auto-accept/matching, and graceful host/guest shutdown")
 finally:
     for process in processes:
         if process.poll() is None:

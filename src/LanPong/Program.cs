@@ -7,7 +7,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonSerializerContext.Default));
 builder.Services.AddSingleton<PongPeer>();
-builder.Services.AddSingleton<ILocalOpponentController, StationaryLocalOpponentController>();
+builder.Services.AddSingleton<ILocalOpponentController, SimpleLocalOpponentController>();
 builder.Services.AddHostedService(services => services.GetRequiredService<PongPeer>());
 var app = builder.Build();
 var peer = app.Services.GetRequiredService<PongPeer>();
