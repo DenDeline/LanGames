@@ -1,0 +1,165 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - name: Check existing release assets
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > release-assets.txt 2>/dev/null; then
+            if grep -Fxq 'LanPong-osx-arm64.tar.gz' release-assets.txt &&
+               grep -Fxq 'LanPong-win-x64.zip' release-assets.txt &&
+               grep -Fxq 'LanPong-linux-x64.tar.gz' release-assets.txt; then
+              echo 'All release archives are already attached.'
+              echo 'build=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo 'build=true' >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: [prepare, test]
+    if: needs.prepare.outputs.build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            rid: osx-arm64
+            archive: LanPong-osx-arm64.tar.gz
+            binary: LanPong
+          - runner: windows-2022
+            rid: win-x64
+            archive: LanPong-win-x64.zip
+            binary: LanPong.exe
+          - runner: ubuntu-24.04
+            rid: linux-x64
+            archive: LanPong-linux-x64.tar.gz
+            binary: LanPong
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          package-manager-cache: false
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install Native AOT prerequisites on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      - name: Publish Native AOT application
+        run: dotnet publish src/LanPong/LanPong.csproj -c Release -r ${{ matrix.rid }} -o .artifacts/publish/${{ matrix.rid }}
+      - name: Smoke-test published application
+        env:
+          LANPONG_TEST_BINARY: ${{ github.workspace }}/.artifacts/publish/${{ matrix.rid }}/${{ matrix.binary }}
+        run: python tests/integration/published_smoke_test.py
+      - name: Test published native application
+        if: runner.os != 'Windows'
+        env:
+          LANPONG_TEST_BINARY: ${{ github.workspace }}/.artifacts/publish/${{ matrix.rid }}/LanPong
+        run: python tests/integration/integration_test.py
+      - name: Verify and archive Unix publication
+        if: runner.os != 'Windows'
+        env:
+          RID: ${{ matrix.rid }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          test -x ".artifacts/publish/$RID/LanPong"
+          test -s ".artifacts/publish/$RID/wwwroot/index.html"
+          tar -czf ".artifacts/$ARCHIVE" -C ".artifacts/publish/$RID" .
+      - name: Verify and archive Windows publication
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RID: ${{ matrix.rid }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          $publish = ".artifacts/publish/$env:RID"
+          if (!(Test-Path "$publish/LanPong.exe")) { throw 'Native executable is missing' }
+          if (!(Test-Path "$publish/wwwroot/index.html")) { throw 'Frontend is missing' }
+          Compress-Archive -Path "$publish/*" -DestinationPath ".artifacts/$env:ARCHIVE"
+      - name: Upload release archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.rid }}
+          path: .artifacts/${{ matrix.archive }}
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: .artifacts/release
+          merge-multiple: true
+      - name: Create or complete GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          archives=(
+            .artifacts/release/LanPong-osx-arm64.tar.gz
+            .artifacts/release/LanPong-win-x64.zip
+            .artifacts/release/LanPong-linux-x64.tar.gz
+          )
+          for archive in "${archives[@]}"; do
+            test -s "$archive"
+          done
+
+          if gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > release-assets.txt 2>/dev/null; then
+            missing=()
+            for archive in "${archives[@]}"; do
+              if ! grep -Fxq "$(basename "$archive")" release-assets.txt; then
+                missing+=("$archive")
+              fi
+            done
+            if ((${#missing[@]})); then
+              gh release upload "$GITHUB_REF_NAME" "${missing[@]}"
+            else
+              echo 'All release archives are already attached.'
+            fi
+          else
+            options=(--verify-tag --title "$GITHUB_REF_NAME" --generate-notes)
+            if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+              options+=(--prerelease)
+            fi
+            gh release create "$GITHUB_REF_NAME" "${archives[@]}" "${options[@]}"
+          fi
