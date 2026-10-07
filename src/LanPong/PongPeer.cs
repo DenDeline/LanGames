@@ -4,7 +4,7 @@ using System.Net.Sockets;
 namespace LanPong;
 
 /// <summary>
-/// Coordinates one local and one remote player. The partial files share one lock for
+/// Coordinates browser input and either a remote or local opponent. The partial files share one lock for
 /// connection and game state; input, ping, and rejected challenges own their policies.
 /// </summary>
 internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposable
@@ -21,11 +21,13 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
     private readonly LocalControllerInputs _controllers = new();
     private readonly RejectedChallengeCache _rejectedChallenges = new();
     private readonly PeerPingTracker _ping = new();
+    private readonly ILocalOpponentController _localOpponent;
     private GameEvent[] _confirmedGuestEvents = [];
     private readonly string[] _localAddresses = GetLocalAddresses();
     private readonly Task _clockTask;
     private Task? _shutdownTask;
     private bool _stopping;
+    private bool _localOpponentActive;
     private int _disposed;
 
     private UdpClient? _socket;
@@ -61,9 +63,10 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
     private DateTime _lastHelloSent = DateTime.MinValue;
     private DateTime _lastRestartSent = DateTime.MinValue;
 
-    public PongPeer(ILogger<PongPeer> logger)
+    public PongPeer(ILogger<PongPeer> logger, ILocalOpponentController localOpponent)
     {
         _logger = logger;
+        _localOpponent = localOpponent;
         _mdns = new MdnsDiscovery(logger);
         _hostTimeline = new HostRollbackTimeline(_game);
         _guestTimeline = new GuestPredictionTimeline(_game);
@@ -110,6 +113,38 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
         {
             lock (_gate) CancelQuickMatchmakingLocked(clearLobby: true);
             await StartHostingAsync(port, selectedNickname);
+        }
+        finally { _transition.Release(); }
+    }
+
+    public async Task StartLocalOpponentAsync(string nickname)
+    {
+        var selectedNickname = PlayerNickname.Normalize(nickname);
+        await _transition.WaitAsync();
+        try
+        {
+            lock (_gate)
+            {
+                if (_stopping) throw new InvalidOperationException("Приложение завершает работу.");
+                if (_role != PeerRole.None || _connection != ConnectionState.Idle ||
+                    _matchmakingTask is not null)
+                    throw new InvalidOperationException("Сначала покиньте текущую игру.");
+                CancelQuickMatchmakingLocked(clearLobby: true);
+            }
+
+            await StopSocketAsync();
+            lock (_gate)
+            {
+                if (_stopping) throw new InvalidOperationException("Приложение завершает работу.");
+                _localOpponent.Reset();
+                _localNickname = selectedNickname;
+                _peerNickname = "Компьютер";
+                _role = PeerRole.Host;
+                _connection = ConnectionState.Connected;
+                _message = "Локальная игра началась!";
+                _game.StartMatch();
+                _localOpponentActive = true;
+            }
         }
         finally { _transition.Release(); }
     }
@@ -227,8 +262,9 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
             if (_connection != ConnectionState.Connected) throw new InvalidOperationException("Сначала подключитесь к игре.");
             if (_role == PeerRole.Host)
             {
+                if (_localOpponentActive) _localOpponent.Reset();
                 _game.StartMatch();
-                _hostTimeline.Reset();
+                if (!_localOpponentActive) _hostTimeline.Reset();
             }
             else if (_role == PeerRole.Guest)
             {

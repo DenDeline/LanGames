@@ -480,6 +480,37 @@ try:
     for nickname in (None, "", "   "):
         expect_bad_request(5180, "/api/quick", {"nickname": nickname})
     expect_bad_request(5180, "/api/quick", {})
+    for nickname in (None, "", "   "):
+        expect_bad_request(5180, "/api/local-opponent", {"nickname": nickname})
+    expect_bad_request(5180, "/api/local-opponent", {})
+
+    local = request(5180, "/api/local-opponent", {"nickname": "LocalPlayer"})
+    assert local["role"] == "host" and local["connection"] == "connected", local
+    assert local["udpPort"] == 0 and local["peerAddress"] is None, local
+    assert local["pingMs"] is None and local["peerNickname"] == "Компьютер", local
+    assert local["phase"] == "countdown", local
+    expect_bad_request(5180, "/api/local-opponent", {"nickname": "Again"})
+    with websocket(5180) as local_ws:
+        local_frame = decode_snapshot(recv_frame(local_ws))
+        assert local_frame["role"] == "host" and local_frame["connection"] == "connected", local_frame
+        assert local_frame["udpPort"] == 0 and local_frame["peerAddress"] is None, local_frame
+        controls = control_packets()
+        for _ in range(8):
+            send_binary(local_ws, controls[-1])
+            time.sleep(0.03)
+
+        def moved_left():
+            snapshot = request(5180, "/api/status")
+            return snapshot if snapshot["leftY"] < 0.48 else None
+
+        moved = wait_until("local match advances browser-controlled left paddle", moved_left)
+        assert moved["tick"] > local["tick"] and moved["rightY"] == 0.5, moved
+        restarted = request(5180, "/api/restart", {})
+        assert restarted["roundId"] == local["roundId"] + 1, restarted
+        assert restarted["phase"] == "countdown" and restarted["leftScore"] == 0, restarted
+    left_local = request(5180, "/api/leave", {})
+    assert left_local["role"] == "none" and left_local["connection"] == "idle", left_local
+    assert left_local["phase"] == "waiting" and left_local["tick"] == 0, left_local
 
     require_mdns_loopback = os.environ.get("LANPONG_REQUIRE_MDNS_LOOPBACK") == "1"
     host = request(5180, "/api/host", host_payload())
@@ -899,7 +930,7 @@ try:
     accept_challenge()
     terminate_connected_process(processes[0], 5180, 5181, "idle", "none", "host")
 
-    print("PASS: static UI, discovery, pending challenge acceptance/decline/cancel, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, binary MessagePack WebSocket snapshots, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, Quick Game port selection/cancellation/auto-accept/matching, and graceful host/guest shutdown")
+    print("PASS: local opponent start/input/rematch/leave, static UI, discovery, pending challenge acceptance/decline/cancel, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, binary MessagePack WebSocket snapshots, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, Quick Game port selection/cancellation/auto-accept/matching, and graceful host/guest shutdown")
 finally:
     for process in processes:
         if process.poll() is None:

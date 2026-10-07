@@ -32,6 +32,7 @@ internal sealed partial class PongPeer
                          _connection is (ConnectionState.Connecting or ConnectionState.AwaitingAcceptance);
         var detached = (_socket, _socketStop, _receiveTask);
         _socket = null;
+        _localOpponentActive = false;
         _quickHostAutoAccept = false;
         _socketStop = null;
         _receiveTask = null;

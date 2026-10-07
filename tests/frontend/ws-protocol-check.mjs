@@ -95,6 +95,20 @@ assert.equal(decodeWsSnapshot(frame(idle))?.peerAddress, null);
 assert.equal(decodeWsSnapshot(frame(idle))?.peerNickname, null);
 assert.equal(decodeWsSnapshot(frame(idle))?.pingMs, null);
 
+const localOpponent = [...snapshot];
+localOpponent[4] = 0;
+localOpponent[6] = null;
+localOpponent[19] = null;
+localOpponent[22] = "Компьютер";
+assert.equal(localOpponent.length, 23);
+const decodedLocalOpponent = decodeWsSnapshot(frame(localOpponent));
+assert.equal(decodedLocalOpponent?.role, "host");
+assert.equal(decodedLocalOpponent?.connection, "connected");
+assert.equal(decodedLocalOpponent?.udpPort, 0);
+assert.equal(decodedLocalOpponent?.peerAddress, null);
+assert.equal(decodedLocalOpponent?.pingMs, null);
+assert.equal(decodedLocalOpponent?.peerNickname, "Компьютер");
+
 for (const [ordinal, name] of [
   [4, "incomingChallenge"],
   [5, "awaitingAcceptance"],

@@ -38,13 +38,14 @@ internal sealed partial class PongPeer
                 lock (_gate)
                 {
                     actions = new ClockActions { Socket = _socket };
-                    if (actions.Socket is null)
+                    if (_localOpponentActive)
+                        TickLocalOpponentLocked(now, elapsed, ref accumulatedTime);
+                    else if (actions.Socket is null)
                     {
                         accumulatedTime = 0;
                         continue;
                     }
-
-                    if (_role == PeerRole.Host)
+                    else if (_role == PeerRole.Host)
                         TickHostLocked(now, elapsed, ref accumulatedTime, ref actions);
                     else if (_role == PeerRole.Guest && _targetEndpoint is not null)
                         TickGuestLocked(now, elapsed, ref accumulatedTime, ref actions);
@@ -66,6 +67,21 @@ internal sealed partial class PongPeer
             }
         }
         catch (OperationCanceledException) { }
+    }
+
+    // Called under _gate. The local match uses the same fixed-step engine, without UDP or rollback.
+    private void TickLocalOpponentLocked(DateTime now, double elapsed, ref double accumulatedTime)
+    {
+        var leftAxis = _controllers.GetAxis(now);
+        accumulatedTime = Math.Min(accumulatedTime + elapsed,
+            GameConstants.FixedStepSeconds * NetworkConstants.MaximumSimulationCatchUpSteps);
+        for (var step = 0; step < NetworkConstants.MaximumSimulationCatchUpSteps &&
+                           accumulatedTime >= GameConstants.FixedStepSeconds; step++)
+        {
+            var rightAxis = Math.Clamp(_localOpponent.GetAxis(_game.Capture()), -1, 1);
+            _game.Advance(GameConstants.FixedStepSeconds, leftAxis, rightAxis);
+            accumulatedTime -= GameConstants.FixedStepSeconds;
+        }
     }
 
     // Called under _gate; the clock owns accumulatedTime and its send buffer.
