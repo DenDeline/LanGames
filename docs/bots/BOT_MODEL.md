@@ -9,14 +9,14 @@ artifact uses ONNX opset 18, has static dimensions, occupies 30,393 bytes, and
 has SHA-256
 `5d5d3cf0910d967cf2d6dc60e8fe0b63f772060178bf6673f6ddc5cdba98ab5a`.
 The same hashes, confusion matrices, parity results, and gameplay counts are
-also preserved in [hard-v1.json](training/results/hard-v1.json).
+also preserved in [hard-v1.json](../../training/results/hard-v1.json).
 
 ## Environment and data
 
 Training ran on macOS ARM64 with Python 3.12.14, PyTorch 2.14.1, NumPy 2.2.6,
 ONNX 1.23.2, ONNX Runtime 1.30.0, and ONNX Script 0.7.2. Exact resolved Python
-packages are in [requirements-lock.txt](training/requirements-lock.txt). The
-[training guide](training/README.md) gives the complete commands. CPU training
+packages are in [requirements-lock.txt](../../training/requirements-lock.txt). The
+[training guide](TRAINING.md) gives the complete commands. CPU training
 uses a fixed seed, one PyTorch thread, and deterministic algorithms. A repeat
 of the selected fit produced the same ONNX SHA-256 byte for byte.
 

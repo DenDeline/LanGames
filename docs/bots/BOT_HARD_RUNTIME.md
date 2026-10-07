@@ -114,8 +114,8 @@ dotnet run --project tools/LanPong.TrainingData -c Release -- direct-evaluate-mo
   --countdown-mode seeded-targets
 ```
 
-The [primary policy-owned countdown report](training/results/hard-v1-final-policies-20261107.json)
-and [separate seeded-target stress report](training/results/hard-v1-final-seeded-targets-20261107.json)
+The [primary policy-owned countdown report](../../training/results/hard-v1-final-policies-20261107.json)
+and [separate seeded-target stress report](../../training/results/hard-v1-final-seeded-targets-20261107.json)
 include every seed, side assignment, completion, score, fallback flag, and
 trajectory hash. In both reports the backend is `production`, the model SHA-256
 is the frozen hash above, and `usedModelThroughout` is true.
