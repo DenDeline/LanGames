@@ -2,6 +2,7 @@
 
 import json
 import os
+import platform
 import socket
 import subprocess
 import sys
@@ -44,6 +45,36 @@ def wait_for_status(process, base_url):
     raise TimeoutError("LanPong did not serve /api/status within 20 seconds")
 
 
+def verify_onnx_smoke(binary):
+    model = binary.parent / "Models" / "aot-smoke.onnx"
+    assert model.is_file() and model.stat().st_size > 0, f"Published ONNX model is missing: {model}"
+
+    library_name = {
+        "Darwin": "libonnxruntime.dylib",
+        "Linux": "libonnxruntime.so",
+        "Windows": "onnxruntime.dll",
+    }[platform.system()]
+    libraries = [path for path in binary.parent.rglob(library_name) if path.is_file()]
+    assert libraries, f"Published ONNX Runtime native library is missing: {library_name}"
+
+    # Keep ONNX Runtime's optional telemetry cache out of the release archive.
+    with tempfile.TemporaryDirectory() as smoke_cwd:
+        result = subprocess.run(
+            [str(binary), "--onnx-smoke"],
+            cwd=smoke_cwd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    expected = "ONNX smoke passed: 2 -> 3"
+    assert result.returncode == 0 and expected in result.stdout, (
+        f"Published ONNX inference failed (exit {result.returncode}).\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    print(f"PASS: published ONNX inference returned 2 -> 3 with {libraries[0].name}")
+
+
 def main():
     value = os.environ.get("LANPONG_TEST_BINARY")
     if not value:
@@ -51,6 +82,8 @@ def main():
     binary = Path(value).resolve()
     if not binary.is_file():
         raise FileNotFoundError(f"Published executable does not exist: {binary}")
+
+    verify_onnx_smoke(binary)
 
     port = free_port()
     base_url = f"http://127.0.0.1:{port}"

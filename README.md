@@ -51,6 +51,19 @@ dotnet publish src/LanPong/LanPong.csproj -c Release -o .artifacts/publish
 
 `dotnet publish` сам выполняет `pnpm install --frozen-lockfile` и `pnpm build`, поэтому в публикацию попадают свежие файлы из `wwwroot`. По умолчанию он создаёт нативное self-contained приложение для ОС и архитектуры машины сборки. При необходимости укажите целевую архитектуру через `-r`, например `-r osx-arm64`; для другой ОС AOT-публикацию нужно выполнять на соответствующей ОС. Для запуска опубликованного приложения .NET SDK, Node.js и pnpm не нужны.
 
+### Проверка ONNX Runtime в Native AOT
+
+Диагностическая команда `--onnx-smoke` загружает включённую в публикацию модель `Models/aot-smoke.onnx`, выполняет float32-вычисление `2 + 1` через ONNX Runtime CPU и завершается с ошибкой, если результат не равен `3`. Модель воспроизводится без дополнительных Python-пакетов командой `python3 tools/generate_onnx_smoke_model.py`; параметр `--check` сравнивает файл с генератором.
+
+```bash
+dotnet publish src/LanPong/LanPong.csproj -c Release -r osx-arm64 -o .artifacts/publish/osx-arm64
+LANPONG_TEST_BINARY="$PWD/.artifacts/publish/osx-arm64/LanPong" python3 tests/integration/published_smoke_test.py
+```
+
+Вторая команда проверяет наличие модели и нативной библиотеки ONNX Runtime в каталоге публикации, запускает нативный исполняемый файл с `--onnx-smoke`, затем проверяет обычный запуск страницы и `/api/status`. Workflow выпуска выполняет ту же проверку после публикации для `osx-arm64`, `linux-x64` и `win-x64`; на macOS и Linux он также запускает полный интеграционный сценарий против опубликованного файла.
+
+Проверено 7 октября 2026 года на macOS 27.0 ARM64 с .NET SDK 10.0.400 и `Microsoft.ML.OnnxRuntime` 1.30.0: Native AOT публикация, вычисление `2 → 3`, запуск HTTP и полный интеграционный тест прошли. Файл `LanPong` занимает **18 562 440 байт**, `libonnxruntime.dylib` — **43 879 424 байта**; весь каталог — **156 184 861 байт** (с отладочным `LanPong.dSYM`), архив `tar.gz` по схеме выпуска — **37 064 330 байт**. Модель занимает **115 байт**, SHA-256: `4e6e278a2e3cdc6d837447daec450e4fce1a2da4ffae34ed005db2a8c3784aeb`. В успешном логе публикации отмечены `IL3053` (AOT) и `IL2104` (trimming) для `MessagePack`; предупреждений по ONNX Runtime не было. NuGet-пакет также добавил в macOS-публикацию неиспользуемые Windows DLL, включая `onnxruntime.dll` размером **16 728 888 байт**.
+
 ## Выпуски на GitHub
 
 При push тега `v*` GitHub Actions сначала запускает тесты, затем публикует Native AOT приложение на macOS ARM64, Windows x64 и Linux x64. После проверки опубликованных приложений workflow создаёт GitHub Release и прикрепляет `LanPong-osx-arm64.tar.gz`, `LanPong-win-x64.zip` и `LanPong-linux-x64.tar.gz`. Каждый архив содержит весь каталог публикации, включая страницу игры. Например, для выпуска `v1.0.0`:

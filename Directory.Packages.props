@@ -4,6 +4,7 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageVersion Include="MessagePack" Version="3.1.11" />
+    <PackageVersion Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" />
     <PackageVersion Include="TUnit" Version="1.72.16" />
   </ItemGroup>
 </Project>

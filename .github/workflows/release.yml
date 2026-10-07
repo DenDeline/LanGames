@@ -82,7 +82,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
       - name: Publish Native AOT application
         run: dotnet publish src/LanPong/LanPong.csproj -c Release -r ${{ matrix.rid }} -o .artifacts/publish/${{ matrix.rid }}
-      - name: Smoke-test published application
+      - name: Smoke-test published application and ONNX inference
         env:
           LANPONG_TEST_BINARY: ${{ github.workspace }}/.artifacts/publish/${{ matrix.rid }}/${{ matrix.binary }}
         run: python tests/integration/published_smoke_test.py

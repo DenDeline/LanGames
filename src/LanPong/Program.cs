@@ -3,6 +3,12 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using LanPong;
 
+if (args.Length == 1 && args[0] == "--onnx-smoke")
+{
+    OnnxSmoke.Run();
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonSerializerContext.Default));
