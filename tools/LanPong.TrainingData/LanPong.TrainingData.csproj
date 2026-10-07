@@ -1,11 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <IsPackable>false</IsPackable>
     <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <PublishAot>false</PublishAot>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="TUnit" />
+    <InternalsVisibleTo Include="LanPong.Tests" />
     <ProjectReference Include="../../src/LanPong/LanPong.csproj" />
-    <ProjectReference Include="../../tools/LanPong.TrainingData/LanPong.TrainingData.csproj" />
   </ItemGroup>
 </Project>

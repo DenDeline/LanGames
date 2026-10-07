@@ -23,6 +23,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="LanPong.Tests" />
+    <InternalsVisibleTo Include="LanPong.TrainingData" />
     <PackageReference Include="MessagePack" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" />
     <Content Include="Models/aot-smoke.onnx" CopyToOutputDirectory="PreserveNewest"

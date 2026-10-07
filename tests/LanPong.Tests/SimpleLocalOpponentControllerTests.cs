@@ -15,6 +15,26 @@ public sealed class SimpleLocalOpponentControllerTests
     }
 
     [Test]
+    public async Task GetAxis_WaitsForLateApproachAndNextSampleBeforeTracking()
+    {
+        var bot = new SimpleLocalOpponentController();
+        var beforeActivation = Playing(rightY: 0.5, ballY: 0.82, vx: 0.55,
+            ballX: SimpleLocalOpponentController.ObservationActivationX - 0.001, tick: 100);
+
+        await Assert.That(bot.GetAxis(beforeActivation)).IsEqualTo(0);
+        await Assert.That(bot.GetAxis(beforeActivation with
+        {
+            BallX = SimpleLocalOpponentController.ObservationActivationX + 0.001,
+            TickNumber = 101
+        })).IsEqualTo(0);
+        await Assert.That(bot.GetAxis(beforeActivation with
+        {
+            BallX = SimpleLocalOpponentController.ObservationActivationX + 0.001,
+            TickNumber = 100 + SimpleLocalOpponentController.ObservationIntervalTicks
+        })).IsEqualTo(1);
+    }
+
+    [Test]
     public async Task GetAxis_ReflectsShortLookaheadAtBothWalls()
     {
         var bot = new SimpleLocalOpponentController();
@@ -180,7 +200,7 @@ public sealed class SimpleLocalOpponentControllerTests
     }
 
     private static GameState Playing(double rightY, double ballY = 0.5, double vx = 0,
-        double vy = 0, long tick = 0, double ballX = 0.5, GamePhase phase = GamePhase.Playing) => new()
+        double vy = 0, long tick = 0, double ballX = 0.82, GamePhase phase = GamePhase.Playing) => new()
     {
         Phase = phase, RightY = rightY, LeftY = GameConstants.ArenaCenter,
         BallX = ballX, BallY = ballY, BallVx = vx, BallVy = vy,

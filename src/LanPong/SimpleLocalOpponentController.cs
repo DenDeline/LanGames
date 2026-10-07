@@ -6,6 +6,7 @@ namespace LanPong;
 internal sealed class SimpleLocalOpponentController : ILocalOpponentController
 {
     internal const int ObservationIntervalTicks = 9; // 150 ms at the authoritative 60 Hz tick.
+    internal const double ObservationActivationX = 0.72;
     internal const double LookAheadSeconds = 0.25;
     internal const double TargetDeadZone = 0.018;
 
@@ -39,7 +40,10 @@ internal sealed class SimpleLocalOpponentController : ILocalOpponentController
 
     private static double ObserveTarget(GameState state)
     {
-        if (state.BallVx <= 0 || state.BallX >= RightContactX)
+        // This pilot reacts only once the ball is in the right-hand approach.
+        // The stronger teacher can prepare for the full flight instead.
+        if (state.BallVx <= 0 || state.BallX < ObservationActivationX ||
+            state.BallX >= RightContactX)
             return ArenaCenter;
 
         // Only look a short fixed time ahead. The contact plane caps that horizon
