@@ -1,6 +1,6 @@
 # Bot implementation plan
 
-Status: steps 1–6 complete and reviewed; production Hard integration is next. The coordinator owns this plan and reviews code; implementation belongs to a separate Codex worker task. The worker takes one step at a time and ends each step with a conventional commit. The coordinator reconciled this plan after steps 1–3 and 4–6.
+Status: steps 1–8 complete and reviewed; one focused protocol test cleanup remains before closeout. The coordinator owns this plan and reviews code; implementation belongs to a separate Codex worker task. The worker takes one step at a time and ends each step with a conventional commit. The coordinator reconciled this plan after steps 1–3, 4–6, and 7–8.
 
 ## Goal and acceptance
 
@@ -59,7 +59,20 @@ The remaining work is split into two commits so runtime integration and user-fac
 7. **Production Hard controller.** Package and load the selected model in the .NET app, create and warm one ONNX Runtime CPU session, reuse fixed-size input/output buffers where the C# API permits, and make a legal decision every nine engine ticks. Measure inference latency and allocations against the 16.7 ms tick budget. Validate model shape/output; on load or inference failure, switch to Simple and expose the fallback state to the caller. Preserve rematch, leave, LAN rollback, and local lifecycle. Run a normal build, focused tests, and an actual macOS ARM64 Native AOT publish-and-launch of the real model. Commit `feat(bot): integrate onnx hard controller`.
 8. **Playable Hard mode and final gate.** Add Hard selection and clear fallback status in the browser, version/test any changed HTTP or WebSocket contract, and exercise browser start/play/rematch/leave plus LAN regression. Evaluate the **integrated** controller on reserved seed `20261107`: 100 paired seeds with both side assignments, 200 scheduled games, bot-owned countdowns as the primary play protocol, at least 65% Hard wins, no hidden capped-game exclusion, and an uncertainty interval that acknowledges shared pair seeds. Also report the seeded perturbation control separately. Run frontend/C# and local/LAN integration checks, published macOS ARM64 smoke with the real model, and release smoke on Linux/Windows CI if available. Review artifact size and remove demonstrably unused platform binaries without weakening required native packaging. Commit `feat(ui): add playable hard opponent`.
 
-**Final review after step 8:** compare actual gameplay, inference latency, fallback behavior, package/runtime distribution, UX, and regressions with the acceptance criteria. Assign a focused follow-up step for any observed gap before closing the goal.
+### Reconciliation after steps 7–8 (2026-10-07)
+
+| Step | Commit | Review result |
+| --- | --- | --- |
+| 7. Production Hard controller | `df74c1e` | The app packages and validates the frozen ONNX model, warms one CPU session, reuses inference buffers, and falls back to Simple if loading or inference fails. The actual macOS ARM64 Native AOT executable passed model inference and the two-process integration suite. The development production evaluator completed 200/200 side-swapped policy-countdown wins with zero caps or fallbacks. Its 10,000-decision benchmark reported p99 0.0026 ms and zero managed bytes per decision. |
+| 8. Playable Hard and final gate | `16832d0` | The browser can start, play, rematch, and leave Hard mode. Version 7 HTTP/WebSocket snapshots expose requested mode, active mode, and fallback. The reserved production gate on seed `20261107` completed 200/200 scheduled wins with zero caps or fallbacks; both side assignments won 100/100. The separate seeded-target stress run also completed 200/200 wins. The published macOS ARM64 Native AOT smoke and full integration suite exited cleanly after disabling ONNX Runtime telemetry before native initialization. Its benchmark reported p99 0.0035 ms and zero managed bytes per decision. |
+
+The primary 100 seed pairs produced 46 distinct paired playing trajectories. [BOT_HARD_RUNTIME.md](BOT_HARD_RUNTIME.md) and the committed [primary report](training/results/hard-v1-final-policies-20261107.json) record the repeated trajectories and qualify the Wilson interval as descriptive. The independent reviews found no release blocker in the final gate, UI flow, fallback, native startup, or LAN regression. Linux x64 and Windows x64 published smokes are wired into the release workflow but could not be executed on this macOS host.
+
+One integration-test fixture still sends two malformed control frames using WebSocket version 6. Because the current contract is version 7, those assertions exercise version rejection instead of their intended invalid-axis behavior. A version 7 unit test covers axis validation, but the end-to-end fixture should use the current version.
+
+9. **Protocol test fixture cleanup.** Update the two malformed-control integration frames to version 7, verify the test asserts axis rejection under the current protocol, run the relevant integration/protocol checks, and commit `test(protocol): validate malformed v7 controls`. Keep this step scoped to the test fixture unless a real protocol defect is revealed.
+
+**Final review after step 9:** confirm the integration assertions test malformed axes under version 7, the working tree is clean, and the acceptance criteria above remain supported before closing the goal.
 
 ## Review gates for every step
 
