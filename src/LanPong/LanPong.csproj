@@ -7,6 +7,10 @@
     <PublishSelfContained>true</PublishSelfContained>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
+  </PropertyGroup>
+
   <Target Name="BuildFrontendForPublish"
           BeforeTargets="ResolveProjectStaticWebAssets;ResolveCurrentProjectStaticWebAssetsInputs"
           Condition="'$(_IsPublishing)' == 'true' and '$(NoBuild)' != 'true'">
@@ -31,13 +35,20 @@
   </Target>
 
   <ItemGroup>
-    <InternalsVisibleTo Include="LanPong.Tests" />
-    <InternalsVisibleTo Include="LanPong.TrainingData" />
-    <PackageReference Include="MessagePack" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" />
+    <Content Update="appsettings.Development.json" CopyToPublishDirectory="Never" />
     <Content Include="Models/aot-smoke.onnx" CopyToOutputDirectory="PreserveNewest"
              CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Models/hard-v1.onnx" CopyToOutputDirectory="PreserveNewest"
              CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="LanPong.Tests" />
+    <InternalsVisibleTo Include="LanPong.TrainingData" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MessagePack" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" />
   </ItemGroup>
 </Project>
