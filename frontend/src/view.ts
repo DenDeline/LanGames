@@ -30,6 +30,7 @@ export const ui = {
   pingRow: element("ping-row"),
   pingValue: element("ping-value"),
   sessionMessage: element("session-message"),
+  rematchSideHint: element("rematch-side-hint"),
   opponentFallback: element("opponent-fallback"),
   challengeRequest: element("challenge-request"),
   challengePeer: element("challenge-peer"),
@@ -38,6 +39,10 @@ export const ui = {
   liveIndicator: element("live-indicator"),
   liveLabel: element("live-label"),
   gameMode: element<HTMLSelectElement>("game-mode"),
+  playerSetup: element("player-setup"),
+  botSideField: element("bot-side-field"),
+  botSide: element<HTMLSelectElement>("bot-side"),
+  lanSideHint: element("lan-side-hint"),
   botPanel: element("bot-panel"),
   botPicker: element<HTMLDialogElement>("bot-picker"),
   botPickerTitle: element("bot-picker-title"),
@@ -174,6 +179,11 @@ export function getNickname(): string | null {
   return nickname;
 }
 
+export function getInitialSidePreference(): "left" | "right" | "random" {
+  const preference = ui.botSide.value;
+  return preference === "right" || preference === "random" ? preference : "left";
+}
+
 export function getPort(input: HTMLInputElement): number | null {
   const port = Number(input.value);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -215,6 +225,9 @@ function presentMode(mode: GameMode): void {
   displayedMode = mode;
   ui.gameMode.value = mode;
   ui.botPanel.hidden = mode !== "bot";
+  ui.botSideField.hidden = mode !== "bot";
+  ui.lanSideHint.hidden = mode === "bot";
+  ui.playerSetup.dataset.mode = mode === "bot" ? "bot" : "lan";
   ui.quickPanel.hidden = mode !== "quick";
   ui.joinPanel.hidden = mode !== "join";
 }
@@ -304,6 +317,10 @@ function roleText(snapshot: PongSnapshot): string {
   }
 }
 
+function rematchSideText(snapshot: PongSnapshot): string {
+  return snapshot.localSide === "left" ? "справа" : "слева";
+}
+
 function overlayContent(snapshot: PongSnapshot): [string, string, string] | null {
   if (snapshot.connection === "searching") {
     return ["Быстрая игра", "Ищем соперника", "Проверяем игры в локальной сети…"];
@@ -315,6 +332,9 @@ function overlayContent(snapshot: PongSnapshot): [string, string, string] | null
     return ["Сеть", "Связь потеряна", "Проверьте сеть или покиньте игру, чтобы начать заново."];
   }
   if (snapshot.phase === "gameover") {
+    if (!snapshot.canRematch) {
+      return ["Результат матча", "Проверяем результат", "Ждём подтверждения от соперника."];
+    }
     const leftName =
       snapshot.localSide === "left" ? localDisplayName(snapshot) : peerDisplayName(snapshot);
     const rightName =
@@ -329,8 +349,8 @@ function overlayContent(snapshot: PongSnapshot): [string, string, string] | null
       "Матч завершён",
       winner,
       isLocalBot(snapshot)
-        ? `Возьмите реванш с «${botModeLabel(snapshot)}» или выберите другого соперника.`
-        : "Нажмите «Новый матч», чтобы сыграть ещё раз.",
+        ? `Реванш с «${botModeLabel(snapshot)}»: вы будете ${rematchSideText(snapshot)}.`
+        : `Новый матч: вы будете ${rematchSideText(snapshot)}.`,
     ];
   }
   if (snapshot.phase === "countdown") {
@@ -513,13 +533,15 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   );
   writeText(
     ui.sessionMessage,
-    localBot
-      ? snapshot.phase === "gameover"
-        ? `Матч с «${botModeLabel(snapshot)}» завершён. Возьмите реванш или выберите другого соперника.`
-        : `Вы управляете ${snapshot.localSide === "left" ? "левой" : "правой"} ракеткой. ${snapshot.localSide === "left" ? "Справа" : "Слева"} играет бот ${botModeLabel(snapshot)}.`
-      : snapshot.opponentMode === "none"
-        ? snapshot.message || "Выберите игру с ботом или другом."
-        : snapshot.message || status + ".",
+    snapshot.phase === "gameover" && connected && !snapshot.canRematch
+      ? "Ждём подтверждения результата от соперника."
+      : localBot
+        ? snapshot.phase === "gameover"
+          ? `Матч с «${botModeLabel(snapshot)}» завершён. Возьмите реванш или вернитесь к выбору игры.`
+          : `Вы управляете ${snapshot.localSide === "left" ? "левой" : "правой"} ракеткой. ${snapshot.localSide === "left" ? "Справа" : "Слева"} играет бот ${botModeLabel(snapshot)}.`
+        : snapshot.opponentMode === "none"
+          ? snapshot.message || "Выберите игру с ботом или другом."
+          : snapshot.message || status + ".",
   );
   ui.opponentFallback.hidden = !botFallback;
   if (botFallback)
@@ -544,7 +566,9 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
       : snapshot.phase === "playing" && connected
         ? "Матч идёт"
         : snapshot.phase === "gameover"
-          ? "Матч окончен"
+          ? snapshot.canRematch
+            ? "Матч окончен"
+            : "Проверяем результат"
           : snapshot.connection === "searching"
             ? "Подбираем соперника"
             : inGame
@@ -565,6 +589,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   ui.botButton.disabled = busy || active || getSelectedBotId() === null;
   ui.botCatalogRetry.disabled = busy || active;
   ui.gameMode.disabled = setupLocked;
+  ui.botSide.disabled = setupLocked;
   ui.clearSelectedHost.disabled = setupLocked;
   for (const button of ui.discoveryResults.querySelectorAll<HTMLButtonElement>("button"))
     button.disabled = setupLocked;
@@ -583,6 +608,9 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   ui.peerAddress.disabled = busy || active;
   ui.restartButton.disabled = busy || !connected || !snapshot.canRematch;
   writeText(ui.restartButton, localBot ? `Реванш с «${botModeLabel(snapshot)}»` : "Новый матч");
+  ui.rematchSideHint.hidden = !connected || snapshot.phase !== "gameover" || !snapshot.canRematch;
+  if (!ui.rematchSideHint.hidden)
+    writeText(ui.rematchSideHint, `В новом матче вы будете ${rematchSideText(snapshot)}.`);
   ui.leaveButton.disabled = busy || !active;
   writeText(
     ui.leaveButton,

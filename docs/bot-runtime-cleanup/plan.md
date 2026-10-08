@@ -12,7 +12,7 @@ The coordinator researches, decomposes, coordinates and reviews. Its repository 
 
 Baseline: branch `codex/bot-catalog`, HEAD `2424622`; the previous seven-step catalog goal is complete. At that baseline, the worktree had one pre-existing user edit in `BotRuntime.cs`: `_availabilityGate` changed from `object` to `System.Threading.Lock`. Step 1 preserves it explicitly in `325021c`.
 
-At baseline, the app contained duplicate legacy controllers, inference resources inside the legacy Hard file and production diagnostic dispatch/smoke assets. Steps 1–3 remove the legacy controllers, organize canonical production code into five Bots namespaces and isolate developer probes in `tools/LanPong.BotDiagnostics`. Step 4 adds compact native modes and an on-demand picker. Step 5 adds independently tested side routing and a mirrored bot policy view; current reviewed HEAD is `2010d65`. Benchmark cancellation cleanup was reviewed before step 5: no benchmark project/package/solution addition existed. Side architecture, framework/library and public UX research preceded side implementation. Step 6 is in progress and remains unaccepted until lifecycle/contracts regressions and validation pass. The app targets stable .NET 10/C# 14 with generated binding/JSON and Native AOT.
+At baseline, the app contained duplicate legacy controllers, inference resources inside the legacy Hard file and production diagnostic dispatch/smoke assets. Steps 1–3 remove the legacy controllers, organize canonical production code into five Bots namespaces and isolate developer probes in `tools/LanPong.BotDiagnostics`. Step 4 adds compact native modes and an on-demand picker. Step 5 adds tested side routing and a mirrored bot policy view. Step 6 integrates authoritative admission, finished rematches, snapshot ordering and browser ownership; current reviewed HEAD is `fc2f037`, with a clean worker stop. Benchmark cancellation cleanup was reviewed before step 5: no benchmark project/package/solution addition existed. Side architecture, framework/library and public UX research preceded side implementation. Step 7 alone is assigned next. The app targets stable .NET 10/C# 14 with generated binding/JSON and Native AOT.
 
 ## High-level implementation decomposition
 
@@ -24,8 +24,8 @@ At baseline, the app contained duplicate legacy controllers, inference resources
 | Checkpoint A | Reconcile canonical runtime, project boundaries, build/publish proof and compact UX specification | Complete after step 3 |
 | 4 | Compact game-mode dropdown and on-demand opponent picker, preserving named profiles and LAN flows | Reviewed: `7b3db18` |
 | 5 | Side primitives, side-aware input/rollback/prediction routing and canonical mirrored bot view | Reviewed: `2010d65` |
-| 6 | Authoritative random/selected side lifecycle, finished rematch fencing and versioned contracts with compatible browser ownership | Assigned after step 5 review |
-| 7 | Compact bot Left/Right/Random selection and side-aware user experience, focus and action flows | Planned |
+| 6 | Authoritative random/selected side lifecycle, finished rematch fencing and versioned contracts with compatible browser ownership | Reviewed: `fc2f037` |
+| 7 | Compact bot Left/Right/Random selection and side-aware user experience, focus and action flows | Assigned after step 6 review |
 | Checkpoint B | Reconcile the four steps since checkpoint A, side behavior/contracts and remaining proof | Required after step 7 |
 | 8 | Integrated real browser/source/native bot and LAN validation; final production/tool boundary | Planned |
 | 9 | Current operator/developer/migration docs, final review and clean conventional history | Planned |

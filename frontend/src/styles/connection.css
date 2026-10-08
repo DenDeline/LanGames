@@ -29,7 +29,8 @@
 }
 .mode-panel label,
 .game-mode-field label,
-.nickname-field label {
+.nickname-field label,
+.bot-side-field label {
   display: block;
   margin-bottom: 6px;
   color: #cdd8e5;
@@ -38,8 +39,30 @@
   line-height: 1.2;
 }
 .game-mode-field,
-.nickname-field {
+.player-setup {
   margin-bottom: 12px;
+}
+.player-setup {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 126px;
+  gap: 10px;
+}
+.player-setup[data-mode="lan"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+.nickname-field,
+.bot-side-field {
+  min-width: 0;
+}
+.bot-side-field[hidden],
+.lan-side-hint[hidden] {
+  display: none;
+}
+.lan-side-hint {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
 }
 .bot-offer {
   margin: 0;

@@ -9,6 +9,7 @@ import { SoundController } from "./sound.js";
 import {
   getNickname,
   getSelectedBotId,
+  getInitialSidePreference,
   getPort,
   loadNickname,
   isSetupLocked,
@@ -242,6 +243,14 @@ async function postAction(
     const data = await readJson(response);
     if (data.role) {
       const actionSnapshot = parseSnapshot(data);
+      const successfulBotStart =
+        path === "/api/local-opponent" &&
+        actionSnapshot.connection === "connected" &&
+        actionSnapshot.opponentMode === "bot" &&
+        typeof expectedBotId === "string" &&
+        actionSnapshot.requestedBotId === expectedBotId &&
+        actionSnapshot.localNickname === body?.nickname &&
+        (expectedSide === "random" || actionSnapshot.localSide === expectedSide);
       if (
         path === "/api/quick" &&
         (actionSnapshot.connection === "searching" || actionSnapshot.opponentMode === "lan")
@@ -253,7 +262,16 @@ async function postAction(
         (path === "/api/join" && actionSnapshot.opponentMode === "lan")
       )
         clearQuickGameIntent();
-      if (requestVersion === snapshotRevision) session.apply(actionSnapshot);
+      // Captures order one server's frames. A superseded reply from another server
+      // needs fresh status, since an unseen source may belong to an older process.
+      if (
+        requestVersion === snapshotRevision ||
+        (successfulBotStart && actionSnapshot.sourceId === session.snapshot.sourceId)
+      ) {
+        session.apply(actionSnapshot);
+      } else if (successfulBotStart) {
+        await refreshStatus(AbortSignal.timeout(ACTION_STATUS_TIMEOUT_MS));
+      }
       if (rematchIntent !== null && pendingRematch === rematchIntent) {
         const acknowledgesRematch =
           actionSnapshot.connection === "connected" &&
@@ -274,36 +292,34 @@ async function postAction(
           pendingRematch = null;
         }
       }
-      const successfulMatchAction =
+      const successfulRematch =
+        path === "/api/restart" &&
         actionSnapshot.connection === "connected" &&
         actionSnapshot.localSide === expectedSide &&
-        (path === "/api/local-opponent"
-          ? typeof expectedBotId === "string" &&
-            actionSnapshot.opponentMode === "bot" &&
-            actionSnapshot.requestedBotId === expectedBotId
-          : path === "/api/restart" &&
-            actionSnapshot.matchId === body!.matchId &&
-            actionSnapshot.roundId === body!.expectedRoundId! + 1 &&
-            (expectedBotId === null || actionSnapshot.requestedBotId === expectedBotId));
+        actionSnapshot.matchId === body!.matchId &&
+        actionSnapshot.roundId === body!.expectedRoundId! + 1 &&
+        (expectedBotId === null || actionSnapshot.requestedBotId === expectedBotId);
       // A newer pre-action idle/game-over frame may precede the successful HTTP reply.
       // Reconcile briefly without overwriting newer accepted rounds or other sessions.
       if (
-        successfulMatchAction &&
+        successfulRematch &&
         requestVersion !== snapshotRevision &&
         (session.snapshot.opponentMode === "none" ||
           (session.snapshot.opponentMode === actionSnapshot.opponentMode &&
+            session.snapshot.matchId === actionSnapshot.matchId &&
             session.snapshot.requestedBotId === actionSnapshot.requestedBotId &&
             session.snapshot.roundId < actionSnapshot.roundId))
       ) {
         await refreshStatus(AbortSignal.timeout(ACTION_STATUS_TIMEOUT_MS));
       }
       if (
-        path === "/api/local-opponent" &&
-        successfulMatchAction &&
+        successfulBotStart &&
         session.snapshot.connection === "connected" &&
+        session.snapshot.sourceId === actionSnapshot.sourceId &&
         session.snapshot.matchId === actionSnapshot.matchId &&
         session.snapshot.opponentMode === actionSnapshot.opponentMode &&
         session.snapshot.requestedBotId === actionSnapshot.requestedBotId &&
+        session.snapshot.localNickname === actionSnapshot.localNickname &&
         session.snapshot.roundId === actionSnapshot.roundId &&
         session.snapshot.localSide === actionSnapshot.localSide
       ) {
@@ -519,7 +535,7 @@ export function startGame(): void {
     const nickname = getNickname();
     const botId = getSelectedBotId();
     if (nickname !== null && botId !== null)
-      postAction("/api/local-opponent", { nickname, botId, side: "left" });
+      postAction("/api/local-opponent", { nickname, botId, side: getInitialSidePreference() });
   });
   ui.botCatalog.addEventListener("change", () => {
     updateBotSelection();

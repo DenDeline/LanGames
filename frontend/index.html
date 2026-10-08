@@ -104,17 +104,30 @@
               </select>
             </div>
 
-            <div class="nickname-field">
-              <label for="player-nickname">Ваш ник</label>
-              <input
-                id="player-nickname"
-                type="text"
-                maxlength="24"
-                placeholder="Как вас назвать?"
-                autocomplete="nickname"
-                required
-              />
+            <div class="player-setup" id="player-setup">
+              <div class="nickname-field">
+                <label for="player-nickname">Ваш ник</label>
+                <input
+                  id="player-nickname"
+                  type="text"
+                  maxlength="24"
+                  placeholder="Как вас назвать?"
+                  autocomplete="nickname"
+                  required
+                />
+              </div>
+              <div class="bot-side-field" id="bot-side-field">
+                <label for="bot-side">Начальная сторона</label>
+                <select id="bot-side" aria-label="Ваша сторона в первом матче с ботом">
+                  <option value="left" selected>Слева</option>
+                  <option value="right">Справа</option>
+                  <option value="random">Случайно</option>
+                </select>
+              </div>
             </div>
+            <p class="lan-side-hint" id="lan-side-hint" hidden>
+              Стороны в первом матче выбираются случайно.
+            </p>
 
             <div class="mode-panel" id="bot-panel">
               <form class="bot-offer" id="bot-form">
@@ -269,6 +282,7 @@
                 </button>
               </div>
             </div>
+            <p class="rematch-side-hint" id="rematch-side-hint" hidden></p>
             <div class="session-actions">
               <button class="secondary-button" type="button" id="restart-button" disabled>
                 Новый матч

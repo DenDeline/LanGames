@@ -132,6 +132,16 @@
   justify-content: space-between;
   gap: 8px;
 }
+.rematch-side-hint {
+  margin: 0 0 10px;
+  color: var(--cyan);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.rematch-side-hint[hidden] {
+  display: none;
+}
 .session-actions button {
   min-width: 0;
   min-height: 44px;

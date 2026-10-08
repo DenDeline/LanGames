@@ -741,12 +741,17 @@ async function main() {
     isSetupLocked,
     setBotCatalog,
     getSelectedBotId,
+    getInitialSidePreference,
     updateBotSelection,
     ui,
   } = await import("../../.artifacts/frontend-test/view.js");
   // Preserve the static ancestors so native hidden/closed/disabled focus behavior
   // and dialog-descendant input ownership are represented in this fixture.
   ui.gameMode.tagName = "SELECT";
+  ui.botSide.tagName = "SELECT";
+  ui.botSide.value = "left";
+  ui.botSideField.append(ui.botSide);
+  ui.playerSetup.append(ui.playerNickname, ui.botSideField);
   ui.botPicker.tagName = "DIALOG";
   for (const input of [ui.playerNickname, ui.peerAddress, ui.joinPort, ui.volumeRange])
     input.tagName = "INPUT";
@@ -1624,6 +1629,25 @@ async function main() {
       assert.equal(ui.roleBadge.dataset.role, role);
       assert.equal(ui.roleBadge.dataset.side, localSide);
       assert.equal(ui.roleDetail.textContent, localSide === "left" ? "Вы — слева" : "Вы — справа");
+      assert.equal(ui.rematchSideHint.hidden, false);
+      assert.equal(
+        ui.rematchSideHint.textContent,
+        `В новом матче вы будете ${localSide === "left" ? "справа" : "слева"}.`,
+      );
+      renderView({ ...own, canRematch: false }, false, false);
+      assert.equal(
+        ui.rematchSideHint.hidden,
+        true,
+        "An unconfirmed predicted finish never promises a swap",
+      );
+      assert.equal(ui.overlayTitle.textContent, "Проверяем результат");
+      assert.equal(ui.restartButton.disabled, true);
+      assert.equal(ui.leftPlayer.textContent, localSide === "left" ? "Свой" : "Друг");
+      assert.equal(
+        ui.leftScore.textContent,
+        "7",
+        "Unconfirmed end keeps displayed finished score orientation",
+      );
     }
   }
   renderView(
@@ -1655,6 +1679,9 @@ async function main() {
   assert.match(html, /id="bot-profile-description"/);
   assert.match(html, /id="opponent-fallback"/);
   assert.match(html, /<select[^>]+id="game-mode"/);
+  assert.match(html, /<select[^>]+id="bot-side"/);
+  for (const side of ["left", "right", "random"])
+    assert.match(html, new RegExp(`<option[^>]+value="${side}"`));
   for (const mode of ["bot", "quick", "join"]) assert.match(html, new RegExp(`value="${mode}"`));
   assert.doesNotMatch(html, /id="tab-host"|id="tab-join"/);
   const pickerMarkup = html.match(/<dialog[\s\S]*?<\/dialog>/)?.[0];
@@ -1745,6 +1772,10 @@ async function main() {
   let invalidActionResponse = false;
   let holdNextCatalog = false;
   let pushNewerBotDuringStart = false;
+  let randomResolvedSide = "left";
+  let supersedingSameBotDuringStart = null;
+  let pushUnseenSourceBeforeBotReply = false;
+  let restartedBotSource = null;
   let pushIdleBeforeMatchingBotResponse = false;
   let statusAfterIdleFrame = null;
   let pushOldGameOverDuringRestart = false;
@@ -1846,8 +1877,12 @@ async function main() {
           canRematch: false,
           localNickname: "Browser Tester",
           roundId: 61,
-          localSide: "left",
+          localSide:
+            JSON.parse(options.body).side === "random"
+              ? randomResolvedSide
+              : JSON.parse(options.body).side,
           matchId: nextMatchId(),
+          sourceId: restartedBotSource ?? idleSnapshot.sourceId,
         }
       : path === "/api/restart"
         ? guestRestartPending
@@ -1892,6 +1927,22 @@ async function main() {
       )
     )
       serverSnapshot = data;
+    // Capture the HTTP admission before later server state is delivered via WS.
+    // A queued pre-admission lobby frame retains its earlier capture sequence.
+    const queuedStartLobby =
+      selected && pushIdleBeforeMatchingBotResponse && statusAfterIdleFrame === null
+        ? captureSnapshot(idleSnapshot)
+        : null;
+    const capturedBotAdmission = selected ? captureSnapshot(data) : null;
+    if (selected && pushUnseenSourceBeforeBotReply) {
+      pushUnseenSourceBeforeBotReply = false;
+      serverSnapshot = { ...idleSnapshot, sourceId: "b".repeat(32) };
+      pushSnapshot(serverSnapshot);
+    }
+    if (selected && restartedBotSource !== null) {
+      restartedBotSource = null;
+      pushSnapshot(idleSnapshot);
+    }
     if (path === "/api/quick" && pushIdleDuringQuick) {
       pushIdleDuringQuick = false;
       pushSnapshot(idleSnapshot);
@@ -1943,7 +1994,7 @@ async function main() {
           tick: 5,
         };
       statusAfterIdleFrame = null;
-      pushSnapshot(idleSnapshot);
+      pushSnapshot(queuedStartLobby ?? serverSnapshot, queuedStartLobby !== null);
     }
     if (selected && supersedingBotDuringStart !== null) {
       const newer = browserCatalog.bots.find((bot) => bot.id === supersedingBotDuringStart);
@@ -1957,10 +2008,28 @@ async function main() {
       };
       pushSnapshot(serverSnapshot);
     }
+    if (selected && supersedingSameBotDuringStart !== null) {
+      const superseding = supersedingSameBotDuringStart;
+      supersedingSameBotDuringStart = null;
+      serverSnapshot = {
+        ...data,
+        matchId: superseding === "new-source" ? data.matchId : nextMatchId(),
+        roundId:
+          data.roundId +
+          (superseding === "lower-round" ? -1 : superseding === "higher-round" ? 1 : 0),
+        sourceId: superseding === "new-source" ? "f".repeat(32) : data.sourceId,
+        phase: "playing",
+        canRematch: false,
+        tick: 5,
+      };
+      pushSnapshot(serverSnapshot);
+    }
     return {
       ok: true,
       text: async () =>
-        JSON.stringify(captureSnapshot(path === "/api/status" ? serverSnapshot : data)),
+        JSON.stringify(
+          capturedBotAdmission ?? captureSnapshot(path === "/api/status" ? serverSnapshot : data),
+        ),
     };
   };
   const { encode, decode } = await import("@msgpack/msgpack");
@@ -2022,6 +2091,7 @@ async function main() {
   renderView(idleSnapshot, false, false);
   setGameMode("bot");
   ui.playerNickname.value = "Browser Tester";
+  holdNextStatus = true;
   startGame();
   await flush();
   const browserSocket = WebSocket.instances.at(-1);
@@ -2040,6 +2110,56 @@ async function main() {
     ui.gameMode.dispatch("change");
   };
 
+  // Catalog can load before the first status/WS baseline. The old source has never
+  // been accepted or retired when a new server's first frame wins this Play race.
+  const beforeUnknownSourceFocus = ui.arenaPanel.focusCalls.length;
+  const beforeUnknownSourceScroll = scrollCalls.length;
+  const beforeUnknownSourceStatus = statusRequests();
+  pushUnseenSourceBeforeBotReply = true;
+  submitBot();
+  await flush();
+  assert.equal(
+    statusRequests(),
+    beforeUnknownSourceStatus + 1,
+    "An unknown superseded source requires one fresh status confirmation",
+  );
+  assert.ok(
+    requests.filter((request) => request.path === "/api/status").at(-1).options.signal instanceof
+      AbortSignal,
+  );
+  assert.equal(
+    ui.arenaModeLabel.textContent,
+    "Выберите режим",
+    "A never-accepted old source cannot replace the new idle baseline",
+  );
+  assert.equal(ui.arenaPanel.focusCalls.length, beforeUnknownSourceFocus);
+  assert.equal(scrollCalls.length, beforeUnknownSourceScroll);
+  assert.equal(serverSnapshot.sourceId, "b".repeat(32));
+  serverSnapshot = {
+    ...serverSnapshot,
+    opponentMode: "lan",
+    role: "host",
+    connection: "waiting",
+    udpPort: 49123,
+    localAddresses: ["127.0.0.1"],
+  };
+  pushSnapshot(serverSnapshot);
+  assert.equal(
+    ui.shareBox.hidden,
+    false,
+    "Future frames from the accepted new source are still accepted",
+  );
+  releaseStatus();
+  await flush();
+  assert.equal(
+    ui.shareBox.hidden,
+    false,
+    "The original held status reply cannot retire the new source either",
+  );
+  idleSnapshot.sourceId = serverSnapshot.sourceId;
+  serverSnapshot = idleSnapshot;
+  pushSnapshot(serverSnapshot);
+
   // Setup choices only reveal controls; they retain shared fields and eligible
   // bot identity without starting or cancelling a session.
   const beforeModeChanges = requests.length;
@@ -2053,6 +2173,9 @@ async function main() {
     assert.equal(ui.botPanel.hidden, mode !== "bot");
     assert.equal(ui.quickPanel.hidden, mode !== "quick");
     assert.equal(ui.joinPanel.hidden, mode !== "join");
+    assert.equal(ui.botSideField.hidden, mode !== "bot");
+    assert.equal(ui.lanSideHint.hidden, mode === "bot");
+    assert.equal(ui.botSide.value, "left");
     assert.equal(ui.playerNickname.value, "Browser Tester");
     assert.equal(ui.peerAddress.value, "friend.local");
     assert.equal(ui.joinPort.value, "49123");
@@ -2182,6 +2305,11 @@ async function main() {
     assert.equal(isSetupLocked(), true);
     assert.equal(ui.gameMode.disabled, true);
     assert.equal(ui.botPickerOpen.disabled, true);
+    assert.equal(
+      ui.botSide.disabled,
+      true,
+      "Search, challenges and active matches lock side choice",
+    );
     const displayedMode = snapshot.role === "guest" ? "join" : "quick";
     assert.equal(
       ui.gameMode.value,
@@ -2367,13 +2495,8 @@ async function main() {
   await flush();
   assert.equal(
     statusRequests(),
-    beforeFirstPlayStatus + 1,
-    "A superseded successful Play response reconciles current status once before revealing",
-  );
-  assert.ok(
-    requests.filter((request) => request.path === "/api/status").at(-1).options.signal instanceof
-      AbortSignal,
-    "The reconciliation status request carries a bounded abort signal",
+    beforeFirstPlayStatus,
+    "Capture ordering accepts admission after an older queued lobby without another status request",
   );
   assert.equal(
     ui.rightPlayer.textContent,
@@ -2779,11 +2902,12 @@ async function main() {
     pushIdleBeforeMatchingBotResponse = true;
     statusAfterIdleFrame = scenario;
     submitBot();
+    assert.equal(ui.botSide.disabled, true, "An in-flight Play locks the initial side choice");
     await flush();
     assert.equal(
       statusRequests(),
-      beforeStatus + 1,
-      "Superseded Play uses one bounded current-status check",
+      beforeStatus,
+      "A newer authoritative context fences the old admission without a recovery status request",
     );
     assert.equal(
       scrollCalls.length,
@@ -3311,6 +3435,209 @@ async function main() {
     ui.leaveButton.dispatch("click");
     await flush();
   }
+
+  // Capture ordering fences even queued null or previously unseen contexts after HTTP admission.
+  // Initial preference remains independent from the resolved physical side and rematch swaps.
+  assert.equal(getInitialSidePreference(), "left");
+  for (const [preference, resolvedSide] of [
+    ["left", "left"],
+    ["right", "right"],
+    ["random", "left"],
+    ["random", "right"],
+  ]) {
+    selectMode("bot");
+    selectBot("calm");
+    ui.botSide.value = preference;
+    ui.botSide.focus();
+    const beforeNativeKeyControls = browserSocket.sent.length;
+    for (const key of ["ArrowUp", "ArrowDown", "w", "s"]) {
+      assert.equal(
+        window.dispatch("keydown", { key, target: ui.botSide }).defaultPrevented,
+        undefined,
+        "The native side select retains keyboard handling",
+      );
+    }
+    assert.equal(browserSocket.sent.length, beforeNativeKeyControls);
+    randomResolvedSide = resolvedSide;
+    pushNewerBotDuringStart = true;
+    const beforePlayFocus = ui.arenaPanel.focusCalls.length;
+    const beforePlayScroll = scrollCalls.length;
+    window.dispatch("keyup", { key: "ArrowDown" });
+    window.dispatch("keydown", { key: "ArrowDown", target: ui.arenaPanel });
+    submitBot();
+    await flush();
+    assert.equal(
+      JSON.parse(requests.filter((r) => r.path === "/api/local-opponent").at(-1).options.body).side,
+      preference,
+    );
+    assert.equal(serverSnapshot.localSide, resolvedSide);
+    assert.equal(
+      ui.botSide.value,
+      preference,
+      "Accepted ownership never overwrites the next initial preference",
+    );
+    assert.equal(ui.botSide.disabled, true);
+    assert.equal(
+      ui.arenaPanel.focusCalls.length,
+      beforePlayFocus + 1,
+      "A matching admission ACK focuses either resolved Random side after an earlier WS frame",
+    );
+    assert.equal(scrollCalls.length, beforePlayScroll + 1);
+    assert.equal(lastSentAxis(), 0, "Admission clears the previously held input");
+    assert.equal(ui.roleDetail.textContent, resolvedSide === "left" ? "Вы — слева" : "Вы — справа");
+    assert.equal(
+      resolvedSide === "left" ? ui.leftPlayer.textContent : ui.rightPlayer.textContent,
+      "Browser Tester",
+    );
+    assert.equal(
+      ui.rematchSideHint.hidden,
+      true,
+      "An active round does not promise a rematch swap",
+    );
+    selectMode("join");
+    assert.equal(ui.gameMode.value, "bot", "An active match locks the selected mode");
+
+    for (let rematch = 0; rematch < (preference === "right" ? 1 : 2); rematch++) {
+      serverSnapshot = {
+        ...serverSnapshot,
+        phase: "gameover",
+        canRematch: true,
+        leftScore: 7,
+        rightScore: 2,
+        tick: 200,
+      };
+      pushSnapshot(serverSnapshot);
+      const previous = { ...serverSnapshot };
+      const nextSide = previous.localSide === "left" ? "right" : "left";
+      assert.equal(ui.rematchSideHint.hidden, false);
+      assert.equal(
+        ui.rematchSideHint.textContent,
+        `В новом матче вы будете ${nextSide === "left" ? "слева" : "справа"}.`,
+      );
+      const finishedNames = [ui.leftPlayer.textContent, ui.rightPlayer.textContent];
+      window.dispatch("keyup", { key: "ArrowDown" });
+      window.dispatch("keydown", { key: "ArrowDown", target: ui.arenaPanel });
+      assert.equal(lastSentAxis(), 1);
+      holdNextAction = true;
+      const beforeSwapFocus = ui.arenaPanel.focusCalls.length;
+      ui.restartButton.dispatch("click");
+      await flush();
+      assert.equal(ui.botSide.disabled, true, "A pending rematch keeps preference locked");
+      assert.deepEqual([ui.leftPlayer.textContent, ui.rightPlayer.textContent], finishedNames);
+      assert.equal(
+        ui.leftScore.textContent,
+        "7",
+        "Finished scores preserve their old physical orientation while busy",
+      );
+      assert.equal(ui.rightScore.textContent, "2");
+      assert.equal(ui.arenaPanel.focusCalls.length, beforeSwapFocus);
+      releaseAction();
+      await flush();
+      assert.equal(serverSnapshot.localSide, nextSide);
+      assert.equal(serverSnapshot.roundId, previous.roundId + 1);
+      assert.equal(serverSnapshot.matchId, previous.matchId);
+      assert.deepEqual(
+        JSON.parse(requests.filter((r) => r.path === "/api/restart").at(-1).options.body),
+        { matchId: previous.matchId, expectedRoundId: previous.roundId },
+      );
+      assert.equal(
+        ui.botSide.value,
+        preference,
+        "Rematch never replaces the remembered initial preference",
+      );
+      assert.equal(ui.rematchSideHint.hidden, true);
+      assert.equal(ui.arenaPanel.focusCalls.length, beforeSwapFocus + 1);
+      assert.deepEqual(lastSentControl(), [9, previous.matchId, previous.roundId + 1, 0]);
+      window.dispatch("keydown", { key: "ArrowDown", repeat: true, target: ui.arenaPanel });
+      assert.equal(lastSentAxis(), 0, "Old held repeats cannot move the swapped paddle");
+      window.dispatch("keyup", { key: "ArrowDown" });
+      window.dispatch("keydown", { key: "ArrowDown", repeat: false, target: ui.arenaPanel });
+      assert.equal(lastSentAxis(), 1, "A released fresh key controls the new side");
+      window.dispatch("keyup", { key: "ArrowDown" });
+    }
+    ui.leaveButton.dispatch("click");
+    await flush();
+    assert.equal(ui.botSide.disabled, false);
+    assert.equal(
+      ui.botSide.value,
+      preference,
+      "Leaving after a swap retains the next initial preference",
+    );
+    for (const mode of ["quick", "join", "bot"]) {
+      selectMode(mode);
+      assert.equal(ui.botSide.value, preference);
+      assert.equal(ui.botSideField.hidden, mode !== "bot");
+      assert.equal(ui.lanSideHint.hidden, mode === "bot");
+    }
+    submitBot();
+    await flush();
+    assert.equal(
+      JSON.parse(requests.filter((r) => r.path === "/api/local-opponent").at(-1).options.body).side,
+      preference,
+    );
+    assert.equal(
+      serverSnapshot.localSide,
+      resolvedSide,
+      "The next initial match resolves the retained preference afresh",
+    );
+    ui.leaveButton.dispatch("click");
+    await flush();
+  }
+
+  // A same-bot reply must never reveal another match or a newer server's baseline.
+  for (const superseding of ["lower-round", "same-round", "higher-round", "new-source"]) {
+    selectMode("bot");
+    selectBot("calm");
+    ui.botSide.value = "random";
+    const beforePlayFocus = ui.arenaPanel.focusCalls.length;
+    const beforePlayScroll = scrollCalls.length;
+    const beforePlayStatus = statusRequests();
+    supersedingSameBotDuringStart = superseding;
+    submitBot();
+    await flush();
+    assert.equal(
+      ui.arenaPanel.focusCalls.length,
+      beforePlayFocus,
+      `An older admission cannot reveal ${superseding} for the same bot`,
+    );
+    assert.equal(scrollCalls.length, beforePlayScroll);
+    assert.equal(
+      statusRequests(),
+      beforePlayStatus + (superseding === "new-source" ? 1 : 0),
+      "Only a source change requests confirmation; unrelated round IDs never trigger recovery",
+    );
+    assert.equal(
+      ui.roleDetail.textContent,
+      serverSnapshot.localSide === "left" ? "Вы — слева" : "Вы — справа",
+    );
+    if (superseding === "new-source") idleSnapshot.sourceId = serverSnapshot.sourceId;
+    ui.leaveButton.dispatch("click");
+    await flush();
+  }
+  ui.botSide.value = "left";
+
+  // Fresh status can confirm a legitimate restarted server's admission after a
+  // queued frame from the previously accepted source supersedes the request.
+  const beforeRestartedPlayFocus = ui.arenaPanel.focusCalls.length;
+  const beforeRestartedPlayScroll = scrollCalls.length;
+  const beforeRestartedPlayStatus = statusRequests();
+  restartedBotSource = "c".repeat(32);
+  submitBot();
+  await flush();
+  assert.equal(statusRequests(), beforeRestartedPlayStatus + 1);
+  assert.equal(serverSnapshot.sourceId, "c".repeat(32));
+  assert.equal(
+    ui.arenaPanel.focusCalls.length,
+    beforeRestartedPlayFocus + 1,
+    "Fresh status confirms the exact restarted admission before focus",
+  );
+  assert.equal(scrollCalls.length, beforeRestartedPlayScroll + 1);
+  assert.equal(ui.leftPlayer.textContent, "Browser Tester");
+  pushSnapshot({ ...serverSnapshot, phase: "playing", tick: 5 });
+  assert.equal(ui.overlay.hidden, true, "The restarted source remains accepted after focus");
+  idleSnapshot.sourceId = serverSnapshot.sourceId;
+  ui.leaveButton.dispatch("click");
+  await flush();
 
   // Capture ordering fences even queued null or previously unseen contexts after HTTP admission.
   selectMode("bot");
