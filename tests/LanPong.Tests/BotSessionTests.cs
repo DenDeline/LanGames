@@ -222,33 +222,34 @@ public sealed class BotSessionTests
     [Test]
     public async Task FallbackWarmup_KeepsSnapshotResponsiveAndSessionIdleUntilAllBackupsPrepared()
     {
-        using var preparingFallback = new ManualResetEventSlim();
-        using var release = new ManualResetEventSlim();
+        var preparingFallback = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var selected = new TrackedBotController { FailAxis = _ => true };
         var fallback = new TrackedBotController
         {
             OnReset = count =>
             {
                 if (count != 1) return;
-                preparingFallback.Set();
-                if (!release.Wait(TimeSpan.FromSeconds(5)))
+                preparingFallback.TrySetResult();
+                if (!release.Task.Wait(BarrierReleaseTimeout))
                     throw new TimeoutException("Fallback preparation barrier timed out.");
             }
         };
         var models = OnnxFactory(entry => entry.Id == "selected" ? selected : fallback);
-        await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
+        var peer = new PongPeer(NullLogger<PongPeer>.Instance,
             BotTestSupport.Runtime([
                 BotTestSupport.Onnx("selected", "model-rescue"), BotTestSupport.Onnx("model-rescue")
             ], models));
         var idle = peer.Snapshot();
         Task? preparation = null;
+        Task<PongSnapshot>? snapshotProbe = null;
+        Exception? primaryFailure = null;
         try
         {
-            preparation = Task.Run(() => peer.StartBotAsync("Selected player", "selected", InitialSidePreference.Left));
-            await Task.Run(() => preparingFallback.Wait(TimeSpan.FromSeconds(3)))
-                .WaitAsync(TimeSpan.FromSeconds(4));
-            await Assert.That(preparingFallback.IsSet).IsTrue();
-            var snapshot = await Task.Run(peer.Snapshot).WaitAsync(TimeSpan.FromSeconds(1));
+            preparation = peer.StartBotAsync("Selected player", "selected", InitialSidePreference.Left);
+            await preparingFallback.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            snapshotProbe = SnapshotOnDedicatedThread(peer);
+            var snapshot = await snapshotProbe.WaitAsync(TimeSpan.FromSeconds(1));
             await Assert.That(snapshot.LocalNickname).IsEqualTo(idle.LocalNickname);
             await Assert.That(peer.BotStatus).IsNull();
             await Assert.That(snapshot.Role).IsEqualTo(PeerRole.None);
@@ -256,7 +257,7 @@ public sealed class BotSessionTests
             await Assert.That(snapshot.Phase).IsEqualTo(GamePhase.Waiting);
             await Assert.That(snapshot.Tick).IsEqualTo(0);
             await Assert.That(selected.DisposeCount).IsEqualTo(0);
-            release.Set();
+            release.TrySetResult();
             await preparation.WaitAsync(TimeSpan.FromSeconds(3));
             await BotTestSupport.WaitForAsync(peer, _ => peer.BotStatus?.EffectiveBotId == "model-rescue" &&
                 selected.DisposeCount == 1);
@@ -265,11 +266,12 @@ public sealed class BotSessionTests
             await Assert.That(models.Definitions.Count).IsEqualTo(2);
             await Assert.That(fallback.ResetCount).IsEqualTo(1);
         }
-        finally
+        catch (Exception error)
         {
-            release.Set();
-            if (preparation is not null) await preparation;
+            primaryFailure = error;
+            throw;
         }
+        finally { await ReleaseAndObserveAsync(release, peer, primaryFailure, preparation, snapshotProbe); }
     }
 
     [Test]
@@ -351,65 +353,72 @@ public sealed class BotSessionTests
     [Test]
     public async Task FailedControllerDisposal_RunsOutsideStateLockAndCannotFaultSharedClock()
     {
-        using var disposing = new ManualResetEventSlim();
-        using var release = new ManualResetEventSlim();
+        var disposing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var primary = new TrackedBotController
         {
             FailAxis = _ => true,
             OnDispose = () =>
             {
-                disposing.Set();
-                if (!release.Wait(TimeSpan.FromSeconds(5))) throw new TimeoutException("Disposal barrier timed out.");
+                disposing.TrySetResult();
+                if (!release.Task.Wait(BarrierReleaseTimeout)) throw new TimeoutException("Disposal barrier timed out.");
                 throw new InvalidOperationException("Synthetic disposal failure.");
             }
         };
         var fallback = new TrackedBotController();
-        await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
+        var peer = new PongPeer(NullLogger<PongPeer>.Instance,
             BotTestSupport.Runtime([
                 BotTestSupport.Tracker("primary", fallback: "rescue"), BotTestSupport.Tracker("rescue")
             ], TrackerFactory(entry => entry.Id == "primary" ? primary : fallback)));
+        Task<PongSnapshot>? snapshotProbe = null;
+        Exception? primaryFailure = null;
         try
         {
             await peer.StartBotAsync("Player", "primary", InitialSidePreference.Left);
-            await Task.Run(() => disposing.Wait(TimeSpan.FromSeconds(3))).WaitAsync(TimeSpan.FromSeconds(4));
-            await Assert.That(disposing.IsSet).IsTrue();
-            var snapshot = await Task.Run(peer.Snapshot).WaitAsync(TimeSpan.FromSeconds(1));
+            await disposing.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            snapshotProbe = SnapshotOnDedicatedThread(peer);
+            var snapshot = await snapshotProbe.WaitAsync(TimeSpan.FromSeconds(1));
             await Assert.That(snapshot.Connection).IsEqualTo(ConnectionState.Connected);
             await Assert.That(peer.BotStatus!.EffectiveBotId).IsEqualTo("rescue");
-            release.Set();
+            release.TrySetResult();
             await BotTestSupport.WaitForAsync(peer, current => current.Tick > snapshot.Tick);
             await peer.LeaveAsync();
             await Assert.That(primary.DisposeCount).IsEqualTo(1);
             await Assert.That(fallback.DisposeCount).IsEqualTo(1);
         }
-        finally { release.Set(); }
+        catch (Exception error)
+        {
+            primaryFailure = error;
+            throw;
+        }
+        finally { await ReleaseAndObserveAsync(release, peer, primaryFailure, snapshotProbe); }
     }
 
     [Test]
     public async Task ConcurrentStarts_AdmitOnlyFirstPreparedControllerAndRejectQueuedStart()
     {
-        using var preparing = new ManualResetEventSlim();
-        using var release = new ManualResetEventSlim();
+        var preparing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var candidate = new TrackedBotController();
         var factory = TrackerFactory(_ =>
         {
-            preparing.Set();
-            if (!release.Wait(TimeSpan.FromSeconds(5)))
+            preparing.TrySetResult();
+            if (!release.Task.Wait(BarrierReleaseTimeout))
                 throw new TimeoutException("Concurrent preparation barrier timed out.");
             return candidate;
         });
-        await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
+        var peer = new PongPeer(NullLogger<PongPeer>.Instance,
             BotTestSupport.Runtime([BotTestSupport.Tracker()], factory));
         Task? first = null;
         Task<Exception?>? second = null;
+        Exception? primaryFailure = null;
         try
         {
-            first = Task.Run(() => peer.StartBotAsync("First player", "tracker", InitialSidePreference.Left));
-            await Task.Run(() => preparing.Wait(TimeSpan.FromSeconds(3))).WaitAsync(TimeSpan.FromSeconds(4));
-            await Assert.That(preparing.IsSet).IsTrue();
+            first = peer.StartBotAsync("First player", "tracker", InitialSidePreference.Left);
+            await preparing.Task.WaitAsync(TimeSpan.FromSeconds(3));
             second = BotTestSupport.CaptureAsync(() => peer.StartBotAsync("Second player", "tracker", InitialSidePreference.Left));
             await Assert.That(second.IsCompleted).IsFalse();
-            release.Set();
+            release.TrySetResult();
 
             await first.WaitAsync(TimeSpan.FromSeconds(3));
             var rejected = await second.WaitAsync(TimeSpan.FromSeconds(3));
@@ -422,40 +431,42 @@ public sealed class BotSessionTests
             await peer.LeaveAsync();
             await Assert.That(candidate.DisposeCount).IsEqualTo(1);
         }
-        finally
+        catch (Exception error)
         {
-            release.Set();
-            if (first is not null) await first;
-            if (second is not null) await second;
+            primaryFailure = error;
+            throw;
         }
+        finally { await ReleaseAndObserveAsync(release, peer, primaryFailure, first, second); }
     }
 
     [Test]
     public async Task ShutdownDuringPreparation_RejectsAndDisposesCandidateWithoutHoldingStateLock()
     {
-        using var preparing = new ManualResetEventSlim();
-        using var release = new ManualResetEventSlim();
+        var preparing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var candidate = new TrackedBotController();
         var factory = TrackerFactory(_ =>
         {
-            preparing.Set();
-            if (!release.Wait(TimeSpan.FromSeconds(5))) throw new TimeoutException("Preparation barrier timed out.");
+            preparing.TrySetResult();
+            if (!release.Task.Wait(BarrierReleaseTimeout)) throw new TimeoutException("Preparation barrier timed out.");
             return candidate;
         });
-        await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
+        var peer = new PongPeer(NullLogger<PongPeer>.Instance,
             BotTestSupport.Runtime([BotTestSupport.Tracker()], factory));
         Task<Exception?>? start = null;
         Task? stop = null;
+        Task<PongSnapshot>? snapshotProbe = null;
+        Exception? primaryFailure = null;
         try
         {
-            start = Task.Run(() => BotTestSupport.CaptureAsync(() => peer.StartBotAsync("Player", "tracker", InitialSidePreference.Left)));
-            await Task.Run(() => preparing.Wait(TimeSpan.FromSeconds(3))).WaitAsync(TimeSpan.FromSeconds(4));
-            await Assert.That(preparing.IsSet).IsTrue();
-            var snapshot = await Task.Run(peer.Snapshot).WaitAsync(TimeSpan.FromSeconds(1));
+            start = BotTestSupport.CaptureAsync(() => peer.StartBotAsync("Player", "tracker", InitialSidePreference.Left));
+            await preparing.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            snapshotProbe = SnapshotOnDedicatedThread(peer);
+            var snapshot = await snapshotProbe.WaitAsync(TimeSpan.FromSeconds(1));
             await Assert.That(snapshot.Connection).IsEqualTo(ConnectionState.Idle);
             stop = peer.StopAsync(CancellationToken.None);
             await Assert.That(stop.IsCompleted).IsFalse();
-            release.Set();
+            release.TrySetResult();
 
             var error = await start.WaitAsync(TimeSpan.FromSeconds(3));
             await Assert.That(error is InvalidOperationException).IsTrue();
@@ -465,11 +476,63 @@ public sealed class BotSessionTests
             await Assert.That(peer.BotStatus).IsNull();
             await Assert.That(peer.Snapshot().Connection).IsEqualTo(ConnectionState.Idle);
         }
-        finally
+        catch (Exception error)
         {
-            release.Set();
-            if (start is not null) await start;
-            if (stop is not null) await stop;
+            primaryFailure = error;
+            throw;
+        }
+        finally { await ReleaseAndObserveAsync(release, peer, primaryFailure, start, stop, snapshotProbe); }
+    }
+
+    // Task.Wait keeps the callback synchronous while notifying the pool about this intentional hold.
+    // Keep it held beyond the entry/probe/assertion budgets; entry still has a three-second deadline.
+    private static readonly TimeSpan BarrierReleaseTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan BarrierCleanupTimeout = TimeSpan.FromSeconds(10);
+
+    private static Task<PongSnapshot> SnapshotOnDedicatedThread(PongPeer peer) =>
+        Task.Factory.StartNew(peer.Snapshot, CancellationToken.None, TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
+
+    private static async Task ReleaseAndObserveAsync(TaskCompletionSource release, PongPeer peer,
+        Exception? primaryFailure, params Task?[] operations)
+    {
+        release.TrySetResult();
+        using var cleanupTimeout = new CancellationTokenSource(BarrierCleanupTimeout);
+        List<Exception> cleanupFailures = [];
+        for (var index = 0; index < operations.Length; index++)
+        {
+            var operation = operations[index];
+            if (operation is null) continue;
+            await ObserveWithinBudgetAsync(operation, $"barrier operation {index + 1}");
+        }
+        // DisposeAsync enters StopAsync's state lock synchronously, so start even that entry off the observer.
+        // Completion also observes the shared clock's deliberately blocked disposal callback.
+        try
+        {
+            var disposal = Task.Factory.StartNew(() => peer.DisposeAsync().AsTask(), CancellationToken.None,
+                TaskCreationOptions.LongRunning, TaskScheduler.Default).Unwrap();
+            await ObserveWithinBudgetAsync(disposal, "peer disposal");
+        }
+        catch (Exception error) { cleanupFailures.Add(error); }
+        if (cleanupFailures.Count == 0) return;
+        var cleanupFailure = new AggregateException("Bot barrier test cleanup failed.", cleanupFailures);
+        if (primaryFailure is not null) primaryFailure.Data["BarrierCleanupFailure"] = cleanupFailure;
+        else throw cleanupFailure;
+
+        async Task ObserveWithinBudgetAsync(Task operation, string description)
+        {
+            try { await operation.WaitAsync(cleanupTimeout.Token); }
+            catch (OperationCanceledException error) when (cleanupTimeout.IsCancellationRequested)
+            {
+                // Retain fault observation even if cleanup's shared budget expires before the operation.
+                _ = operation.ContinueWith(static completed => { _ = completed.Exception; },
+                    CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+                var timeout = new TimeoutException($"Cleanup timed out observing {description}.", error);
+                timeout.Data["UnfinishedOperation"] = operation;
+                cleanupFailures.Add(timeout);
+            }
+            catch (Exception error) { cleanupFailures.Add(error); }
         }
     }
 
