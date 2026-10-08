@@ -79,13 +79,13 @@ internal sealed partial class PongPeer
         ref ClockActions actions)
     {
         var bot = _botSession!;
-        var leftAxis = _controllers.GetAxis(now);
+        var localAxis = _controllers.GetAxis(now);
         accumulatedTime = Math.Min(accumulatedTime + elapsed,
             GameConstants.FixedStepSeconds * NetworkConstants.MaximumSimulationCatchUpSteps);
         for (var step = 0; step < NetworkConstants.MaximumSimulationCatchUpSteps &&
                            accumulatedTime >= GameConstants.FixedStepSeconds; step++)
         {
-            var rightAxis = Math.Clamp(bot.GetAxis(_game.Capture()), -1, 1);
+            var botAxis = Math.Clamp(bot.GetAxis(_game.Capture(), PaddleSide.Right), -1, 1);
             UpdateBotIdentityLocked();
             if (!bot.IsPlayable)
             {
@@ -97,7 +97,7 @@ internal sealed partial class PongPeer
                 accumulatedTime = 0;
                 return;
             }
-            _game.Advance(GameConstants.FixedStepSeconds, leftAxis, rightAxis);
+            _game.AdvanceForSide(GameConstants.FixedStepSeconds, PaddleSide.Left, localAxis, botAxis);
             accumulatedTime -= GameConstants.FixedStepSeconds;
         }
         actions.BotControllersToDispose = bot.TakeRetiredControllers();

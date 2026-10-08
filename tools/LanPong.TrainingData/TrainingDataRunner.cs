@@ -652,8 +652,8 @@ internal static class TrainingDataRunner
             else
             {
                 leftAxis = teacherRight
-                    ? simple.GetAxis(MirrorHorizontally(state))
-                    : teacher.GetAxis(MirrorHorizontally(state));
+                    ? simple.GetAxis(BotPolicyView.ForSide(state, PaddleSide.Left))
+                    : teacher.GetAxis(BotPolicyView.ForSide(state, PaddleSide.Left));
                 rightAxis = teacherRight ? teacher.GetAxis(state) : simple.GetAxis(state);
             }
             game.Advance(FixedStepSeconds, leftAxis, rightAxis);
@@ -699,8 +699,8 @@ internal static class TrainingDataRunner
                 // target. This supplies fresh legal starting positions after
                 // the fixed production-engine serve without altering its ball
                 // state. Run each policy's countdown branch to clear held input.
-                _ = student.GetAxis(studentRight ? state : MirrorHorizontally(state));
-                _ = simple.GetAxis(studentRight ? MirrorHorizontally(state) : state);
+                _ = student.GetAxis(studentRight ? state : BotPolicyView.ForSide(state, PaddleSide.Left));
+                _ = simple.GetAxis(studentRight ? BotPolicyView.ForSide(state, PaddleSide.Left) : state);
                 var target = DirectModelPointTarget(seed,
                     state.LeftScore + state.RightScore);
                 leftAxis = AxisToward(state.LeftY, target);
@@ -709,8 +709,8 @@ internal static class TrainingDataRunner
             else
             {
                 leftAxis = studentRight
-                    ? simple.GetAxis(MirrorHorizontally(state))
-                    : student.GetAxis(MirrorHorizontally(state));
+                    ? simple.GetAxis(BotPolicyView.ForSide(state, PaddleSide.Left))
+                    : student.GetAxis(BotPolicyView.ForSide(state, PaddleSide.Left));
                 rightAxis = studentRight ? student.GetAxis(state) : simple.GetAxis(state);
             }
             if (leftAxis is < -1 or > 1 || rightAxis is < -1 or > 1)
@@ -768,17 +768,6 @@ internal static class TrainingDataRunner
         var opening = new StableRandom(StableRandom.DeriveSeed(seed, 20, block));
         return (int)(opening.NextUInt64() % 3) - 1;
     }
-
-    private static GameState MirrorHorizontally(GameState state) => state with
-    {
-        LeftY = state.RightY,
-        RightY = state.LeftY,
-        BallX = 1 - state.BallX,
-        BallVx = -state.BallVx,
-        LeftScore = state.RightScore,
-        RightScore = state.LeftScore,
-        ServeDirection = -state.ServeDirection
-    };
 
     private static void ValidateCount(int value, string name)
     {

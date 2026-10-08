@@ -231,7 +231,7 @@ internal static class ConfiguredBotDiagnostics
         for (var index = start; index < start + count; index++)
         {
             var state = states[index];
-            var axis = floor ? TimestampFloorAxis(state) : session.GetAxis(state);
+            var axis = floor ? TimestampFloorAxis(state) : session.GetAxis(state, PaddleSide.Right);
             RequireHealthy(session, expected, axis);
             checksum = Mix(checksum, state.TickNumber, axis);
         }
@@ -249,7 +249,7 @@ internal static class ConfiguredBotDiagnostics
         {
             var state = states[start + index];
             var began = Stopwatch.GetTimestamp();
-            var axis = floor ? TimestampFloorAxis(state) : session.GetAxis(state);
+            var axis = floor ? TimestampFloorAxis(state) : session.GetAxis(state, PaddleSide.Right);
             samples[index] = Stopwatch.GetTimestamp() - began;
             RequireHealthy(session, expected, axis);
             checksum = Mix(checksum, state.TickNumber, axis);

@@ -11,12 +11,17 @@ internal sealed class GuestPredictionTimeline(GameEngine game)
     private const int InputHistoryTicks = 120;
     private readonly Dictionary<long, int> _localAxes = [];
     private int _hostAxis;
+    private PaddleSide _hostSide;
+    private bool _initialized;
 
     public bool Started { get; private set; }
     public bool HasCurrentInput => _localAxes.ContainsKey(game.TickNumber);
 
-    public void Reset()
+    public void Reset(PaddleSide hostSide)
     {
+        PaddleSides.Validate(hostSide);
+        _hostSide = hostSide;
+        _initialized = true;
         Started = false;
         _localAxes.Clear();
         _hostAxis = 0;
@@ -24,15 +29,17 @@ internal sealed class GuestPredictionTimeline(GameEngine game)
 
     public void Advance(int localAxis)
     {
+        EnsureInitialized();
         if (!Started) return;
         var tick = game.TickNumber + 1;
         _localAxes[tick] = localAxis;
-        game.Advance(GameConstants.FixedStepSeconds, _hostAxis, localAxis);
+        game.AdvanceForSide(GameConstants.FixedStepSeconds, _hostSide, _hostAxis, localAxis);
         _localAxes.Remove(tick - InputHistoryTicks - 1);
     }
 
     public void Reconcile(GameState authoritative, int hostAxis, double? pingMs, int localAxis)
     {
+        EnsureInitialized();
         var sameRound = Started && authoritative.RoundId == game.RoundId;
         var presentTick = sameRound ? game.TickNumber : authoritative.TickNumber;
         if (!sameRound || presentTick - authoritative.TickNumber > InputHistoryTicks)
@@ -62,7 +69,7 @@ internal sealed class GuestPredictionTimeline(GameEngine game)
         {
             if (!_localAxes.TryGetValue(tick, out var axis))
                 _localAxes[tick] = axis = localAxis;
-            game.Advance(GameConstants.FixedStepSeconds, _hostAxis, axis);
+            game.AdvanceForSide(GameConstants.FixedStepSeconds, _hostSide, _hostAxis, axis);
         }
         foreach (var old in _localAxes.Keys.Where(key => key < targetTick - InputHistoryTicks).ToArray())
             _localAxes.Remove(old);
@@ -70,6 +77,7 @@ internal sealed class GuestPredictionTimeline(GameEngine game)
 
     public InputPacket CreateInputPacket(Guid sessionId, long sequence)
     {
+        EnsureInitialized();
         var tick = game.TickNumber;
         var axes = new List<int>(NetworkConstants.InputRedundancyTicks);
         for (var i = 0; i < NetworkConstants.InputRedundancyTicks && tick - i > 0; i++)
@@ -87,5 +95,10 @@ internal sealed class GuestPredictionTimeline(GameEngine game)
             RoundId = game.RoundId,
             Axes = [.. axes]
         };
+    }
+
+    private void EnsureInitialized()
+    {
+        if (!_initialized) throw new InvalidOperationException("Reset the guest timeline with the resolved host paddle side first.");
     }
 }

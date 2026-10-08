@@ -101,6 +101,13 @@ internal sealed class GameEngine
         _phase = GamePhase.Countdown;
     }
 
+    /// <summary>Route player-relative inputs into the canonical physical simulation.</summary>
+    public void AdvanceForSide(double dt, PaddleSide localSide, int localAxis, int oppositeAxis)
+    {
+        var axes = PaddleSides.RouteAxes(localSide, localAxis, oppositeAxis);
+        Advance(dt, axes.LeftAxis, axes.RightAxis);
+    }
+
     public void Advance(double dt, int leftAxis, int rightAxis)
     {
         if (!double.IsFinite(dt) || dt < 0 || dt > MaximumAdvanceSeconds)

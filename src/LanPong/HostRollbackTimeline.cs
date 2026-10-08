@@ -11,9 +11,14 @@ internal sealed class HostRollbackTimeline(GameEngine game)
     private readonly Dictionary<long, int> _localAxes = [];
     private readonly Dictionary<long, RemoteInput> _receivedAxes = [];
     private readonly Dictionary<long, AppliedRemoteInput> _appliedAxes = [];
+    private PaddleSide _hostSide;
+    private bool _initialized;
 
-    public void Reset()
+    public void Reset(PaddleSide hostSide)
     {
+        PaddleSides.Validate(hostSide);
+        _hostSide = hostSide;
+        _initialized = true;
         _before.Clear();
         _localAxes.Clear();
         _receivedAxes.Clear();
@@ -23,12 +28,13 @@ internal sealed class HostRollbackTimeline(GameEngine game)
 
     public void Advance(int localAxis)
     {
+        EnsureInitialized();
         var tick = game.TickNumber + 1;
         _before[tick] = game.CaptureCheckpoint();
         _localAxes[tick] = localAxis;
         var previous = _appliedAxes[tick - 1];
         var remote = ResolveRemote(tick, previous);
-        game.Advance(GameConstants.FixedStepSeconds, localAxis, remote.Axis);
+        game.AdvanceForSide(GameConstants.FixedStepSeconds, _hostSide, localAxis, remote.Axis);
         _appliedAxes[tick] = remote;
         Prune(tick);
     }
@@ -36,6 +42,7 @@ internal sealed class HostRollbackTimeline(GameEngine game)
     /// <returns>True when replay changed the current authoritative state.</returns>
     public bool Receive(InputPacket packet)
     {
+        EnsureInitialized();
         if (packet.Axes is not { Length: >= 1 and <= NetworkConstants.InputRedundancyTicks } axes ||
             axes.Any(axis => axis is < -1 or > 1)) return false;
         var currentTick = game.TickNumber;
@@ -79,7 +86,7 @@ internal sealed class HostRollbackTimeline(GameEngine game)
         {
             _before[tick] = game.CaptureCheckpoint();
             var remote = ResolveRemote(tick, _appliedAxes[tick - 1]);
-            game.Advance(GameConstants.FixedStepSeconds, _localAxes[tick], remote.Axis);
+            game.AdvanceForSide(GameConstants.FixedStepSeconds, _hostSide, _localAxes[tick], remote.Axis);
             _appliedAxes[tick] = remote;
         }
     }
@@ -96,4 +103,9 @@ internal sealed class HostRollbackTimeline(GameEngine game)
 
     private readonly record struct RemoteInput(int Axis, long Sequence);
     private readonly record struct AppliedRemoteInput(int Axis, long LastExactTick);
+
+    private void EnsureInitialized()
+    {
+        if (!_initialized) throw new InvalidOperationException("Reset the host timeline with its resolved paddle side first.");
+    }
 }

@@ -61,17 +61,17 @@ public sealed class BotRuntimeTests
         var runtime = Runtime([Tracker("steady"), fast], new TrackerBotStrategyFactory());
         using var steady = runtime.Prepare("steady");
         using var quick = runtime.Prepare("fast");
-        await Assert.That(steady.GetAxis(Playing(ballX: 0.4))).IsEqualTo(0);
-        await Assert.That(quick.GetAxis(Playing(ballX: 0.4))).IsEqualTo(1);
-        await Assert.That(quick.GetAxis(Playing(ballX: 0.4, ballY: 0.2, tick: 101))).IsEqualTo(-1);
+        await Assert.That(steady.GetAxis(Playing(ballX: 0.4), PaddleSide.Right)).IsEqualTo(0);
+        await Assert.That(quick.GetAxis(Playing(ballX: 0.4), PaddleSide.Right)).IsEqualTo(1);
+        await Assert.That(quick.GetAxis(Playing(ballX: 0.4, ballY: 0.2, tick: 101), PaddleSide.Right)).IsEqualTo(-1);
 
         using var sameEntry = runtime.Prepare("steady");
         steady.Reset();
-        await Assert.That(steady.GetAxis(Playing())).IsEqualTo(1);
-        await Assert.That(sameEntry.GetAxis(Playing(ballY: 0.2, tick: 101))).IsEqualTo(-1);
-        await Assert.That(steady.GetAxis(Playing(ballY: 0.2, tick: 101))).IsEqualTo(1);
+        await Assert.That(steady.GetAxis(Playing(), PaddleSide.Right)).IsEqualTo(1);
+        await Assert.That(sameEntry.GetAxis(Playing(ballY: 0.2, tick: 101), PaddleSide.Right)).IsEqualTo(-1);
+        await Assert.That(steady.GetAxis(Playing(ballY: 0.2, tick: 101), PaddleSide.Right)).IsEqualTo(1);
         steady.Reset();
-        await Assert.That(steady.GetAxis(Playing(ballY: 0.2, tick: 101))).IsEqualTo(-1);
+        await Assert.That(steady.GetAxis(Playing(ballY: 0.2, tick: 101), PaddleSide.Right)).IsEqualTo(-1);
     }
 
     [Test]
@@ -168,7 +168,7 @@ public sealed class BotRuntimeTests
         var onnx = new RecordingFactory(BotSettingsKind.Onnx, _ => new ProbeController { Axis = -1 });
         var runtime = Runtime([Tracker("primary", fallback: "backup"), Onnx("backup")], tracker, onnx);
         using var session = runtime.Prepare("primary");
-        await Assert.That(session.GetAxis(Playing())).IsEqualTo(-1);
+        await Assert.That(session.GetAxis(Playing(), PaddleSide.Right)).IsEqualTo(-1);
         await Assert.That(session.Effective.Id).IsEqualTo("backup");
         await Assert.That(session.FallbackReason).IsEqualTo("Бот перестал отвечать.");
         await Assert.That(tracker.Controllers.Single().DisposeCount).IsEqualTo(0);
@@ -190,10 +190,10 @@ public sealed class BotRuntimeTests
         var factory = new RecordingFactory(BotSettingsKind.Tracker, _ => new ProbeController { ThrowOnAxis = true });
         var runtime = Runtime([Tracker("primary", fallback: "last"), Tracker("last"), Tracker("unrelated")], factory);
         using var session = runtime.Prepare("primary");
-        await Assert.That(session.GetAxis(Playing())).IsEqualTo(0);
+        await Assert.That(session.GetAxis(Playing(), PaddleSide.Right)).IsEqualTo(0);
         await Assert.That(session.IsPlayable).IsFalse();
         await Assert.That(session.Effective.Id).IsEqualTo("last");
-        await Assert.That(session.GetAxis(Playing())).IsEqualTo(0);
+        await Assert.That(session.GetAxis(Playing(), PaddleSide.Right)).IsEqualTo(0);
         await Assert.That(factory.Created.Any(entry => entry.Id == "unrelated")).IsFalse();
         await Assert.That(factory.Controllers.All(controller => controller.DisposeCount == 0)).IsTrue();
         var retired = session.TakeRetiredControllers();
@@ -233,7 +233,7 @@ public sealed class BotRuntimeTests
         session.Reset();
         await Assert.That(session.IsPlayable).IsFalse();
         await Assert.That(session.Effective.Id).IsEqualTo("primary");
-        await Assert.That(session.GetAxis(Playing())).IsEqualTo(0);
+        await Assert.That(session.GetAxis(Playing(), PaddleSide.Right)).IsEqualTo(0);
         session.Dispose();
         await Assert.That(factory.Controllers.Single().DisposeCount).IsEqualTo(1);
     }

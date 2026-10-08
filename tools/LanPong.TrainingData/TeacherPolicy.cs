@@ -91,7 +91,7 @@ internal sealed class TeacherPolicy : ILocalOpponentController
             // Mirroring lets the existing right-paddle tracker stand in for a
             // left opponent. It sees the same observable state, with no access
             // to real future inputs or to the policy used in the actual match.
-            var leftAxis = _assumedLeft.GetAxis(Mirror(before));
+            var leftAxis = _assumedLeft.GetAxis(BotPolicyView.ForSide(before, PaddleSide.Left));
             if (before.TickNumber % DecisionIntervalTicks == 0)
                 rightAxis = AxisToward(before.RightY, rightHit ? ArenaCenter : aim);
             _rollout.Advance(FixedStepSeconds, leftAxis, rightAxis);
@@ -120,17 +120,6 @@ internal sealed class TeacherPolicy : ILocalOpponentController
         // reached the left paddle still outranks every right-paddle miss.
         return new AimResult(rightHit, false, 0);
     }
-
-    private static GameState Mirror(GameState state) => state with
-    {
-        LeftY = state.RightY,
-        RightY = state.LeftY,
-        BallX = 1 - state.BallX,
-        BallVx = -state.BallVx,
-        LeftScore = state.RightScore,
-        RightScore = state.LeftScore,
-        ServeDirection = -state.ServeDirection
-    };
 
     private static int AxisToward(double currentY, double targetY)
     {

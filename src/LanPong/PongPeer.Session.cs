@@ -66,8 +66,8 @@ internal sealed partial class PongPeer
         _challengeStartedAt = _lastChallengeSeen = DateTime.MinValue;
         _ping.Reset();
         _game.ResetWaiting();
-        _hostTimeline.Reset();
-        _guestTimeline.Reset();
+        _hostTimeline.Reset(PaddleSide.Left);
+        _guestTimeline.Reset(PaddleSide.Left);
         return detached;
     }
 
@@ -109,7 +109,7 @@ internal sealed partial class PongPeer
         _lastStateSentTick = 0;
         _ping.Reset();
         _game.ResetWaiting();
-        _hostTimeline.Reset();
+        _hostTimeline.Reset(PaddleSide.Left);
     }
 
     // A Quick Game lobby serves one match; an explicitly hosted lobby remains open.

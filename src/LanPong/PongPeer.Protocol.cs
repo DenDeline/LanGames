@@ -158,7 +158,7 @@ internal sealed partial class PongPeer
                 {
                     _lastRestartRequestId = restart.RequestId;
                     _game.StartMatch();
-                    _hostTimeline.Reset();
+                    _hostTimeline.Reset(PaddleSide.Left);
                 }
                 break;
             case ByePacket bye when bye.SessionId == _sessionId:
@@ -193,7 +193,7 @@ internal sealed partial class PongPeer
                 _restartAfterRound = 0;
                 _ping.Reset();
                 _game.ResetWaiting();
-                _guestTimeline.Reset();
+                _guestTimeline.Reset(PaddleSide.Left);
                 _lastInputSentTick = 0;
                 _connection = ConnectionState.Connected;
                 _peerNickname = welcome.Nickname;

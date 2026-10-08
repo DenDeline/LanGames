@@ -199,7 +199,7 @@ internal sealed class BotRuntime
 /// Owns fresh mutable policy state and every prepared fallback resource for one local session. Tick-time
 /// failure advances to an already prepared policy and transfers expensive cleanup to the peer.
 /// </summary>
-internal sealed class PreparedBotSession : ILocalOpponentController, IDisposable
+internal sealed class PreparedBotSession : IDisposable
 {
     internal sealed class Candidate(BotDefinition definition, ILocalOpponentController controller)
     {
@@ -233,13 +233,16 @@ internal sealed class PreparedBotSession : ILocalOpponentController, IDisposable
     internal string? VerifiedModelSha256 => IsPlayable &&
         _candidates[_current].Controller is OnnxLocalOpponentController onnx ? onnx.ModelSha256 : null;
 
-    public int GetAxis(GameState state)
+    public int GetAxis(GameState state, PaddleSide side)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        // Every prepared candidate sees the same perspective, including one selected after failure.
+        // Keep the canonical policies, native ownership and model identity directly inspectable.
+        var policyState = BotPolicyView.ForSide(state, side);
         while (IsPlayable)
         {
             var candidate = _candidates[_current];
-            try { return candidate.Controller!.GetAxis(state); }
+            try { return candidate.Controller!.GetAxis(policyState); }
             catch (Exception error)
             {
                 var reason = _runtime.MarkUnavailable(candidate.Definition, error, duringPreparation: false);

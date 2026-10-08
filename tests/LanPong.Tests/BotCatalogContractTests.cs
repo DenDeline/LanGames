@@ -106,7 +106,7 @@ public sealed class BotCatalogContractTests
         await Assert.That(unavailable.GetProperty("availabilityReason").GetString())
             .IsEqualTo("Модель бота не прошла проверку.");
 
-        primary.GetAxis(new GameState { Phase = GamePhase.Playing });
+        primary.GetAxis(new GameState { Phase = GamePhase.Playing }, PaddleSide.Right);
         BotRuntime.DisposeRetired(primary.TakeRetiredControllers());
         var exhausted = runtime.DescribeCatalog();
         await Assert.That(Find(exhausted, "primary").CanPlay).IsFalse();

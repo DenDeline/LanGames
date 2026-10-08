@@ -337,7 +337,7 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
                 if (failedBot is null)
                 {
                     _game.StartMatch();
-                    if (!_localOpponentActive) _hostTimeline.Reset();
+                    if (!_localOpponentActive) _hostTimeline.Reset(PaddleSide.Left);
                 }
             }
             else if (_role == PeerRole.Guest)
@@ -385,7 +385,7 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
         _lastRestartRequestId = null;
         _ping.Reset();
         _game.StartMatch();
-        _hostTimeline.Reset();
+        _hostTimeline.Reset(PaddleSide.Left);
         _mdns.SetHostPort(null);
         CancelQuickMatchmakingLocked();
         var welcome = new WelcomePacket

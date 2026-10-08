@@ -1,6 +1,6 @@
 namespace LanPong.Bots.Strategies;
 
-/// <summary>Chooses only the right paddle's input from the authoritative game state.</summary>
+/// <summary>Chooses a vertical axis from the canonical right-paddle policy view.</summary>
 internal interface ILocalOpponentController
 {
     void Reset();
