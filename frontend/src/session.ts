@@ -21,7 +21,8 @@ export class GameSession {
 
     const changedRound =
       next.role !== previous.role ||
-      next.requestedOpponentMode !== previous.requestedOpponentMode ||
+      next.opponentMode !== previous.opponentMode ||
+      next.requestedBotId !== previous.requestedBotId ||
       next.connection !== previous.connection ||
       next.phase !== previous.phase ||
       next.roundId !== previous.roundId ||

@@ -1,4 +1,5 @@
 import type { PongSnapshot } from "./snapshot.js";
+import type { BotCatalogResponse } from "./botCatalog.js";
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -40,14 +41,16 @@ export const ui = {
   joinPanel: element("join-panel"),
   quickForm: element<HTMLFormElement>("quick-form"),
   botForm: element<HTMLFormElement>("bot-form"),
-  hardForm: element<HTMLFormElement>("hard-form"),
+  botSelect: element<HTMLSelectElement>("bot-select"),
+  botCatalogStatus: element("bot-catalog-status"),
+  botCatalogRetry: element<HTMLButtonElement>("bot-catalog-retry"),
   joinForm: element<HTMLFormElement>("join-form"),
   playerNickname: element<HTMLInputElement>("player-nickname"),
   joinPort: element<HTMLInputElement>("join-port"),
   peerAddress: element<HTMLInputElement>("peer-address"),
   quickButton: element<HTMLButtonElement>("quick-button"),
   botButton: element<HTMLButtonElement>("bot-button"),
-  hardButton: element<HTMLButtonElement>("hard-button"),
+
   joinButton: element<HTMLButtonElement>("join-button"),
   discoverButton: element<HTMLButtonElement>("discover-button"),
   discoveryResults: element("discovery-results"),
@@ -76,6 +79,9 @@ let toastTimer: number | undefined;
 let nicknameWasEdited = false;
 let preferredNickname: string | null = null;
 let wasActive = false;
+let botCatalog: BotCatalogResponse | null = null;
+let botCatalogRevision = 0;
+let rememberedBotId = "";
 
 function validNickname(value: string): boolean {
   return (
@@ -156,25 +162,61 @@ export function setTab(tab: "quick" | "join"): void {
   ui.joinPanel.hidden = isQuick;
 }
 
-function isLocalBot(snapshot: PongSnapshot): boolean {
-  return (
-    snapshot.requestedOpponentMode === "simple" ||
-    snapshot.requestedOpponentMode === "hard" ||
-    snapshot.opponentMode === "simple" ||
-    snapshot.opponentMode === "hard"
+export function setBotCatalog(
+  catalog: BotCatalogResponse | null,
+  error: string | null = null,
+): void {
+  rememberedBotId = ui.botSelect.value || rememberedBotId;
+  botCatalog = catalog;
+  botCatalogRevision++;
+  ui.botSelect.replaceChildren();
+  ui.botCatalogRetry.hidden = error === null;
+  if (catalog === null) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = error === null ? "Загружаем ботов…" : "Боты недоступны";
+    ui.botSelect.append(option);
+    ui.botSelect.value = "";
+    writeText(ui.botCatalogStatus, error ?? "Загружаем список соперников…");
+    return;
+  }
+  for (const bot of catalog.bots) {
+    const option = document.createElement("option");
+    option.value = bot.id;
+    option.textContent = `${bot.name} · ${bot.difficulty}${bot.canPlay ? "" : " · недоступен"}`;
+    option.disabled = !bot.canPlay;
+    ui.botSelect.append(option);
+  }
+  const previous = catalog.bots.find((bot) => bot.id === rememberedBotId);
+  const preferred = catalog.bots.find((bot) => bot.id === catalog.defaultBotId);
+  ui.botSelect.value = (previous ?? preferred ?? catalog.bots.find((bot) => bot.canPlay))?.id ?? "";
+  updateBotSelection();
+}
+
+export function getSelectedBotId(): string | null {
+  return botCatalog?.bots.find((bot) => bot.id === ui.botSelect.value && bot.canPlay)?.id ?? null;
+}
+
+export function updateBotSelection(): void {
+  rememberedBotId = ui.botSelect.value;
+  botCatalogRevision++;
+  const selected = botCatalog?.bots.find((bot) => bot.id === rememberedBotId);
+  writeText(
+    ui.botCatalogStatus,
+    selected
+      ? `${selected.description}${selected.availabilityReason ? ` ${selected.availabilityReason}` : ""}`
+      : botCatalog?.bots.length === 0
+        ? "В списке пока нет ботов."
+        : "Нет доступных ботов. Вы можете сыграть с другом по сети.",
   );
 }
 
-function isHardFallback(snapshot: PongSnapshot): boolean {
-  return (
-    snapshot.requestedOpponentMode === "hard" &&
-    snapshot.opponentMode === "simple" &&
-    snapshot.opponentFallbackActive
-  );
+function isLocalBot(snapshot: PongSnapshot): boolean {
+  return snapshot.opponentMode === "bot";
 }
 
 function botModeLabel(snapshot: PongSnapshot): string {
-  return snapshot.opponentMode === "hard" ? "Hard" : "Simple";
+  return snapshot.effectiveBotName ?? "Соперник";
 }
 
 function connectionText(snapshot: PongSnapshot): string {
@@ -306,7 +348,12 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   // Network snapshots arrive much more often than score, ping text, or controls change.
   const uiSignature = JSON.stringify([
     snapshot.role,
-    snapshot.requestedOpponentMode,
+    snapshot.requestedBotId,
+    snapshot.requestedBotName,
+    snapshot.effectiveBotId,
+    snapshot.effectiveBotName,
+    snapshot.botFallbackReason,
+    botCatalogRevision,
     snapshot.opponentMode,
     snapshot.opponentFallbackActive,
     snapshot.connection,
@@ -328,7 +375,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   lastUiSignature = uiSignature;
   const connected = snapshot.connection === "connected";
   const localBot = isLocalBot(snapshot);
-  const hardFallback = isHardFallback(snapshot);
+  const botFallback = localBot && snapshot.opponentFallbackActive;
   const incomingChallenge =
     snapshot.opponentMode === "lan" &&
     snapshot.role === "host" &&
@@ -337,7 +384,8 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
 
   ui.connectionPill.dataset.state = snapshot.connection;
   ui.connectionPill.dataset.mode = snapshot.opponentMode;
-  ui.connectionPill.dataset.requestedMode = snapshot.requestedOpponentMode;
+  ui.connectionPill.dataset.requestedBotId = snapshot.requestedBotId ?? "";
+  ui.connectionPill.dataset.effectiveBotId = snapshot.effectiveBotId ?? "";
   writeText(ui.connectionLabel, status);
   ui.liveIndicator.dataset.state = snapshot.connection;
   writeText(ui.liveLabel, status);
@@ -346,8 +394,8 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   writeText(ui.roleDetail, roleText(snapshot));
   writeText(
     ui.arenaModeLabel,
-    hardFallback
-      ? "Hard недоступен · играет Simple"
+    botFallback
+      ? `${snapshot.requestedBotName} недоступен · играет ${snapshot.effectiveBotName}`
       : localBot
         ? `Против бота · ${botModeLabel(snapshot)}`
         : snapshot.opponentMode === "lan"
@@ -404,11 +452,11 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
         ? "Выберите игру с ботом или другом."
         : snapshot.message || status + ".",
   );
-  ui.opponentFallback.hidden = !hardFallback;
-  if (hardFallback)
+  ui.opponentFallback.hidden = !botFallback;
+  if (botFallback)
     writeText(
       ui.opponentFallback,
-      "Hard недоступен — сейчас играет Simple. Вы можете продолжить матч.",
+      `Бот «${snapshot.requestedBotName}» недоступен — сейчас играет «${snapshot.effectiveBotName}». ${snapshot.botFallbackReason ?? ""}`,
     );
   ui.challengeRequest.hidden = !incomingChallenge;
   if (incomingChallenge) writeText(ui.challengePeer, peerDisplayName(snapshot));
@@ -444,8 +492,10 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   }
 
   ui.quickButton.disabled = busy || active;
-  ui.botButton.disabled = busy || active;
-  ui.hardButton.disabled = busy || active;
+  ui.botButton.disabled = busy || active || getSelectedBotId() === null;
+  ui.botSelect.disabled =
+    busy || active || botCatalog === null || !botCatalog.bots.some((bot) => bot.canPlay);
+  ui.botCatalogRetry.disabled = busy || active;
   writeText(
     ui.quickButton,
     snapshot.connection === "searching"

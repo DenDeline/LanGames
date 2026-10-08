@@ -14,14 +14,14 @@ public sealed class BrowserWebSocketProtocolTests
             0.425, 0.563, 0.712375, 0.2218, 0.4321, -0.348,
             3, 4, GamePhase.Playing, 0.25, 123456, 7, 8.42,
             [new GameEvent("123456:0:2", GameEventKind.Paddle, 123456, 0.712375, 0.2218)],
-            "Хозяин", "Гость", OpponentMode.Lan, OpponentMode.Lan);
+            "Хозяин", "Гость", OpponentMode.Lan);
         var buffer = new ArrayBufferWriter<byte>();
 
         BrowserWebSocketProtocol.WriteSnapshot(original, buffer);
         var (fieldCount, version, decoded, atEnd) = ReadSnapshot(buffer.WrittenMemory);
 
-        await Assert.That(fieldCount).IsEqualTo(26);
-        await Assert.That(version).IsEqualTo(7);
+        await Assert.That(fieldCount).IsEqualTo(30);
+        await Assert.That(version).IsEqualTo(8);
         await Assert.That(atEnd).IsTrue();
         await Assert.That(decoded with
         {
@@ -31,17 +31,27 @@ public sealed class BrowserWebSocketProtocolTests
         await Assert.That(decoded.LocalAddresses.SequenceEqual(original.LocalAddresses)).IsTrue();
         await Assert.That(decoded.RecentEvents.SequenceEqual(original.RecentEvents)).IsTrue();
 
-        var local = original with { OpponentMode = OpponentMode.Simple,
-            RequestedOpponentMode = OpponentMode.Hard, OpponentFallbackActive = true, UdpPort = 0,
-            PeerAddress = null, PingMs = null, PeerNickname = "Компьютер" };
+        var local = original with
+        {
+            OpponentMode = OpponentMode.Bot, RequestedBotId = "trained-model",
+            RequestedBotName = new string('М', 64), EffectiveBotId = "tuned-tracker",
+            EffectiveBotName = new string('Т', 64), OpponentFallbackActive = true,
+            BotFallbackReason = "Модель бота не найдена.", UdpPort = 0,
+            PeerAddress = null, PingMs = null, PeerNickname = null
+        };
         buffer = new ArrayBufferWriter<byte>();
         BrowserWebSocketProtocol.WriteSnapshot(local, buffer);
         var (localFields, localVersion, localDecoded, localAtEnd) = ReadSnapshot(buffer.WrittenMemory);
-        await Assert.That(localFields).IsEqualTo(26);
-        await Assert.That(localVersion).IsEqualTo(7);
-        await Assert.That(localDecoded.OpponentMode).IsEqualTo(OpponentMode.Simple);
-        await Assert.That(localDecoded.RequestedOpponentMode).IsEqualTo(OpponentMode.Hard);
+        await Assert.That(localFields).IsEqualTo(30);
+        await Assert.That(localVersion).IsEqualTo(8);
+        await Assert.That(localDecoded.OpponentMode).IsEqualTo(OpponentMode.Bot);
+        await Assert.That(localDecoded.RequestedBotId).IsEqualTo("trained-model");
+        await Assert.That(localDecoded.RequestedBotName).IsEqualTo(new string('М', 64));
+        await Assert.That(localDecoded.EffectiveBotId).IsEqualTo("tuned-tracker");
+        await Assert.That(localDecoded.EffectiveBotName).IsEqualTo(new string('Т', 64));
         await Assert.That(localDecoded.OpponentFallbackActive).IsTrue();
+        await Assert.That(localDecoded.BotFallbackReason).IsEqualTo("Модель бота не найдена.");
+        await Assert.That(localDecoded.PeerNickname).IsNull();
         await Assert.That(localAtEnd).IsTrue();
     }
 
@@ -50,16 +60,17 @@ public sealed class BrowserWebSocketProtocolTests
     {
         foreach (var axis in new[] { -1, 0, 1 })
         {
-            var bytes = new byte[] { 0x92, 0x07, unchecked((byte)axis) };
+            var bytes = new byte[] { 0x92, 0x08, unchecked((byte)axis) };
             await Assert.That(BrowserWebSocketProtocol.TryReadAxis(bytes, out var parsed)).IsTrue();
             await Assert.That(parsed).IsEqualTo(axis);
         }
 
         byte[][] invalid =
         [
-            [], [0x92, 0x07], [0x92, 0x06, 0x01], [0x92, 0x07, 0x02],
-            [0x91, 0x07], [0x93, 0x07, 0x01, 0x00], [0x92, 0x07, 0xa1, 0x31],
-            [0x92, 0x07, 0x01, 0x00], [0xc1], "{\"axis\":1}"u8.ToArray()
+            [], [0x92, 0x08], [0x92, 0x06, 0x01], [0x92, 0x07, 0x01],
+            [0x92, 0x09, 0x01], [0x92, 0x08, 0x02],
+            [0x91, 0x08], [0x93, 0x08, 0x01, 0x00], [0x92, 0x08, 0xa1, 0x31],
+            [0x92, 0x08, 0x01, 0x00], [0xc1], "{\"axis\":1}"u8.ToArray()
         ];
         foreach (var bytes in invalid)
             await Assert.That(BrowserWebSocketProtocol.TryReadAxis(bytes, out _)).IsFalse();
@@ -74,7 +85,7 @@ public sealed class BrowserWebSocketProtocolTests
         }
     }
 
-    private static (int FieldCount, int Version, PongSnapshot Snapshot, bool AtEnd) ReadSnapshot(
+    internal static (int FieldCount, int Version, PongSnapshot Snapshot, bool AtEnd) ReadSnapshot(
         ReadOnlyMemory<byte> bytes)
     {
         var reader = new MessagePackReader(new ReadOnlySequence<byte>(bytes));
@@ -110,12 +121,17 @@ public sealed class BrowserWebSocketProtocolTests
         var localNickname = reader.ReadString()!;
         var peerNickname = reader.TryReadNil() ? null : reader.ReadString();
         var opponentMode = (OpponentMode)reader.ReadInt32();
-        var requestedOpponentMode = (OpponentMode)reader.ReadInt32();
+        var requestedBotId = reader.ReadString();
+        var requestedBotName = reader.ReadString();
+        var effectiveBotId = reader.ReadString();
+        var effectiveBotName = reader.ReadString();
         var opponentFallbackActive = reader.ReadBoolean();
+        var botFallbackReason = reader.ReadString();
         var snapshot = new PongSnapshot(role, connection, message, udpPort, addresses, peerAddress,
             leftY, rightY, ballX, ballY, ballVx, ballVy, leftScore, rightScore, phase,
             countdown, tick, roundId, pingMs, events, localNickname, peerNickname,
-            opponentMode, requestedOpponentMode, opponentFallbackActive);
+            opponentMode, requestedBotId, requestedBotName, effectiveBotId, effectiveBotName,
+            opponentFallbackActive, botFallbackReason);
         return (fieldCount, version, snapshot, reader.End);
     }
 }

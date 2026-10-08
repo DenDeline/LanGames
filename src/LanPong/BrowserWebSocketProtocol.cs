@@ -6,13 +6,14 @@ namespace LanPong;
 /// <summary>The local browser WebSocket protocol, independent of the UDP wire protocol.</summary>
 internal static class BrowserWebSocketProtocol
 {
-    internal const int Version = 7;
-    internal const int SnapshotFieldCount = 26;
+    internal const int Version = 8;
+    internal const int SnapshotFieldCount = 30;
 
     // [version, role, connection, message, udpPort, localAddresses, peerAddress,
     //  leftY, rightY, ballX, ballY, ballVx, ballVy, leftScore, rightScore,
     //  phase, countdown, tick, roundId, pingMs, recentEvents, localNickname, peerNickname,
-    //  opponentMode, requestedOpponentMode, opponentFallbackActive]
+    //  opponentMode, requestedBotId, requestedBotName, effectiveBotId, effectiveBotName,
+    //  opponentFallbackActive, botFallbackReason]
     // recentEvents: [[id, kind, tick, x, y], ...]
     internal static void WriteSnapshot(PongSnapshot snapshot, IBufferWriter<byte> buffer)
     {
@@ -55,9 +56,19 @@ internal static class BrowserWebSocketProtocol
         if (snapshot.PeerNickname is { } peerNickname) writer.Write(peerNickname);
         else writer.WriteNil();
         writer.Write((int)snapshot.OpponentMode);
-        writer.Write((int)snapshot.RequestedOpponentMode);
+        WriteNullableString(ref writer, snapshot.RequestedBotId);
+        WriteNullableString(ref writer, snapshot.RequestedBotName);
+        WriteNullableString(ref writer, snapshot.EffectiveBotId);
+        WriteNullableString(ref writer, snapshot.EffectiveBotName);
         writer.Write(snapshot.OpponentFallbackActive);
+        WriteNullableString(ref writer, snapshot.BotFallbackReason);
         writer.Flush();
+    }
+
+    private static void WriteNullableString(ref MessagePackWriter writer, string? value)
+    {
+        if (value is null) writer.WriteNil();
+        else writer.Write(value);
     }
 
     // [version, axis], where axis is -1, 0, or 1. Each frame contains one value.

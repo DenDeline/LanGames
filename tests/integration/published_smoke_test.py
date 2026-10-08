@@ -15,6 +15,50 @@ from pathlib import Path
 
 
 HARD_MODEL_SHA256 = "5d5d3cf0910d967cf2d6dc60e8fe0b63f772060178bf6673f6ddc5cdba98ab5a"
+BOT_FIELDS = {
+    "id", "name", "description", "style", "difficulty", "category", "order", "glyph",
+    "enabled", "fallbackBotId", "availability", "availabilityReason", "canPlay",
+}
+
+
+def request_json(base_url, path, payload=None):
+    data = None if payload is None else json.dumps(payload).encode()
+    request = urllib.request.Request(
+        f"{base_url}{path}", data=data,
+        headers={"Content-Type": "application/json"} if data is not None else {},
+        method="POST" if data is not None else "GET",
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        assert response.status == 200, (path, response.status)
+        return json.load(response)
+
+
+def verify_catalog_contract(base_url, status):
+    identity_fields = ("requestedBotId", "requestedBotName", "effectiveBotId", "effectiveBotName", "botFallbackReason")
+    assert status["version"] == 8 and "requestedOpponentMode" not in status, status
+    assert status["opponentMode"] == "none" and status["opponentFallbackActive"] is False, status
+    assert all(status[field] is None for field in identity_fields), status
+    catalog = request_json(base_url, "/api/bots")
+    assert set(catalog) == {"version", "defaultBotId", "bots"} and catalog["version"] == 8, catalog
+    bots = catalog["bots"]
+    assert bots == sorted(bots, key=lambda bot: (bot["order"], bot["id"])), catalog
+    by_id = {bot["id"]: bot for bot in bots}
+    assert catalog["defaultBotId"] in by_id and {"lada", "iskra", "vektor"} <= by_id.keys(), catalog
+    assert all(set(bot) == BOT_FIELDS for bot in bots), catalog
+    assert by_id["vektor"]["availability"] == "notChecked", catalog
+    assert all(by_id[bot_id]["availability"] == "ready" for bot_id in ("lada", "iskra")), catalog
+
+    # Exercise the configured production path in the published app as well as standalone diagnostics.
+    started = request_json(base_url, "/api/local-opponent", {"nickname": "Smoke", "botId": "vektor"})
+    assert started["version"] == 8 and started["opponentMode"] == "bot", started
+    assert started["requestedBotId"] == started["effectiveBotId"] == "vektor", started
+    assert started["requestedBotName"] == started["effectiveBotName"] == by_id["vektor"]["name"], started
+    assert started["peerNickname"] is None and started["opponentFallbackActive"] is False, started
+    assert started["botFallbackReason"] is None and "requestedOpponentMode" not in started, started
+    assert next(bot for bot in request_json(base_url, "/api/bots")["bots"] if bot["id"] == "vektor")["availability"] == "ready"
+    left = request_json(base_url, "/api/leave", {})
+    assert left["opponentMode"] == "none" and all(left[field] is None for field in identity_fields), left
+    print("PASS: published protocol v8 status/catalog and configured model identity")
 
 
 def free_port():
@@ -87,7 +131,7 @@ def verify_hard_smoke(binary):
         f"Published Hard model SHA-256 mismatch: expected {HARD_MODEL_SHA256}, got {digest}"
     )
 
-    # The CLI path loads the packaged model and executes the production controller.
+    # The CLI path loads the packaged model and executes the trained diagnostic controller.
     with tempfile.TemporaryDirectory() as smoke_cwd:
         result = subprocess.run(
             [str(binary), "--hard-smoke"],
@@ -132,6 +176,7 @@ def main():
             local_addresses = status.get("localAddresses")
             assert type(udp_port) is int and 0 <= udp_port <= 65535, status
             assert isinstance(local_addresses, list) and "127.0.0.1" in local_addresses, status
+            verify_catalog_contract(base_url, status)
 
             with urllib.request.urlopen(f"{base_url}/", timeout=3) as response:
                 page = response.read()

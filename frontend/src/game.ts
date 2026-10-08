@@ -1,3 +1,4 @@
+import { parseBotCatalog } from "./botCatalog.js";
 import { ArenaRenderer } from "./arena.js";
 import { FeedbackController } from "./feedback.js";
 import { InputController } from "./input.js";
@@ -7,9 +8,12 @@ import { isRecord } from "./snapshot.js";
 import { SoundController } from "./sound.js";
 import {
   getNickname,
+  getSelectedBotId,
   getPort,
   loadNickname,
   render,
+  setBotCatalog,
+  updateBotSelection,
   saveNickname,
   setTab,
   showToast,
@@ -30,8 +34,11 @@ const STATUS_POLL_INTERVAL_MS = 4000;
 let socket: WebSocket | null = null;
 let reconnectTimer: number | undefined;
 let busy = false;
+let actionRefreshesCatalog = false;
 let discovering = false;
 let webSocketSnapshotVersion = 0;
+let botCatalogRequestVersion = 0;
+let observedBotStatus: string | null = null;
 let selectedHost: DiscoveredHost | null = null;
 let discoveryButtons: Array<{ host: DiscoveredHost; button: HTMLButtonElement }> = [];
 
@@ -50,7 +57,18 @@ const session = new GameSession(
   motion,
   feedback,
   () => arena.resetTrail(),
-  () => render(session.snapshot, busy, discovering),
+  () => {
+    const nextBotStatus =
+      session.snapshot.opponentMode === "bot"
+        ? `${session.snapshot.requestedBotId}|${session.snapshot.effectiveBotId}|${session.snapshot.opponentFallbackActive}`
+        : null;
+    const botChanged = observedBotStatus !== null && observedBotStatus !== nextBotStatus;
+    observedBotStatus = nextBotStatus;
+    render(session.snapshot, busy, discovering);
+    // A POST already refreshes after its resulting snapshot. Unsolicited failure/fallback
+    // transitions need one refresh; ordinary simulation ticks never fetch the catalog.
+    if (botChanged && !(busy && actionRefreshesCatalog)) void refreshBotCatalog();
+  },
 );
 
 async function readJson(response: Response): Promise<Record<string, unknown>> {
@@ -83,11 +101,28 @@ async function refreshStatus(): Promise<void> {
   }
 }
 
+async function refreshBotCatalog(): Promise<void> {
+  const requestVersion = ++botCatalogRequestVersion;
+  try {
+    const response = await fetch("/api/bots", { cache: "no-store" });
+    const catalog = parseBotCatalog(await readJson(response));
+    if (requestVersion !== botCatalogRequestVersion) return;
+    setBotCatalog(catalog);
+  } catch {
+    if (requestVersion !== botCatalogRequestVersion) return;
+    setBotCatalog(null, "Не удалось загрузить ботов. Попробуйте снова.");
+  }
+  render(session.snapshot, busy, discovering);
+}
+
 async function postAction(
   path: string,
-  body?: { port?: number; address?: string; nickname?: string; mode?: "simple" | "hard" },
+  body?: { port?: number; address?: string; nickname?: string; botId?: string },
 ): Promise<void> {
   if (busy) return;
+  const refreshBots =
+    path === "/api/local-opponent" || path === "/api/leave" || path === "/api/restart";
+  actionRefreshesCatalog = refreshBots;
   busy = true;
   render(session.snapshot, busy, discovering);
   const requestVersion = webSocketSnapshotVersion;
@@ -104,10 +139,18 @@ async function postAction(
       await refreshStatus();
     }
   } catch (error) {
-    showToast(error instanceof Error ? error.message : "Не удалось выполнить действие.");
+    showToast(
+      error instanceof TypeError || error instanceof RangeError
+        ? "Приложение вернуло некорректный ответ. Обновите страницу."
+        : error instanceof Error
+          ? error.message
+          : "Не удалось выполнить действие.",
+    );
   } finally {
     busy = false;
+    actionRefreshesCatalog = false;
     render(session.snapshot, busy, discovering);
+    if (refreshBots) await refreshBotCatalog();
   }
 }
 
@@ -262,13 +305,14 @@ export function startGame(): void {
   ui.botForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const nickname = getNickname();
-    if (nickname !== null) postAction("/api/local-opponent", { nickname, mode: "simple" });
+    const botId = getSelectedBotId();
+    if (nickname !== null && botId !== null) postAction("/api/local-opponent", { nickname, botId });
   });
-  ui.hardForm.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const nickname = getNickname();
-    if (nickname !== null) postAction("/api/local-opponent", { nickname, mode: "hard" });
+  ui.botSelect.addEventListener("change", () => {
+    updateBotSelection();
+    render(session.snapshot, busy, discovering);
   });
+  ui.botCatalogRetry.addEventListener("click", () => refreshBotCatalog());
   ui.joinForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const nickname = getNickname();
@@ -315,5 +359,6 @@ export function startGame(): void {
   render(session.snapshot, busy, discovering);
   requestAnimationFrame(animate);
   refreshStatus();
+  refreshBotCatalog();
   connectSocket();
 }

@@ -7,7 +7,7 @@ async function main() {
     { FeedbackController },
     { MotionModel, RIGHT_CONTACT_X },
     { GameSession },
-    { parseSnapshot },
+    { parseSnapshot, defaultSnapshot },
     { SoundController },
   ] = await Promise.all([
     import("../../.artifacts/frontend-test/arena.js"),
@@ -82,8 +82,15 @@ async function main() {
       height: 540,
       disabled: false,
       setAttribute() {},
-      replaceChildren() {},
-      append() {},
+      children: [],
+      replacementCount: 0,
+      replaceChildren(...children) {
+        this.children = [...children];
+        this.replacementCount++;
+      },
+      append(...children) {
+        this.children.push(...children);
+      },
       addEventListener(type, handler) {
         const handlers = listeners.get(type) ?? [];
         handlers.push(handler);
@@ -156,9 +163,36 @@ async function main() {
     assert.ok(Math.abs(actual - expected) < 1e-6, String(actual) + " != " + String(expected));
   const displayedMotion = (at) => motion.displayedMotion(at, session.snapshot);
   const displayedLocalPaddle = (at) => motion.displayedLocalPaddle(at, session.snapshot, axis);
+  const noBotIdentity = {
+    requestedBotId: null,
+    requestedBotName: null,
+    effectiveBotId: null,
+    effectiveBotName: null,
+    opponentFallbackActive: false,
+    botFallbackReason: null,
+  };
+  const botIdentity = (id, name, effectiveId = id, effectiveName = name) => ({
+    ...noBotIdentity,
+    opponentMode: "bot",
+    requestedBotId: id,
+    requestedBotName: name,
+    effectiveBotId: effectiveId,
+    effectiveBotName: effectiveName,
+    peerNickname: null,
+    peerAddress: null,
+    pingMs: null,
+    udpPort: 0,
+  });
+  const httpSnapshot = (changes = {}) => ({
+    ...defaultSnapshot,
+    localNickname: "Лиса",
+    ...changes,
+  });
   const apply = (changes, source = "websocket") => {
     session.apply(
       {
+        ...httpSnapshot(),
+        opponentMode: "lan",
         role: "host",
         connection: "connected",
         phase: "playing",
@@ -270,19 +304,28 @@ async function main() {
   arena.resize(1200, 675, 2);
   assert.equal(gradients, initialGradients + 2);
 
-  // HTTP snapshots retain only valid event records, including numeric enum kinds.
-  const parsedEvents = parseSnapshot({
-    recentEvents: [
-      { id: "valid-goal", kind: "goal", tick: 120, x: 0, y: 0.4 },
-      { id: "valid-paddle", kind: 2, tick: 121, x: 0.05, y: 0.5 },
-      { id: "invalid-kind", kind: 6, tick: 122, x: 0.5, y: 0.5 },
-      { id: "invalid-position", kind: "wall", tick: 122, x: -0.01, y: 0.5 },
-    ],
-  }).events;
+  // HTTP snapshots preserve valid event enums and reject malformed event history.
+  const parsedEvents = parseSnapshot(
+    httpSnapshot({
+      recentEvents: [
+        { id: "valid-goal", kind: "goal", tick: 120, x: 0, y: 0.4 },
+        { id: "valid-paddle", kind: 2, tick: 121, x: 0.05, y: 0.5 },
+      ],
+    }),
+  ).events;
   assert.deepEqual(parsedEvents, [
     { id: "valid-goal", kind: "goal", tick: 120, x: 0, y: 0.4 },
     { id: "valid-paddle", kind: "paddle", tick: 121, x: 0.05, y: 0.5 },
   ]);
+  assert.throws(
+    () =>
+      parseSnapshot(
+        httpSnapshot({
+          recentEvents: [{ id: "invalid-position", kind: "wall", tick: 122, x: -0.01, y: 0.5 }],
+        }),
+      ),
+    TypeError,
+  );
 
   // Entering a live match baselines history. Repeats and rollback do not replay it.
   apply({ role: "none", connection: "idle", events: [] });
@@ -423,31 +466,34 @@ async function main() {
   applyChallenge("incomingChallenge");
   assert.equal(playedTones, 9);
 
-  // A Hard-to-Simple fallback is an opponent change inside the same session.
+  // A configured fallback is an opponent change inside the same session.
   // A new game event on that frame must still play, rather than be baselined.
   apply({ role: "none", connection: "idle", events: [] });
-  const hardServe = { id: "23:1:1", kind: "serve", tick: 1, x: 0.5, y: 0.5 };
+  const botServe = { id: "23:1:1", kind: "serve", tick: 1, x: 0.5, y: 0.5 };
   const fallbackGoal = { id: "23:2:4", kind: "goal", tick: 2, x: 1, y: 0.4 };
   apply({
     role: "host",
     connection: "connected",
-    requestedOpponentMode: "hard",
-    opponentMode: "hard",
+    ...botIdentity("predictive", "Прогноз"),
+    opponentMode: "bot",
     roundId: 23,
     tick: 1,
-    events: [hardServe],
+    events: [botServe],
   });
   now += 10;
   apply({
     role: "host",
     connection: "connected",
-    requestedOpponentMode: "hard",
-    opponentMode: "simple",
+    ...botIdentity("predictive", "Прогноз"),
+    opponentMode: "bot",
     opponentFallbackActive: true,
+    effectiveBotId: "calm",
+    effectiveBotName: "Тихий",
+    botFallbackReason: "Выбранный бот перестал отвечать.",
     roundId: 23,
     tick: 2,
     leftScore: 1,
-    events: [hardServe, fallbackGoal],
+    events: [botServe, fallbackGoal],
   });
   assert.equal(feedback.pulse.kind, "goal");
   assert.equal(feedback.hasSeenEvent(fallbackGoal.id), true);
@@ -457,11 +503,39 @@ async function main() {
     render: renderView,
     saveNickname,
     setTab,
+    setBotCatalog,
+    updateBotSelection,
     ui,
   } = await import("../../.artifacts/frontend-test/view.js");
+  const catalogEntry = (id, name, extra = {}) => ({
+    id,
+    name,
+    description: `Описание ${name}`,
+    style: "Стиль",
+    difficulty: "Тренировка",
+    category: "Боты",
+    order: 10,
+    glyph: null,
+    enabled: true,
+    fallbackBotId: null,
+    availability: "ready",
+    availabilityReason: null,
+    canPlay: true,
+    ...extra,
+  });
+  const browserCatalog = {
+    version: 8,
+    defaultBotId: "calm",
+    bots: [
+      catalogEntry("calm", "Тихий"),
+      catalogEntry("predictive", "Прогноз", { order: 20, availability: "notChecked" }),
+      catalogEntry("config-only-opponent", "Дополнительный бот из конфигурации", { order: 30 }),
+    ],
+  };
+  setBotCatalog(browserCatalog);
   const lanSnapshot = {
     ...session.snapshot,
-    requestedOpponentMode: "lan",
+    ...noBotIdentity,
     opponentMode: "lan",
     opponentFallbackActive: false,
   };
@@ -534,8 +608,8 @@ async function main() {
   renderView(
     {
       ...session.snapshot,
-      requestedOpponentMode: "simple",
-      opponentMode: "simple",
+      ...botIdentity("calm", "Тихий"),
+      opponentMode: "bot",
       opponentFallbackActive: false,
       role: "host",
       connection: "connected",
@@ -550,18 +624,17 @@ async function main() {
     false,
   );
   assert.equal(ui.connectionLabel.textContent, "Игра против бота");
-  assert.equal(ui.connectionPill.dataset.mode, "simple");
-  assert.equal(ui.arenaModeLabel.textContent, "Против бота · Simple");
+  assert.equal(ui.connectionPill.dataset.mode, "bot");
+  assert.equal(ui.arenaModeLabel.textContent, "Против бота · Тихий");
   assert.equal(ui.leftPlayer.textContent, "Лиса");
-  assert.equal(ui.rightPlayer.textContent, "Бот Simple");
+  assert.equal(ui.rightPlayer.textContent, "Бот Тихий");
   assert.equal(ui.roleDetail.textContent, "Вы — слева");
-  assert.equal(ui.peerDetail.textContent, "Бот Simple");
+  assert.equal(ui.peerDetail.textContent, "Бот Тихий");
   assert.equal(ui.pingRow.hidden, true);
   assert.equal(ui.networkHint.hidden, true);
   assert.equal(ui.shareBox.hidden, true);
   assert.equal(ui.challengeRequest.hidden, true);
   assert.equal(ui.botButton.disabled, true);
-  assert.equal(ui.hardButton.disabled, true);
   assert.equal(ui.opponentFallback.hidden, true);
   assert.equal(ui.leaveButton.textContent, "К выбору игры");
   assert.equal(ui.restartButton.disabled, true);
@@ -569,8 +642,8 @@ async function main() {
   renderView(
     {
       ...session.snapshot,
-      requestedOpponentMode: "simple",
-      opponentMode: "simple",
+      ...botIdentity("calm", "Тихий"),
+      opponentMode: "bot",
       opponentFallbackActive: false,
       role: "host",
       connection: "connected",
@@ -590,8 +663,8 @@ async function main() {
   renderView(
     {
       ...session.snapshot,
-      requestedOpponentMode: "hard",
-      opponentMode: "hard",
+      ...botIdentity("predictive", "Прогноз"),
+      opponentMode: "bot",
       role: "host",
       connection: "connected",
       phase: "playing",
@@ -601,17 +674,20 @@ async function main() {
     false,
     false,
   );
-  assert.equal(ui.arenaModeLabel.textContent, "Против бота · Hard");
-  assert.equal(ui.rightPlayer.textContent, "Бот Hard");
-  assert.equal(ui.peerDetail.textContent, "Бот Hard");
-  assert.equal(ui.connectionPill.dataset.requestedMode, "hard");
+  assert.equal(ui.arenaModeLabel.textContent, "Против бота · Прогноз");
+  assert.equal(ui.rightPlayer.textContent, "Бот Прогноз");
+  assert.equal(ui.peerDetail.textContent, "Бот Прогноз");
+  assert.equal(ui.connectionPill.dataset.requestedBotId, "predictive");
   assert.equal(ui.opponentFallback.hidden, true);
   renderView(
     {
       ...session.snapshot,
-      requestedOpponentMode: "hard",
-      opponentMode: "simple",
+      ...botIdentity("predictive", "Прогноз"),
+      opponentMode: "bot",
       opponentFallbackActive: true,
+      effectiveBotId: "calm",
+      effectiveBotName: "Тихий",
+      botFallbackReason: "Выбранный бот перестал отвечать.",
       role: "host",
       connection: "connected",
       phase: "playing",
@@ -621,16 +697,19 @@ async function main() {
     false,
     false,
   );
-  assert.equal(ui.arenaModeLabel.textContent, "Hard недоступен · играет Simple");
-  assert.equal(ui.rightPlayer.textContent, "Бот Simple");
+  assert.equal(ui.arenaModeLabel.textContent, "Прогноз недоступен · играет Тихий");
+  assert.equal(ui.rightPlayer.textContent, "Бот Тихий");
   assert.equal(ui.opponentFallback.hidden, false);
-  assert.match(ui.opponentFallback.textContent, /Hard недоступен.*Simple/);
+  assert.match(ui.opponentFallback.textContent, /Прогноз.*недоступен.*Тихий/);
   renderView(
     {
       ...session.snapshot,
-      requestedOpponentMode: "hard",
-      opponentMode: "simple",
+      ...botIdentity("predictive", "Прогноз"),
+      opponentMode: "bot",
       opponentFallbackActive: true,
+      effectiveBotId: "calm",
+      effectiveBotName: "Тихий",
+      botFallbackReason: "Выбранный бот перестал отвечать.",
       role: "host",
       connection: "connected",
       phase: "gameover",
@@ -650,13 +729,19 @@ async function main() {
   assert.equal(ui.challengeRequest.hidden, true);
   assert.equal(ui.leaveButton.textContent, "Отменить вызов");
   assert.equal(ui.overlayTitle.textContent, "Ждём согласия");
-  assert.equal(parseSnapshot({ connection: "incomingChallenge" }).connection, "incomingChallenge");
-  assert.equal(parseSnapshot({ localNickname: "Лиса", peerNickname: "Кот" }).peerNickname, "Кот");
   assert.equal(
-    parseSnapshot({ connection: "awaitingAcceptance" }).connection,
+    parseSnapshot(httpSnapshot({ connection: "incomingChallenge" })).connection,
+    "incomingChallenge",
+  );
+  assert.equal(
+    parseSnapshot(httpSnapshot({ localNickname: "Лиса", peerNickname: "Кот" })).peerNickname,
+    "Кот",
+  );
+  assert.equal(
+    parseSnapshot(httpSnapshot({ connection: "awaitingAcceptance" })).connection,
     "awaitingAcceptance",
   );
-  assert.equal(parseSnapshot({ connection: "searching" }).connection, "searching");
+  assert.equal(parseSnapshot(httpSnapshot({ connection: "searching" })).connection, "searching");
   renderView(
     { ...lanSnapshot, role: "none", connection: "searching", message: "", udpPort: 0 },
     false,
@@ -671,7 +756,7 @@ async function main() {
     {
       ...session.snapshot,
       role: "none",
-      requestedOpponentMode: "none",
+      ...noBotIdentity,
       opponentMode: "none",
       opponentFallbackActive: false,
       connection: "idle",
@@ -684,7 +769,6 @@ async function main() {
   assert.equal(ui.playerNickname.disabled, false);
   assert.equal(ui.quickButton.disabled, false);
   assert.equal(ui.botButton.disabled, false);
-  assert.equal(ui.hardButton.disabled, false);
   assert.equal(ui.opponentFallback.hidden, true);
   assert.equal(ui.networkHint.hidden, true);
   assert.equal(ui.arenaModeLabel.textContent, "Выберите режим");
@@ -706,6 +790,8 @@ async function main() {
     now = at;
     visualSession.apply(
       {
+        ...httpSnapshot(),
+        opponentMode: "lan",
         role: "host",
         connection: "connected",
         phase: "playing",
@@ -805,27 +891,36 @@ async function main() {
   assert.ok(visualLocal(3196, -1) > 0.7);
 
   // A mode switch resets prediction even when the round and tick are unchanged.
-  visualApply({ requestedOpponentMode: "lan", opponentMode: "lan", roundId: 50, tick: 10 }, 3200);
-  visualApply({ requestedOpponentMode: "lan", opponentMode: "lan", roundId: 50, tick: 11 }, 3216);
+  visualApply({ ...noBotIdentity, opponentMode: "lan", roundId: 50, tick: 10 }, 3200);
+  visualApply({ ...noBotIdentity, opponentMode: "lan", roundId: 50, tick: 11 }, 3216);
   assert.equal(visualMotion.sampleCount, 2);
   const resetsBeforeModeSwitch = visualResets;
   visualApply(
-    { requestedOpponentMode: "simple", opponentMode: "simple", roundId: 50, tick: 11 },
+    { ...botIdentity("calm", "Тихий"), opponentMode: "bot", roundId: 50, tick: 11 },
     3232,
   );
-  assert.equal(visualSession.snapshot.opponentMode, "simple");
+  assert.equal(visualSession.snapshot.opponentMode, "bot");
   assert.equal(visualResets, resetsBeforeModeSwitch + 1);
   assert.equal(visualMotion.sampleCount, 1);
 
-  // Mid-rally Hard fallback keeps the requested session identity and motion history.
-  visualApply({ requestedOpponentMode: "hard", opponentMode: "hard", roundId: 51, tick: 10 }, 3250);
-  visualApply({ requestedOpponentMode: "hard", opponentMode: "hard", roundId: 51, tick: 11 }, 3266);
+  // Mid-rally configured fallback keeps the requested session identity and motion history.
+  visualApply(
+    { ...botIdentity("predictive", "Прогноз"), opponentMode: "bot", roundId: 51, tick: 10 },
+    3250,
+  );
+  visualApply(
+    { ...botIdentity("predictive", "Прогноз"), opponentMode: "bot", roundId: 51, tick: 11 },
+    3266,
+  );
   const resetsBeforeFallback = visualResets;
   visualApply(
     {
-      requestedOpponentMode: "hard",
-      opponentMode: "simple",
+      ...botIdentity("predictive", "Прогноз"),
+      opponentMode: "bot",
       opponentFallbackActive: true,
+      effectiveBotId: "calm",
+      effectiveBotName: "Тихий",
+      botFallbackReason: "Выбранный бот перестал отвечать.",
       roundId: 51,
       tick: 12,
     },
@@ -834,10 +929,13 @@ async function main() {
   assert.equal(visualResets, resetsBeforeFallback);
   assert.equal(visualMotion.sampleCount, 2);
 
-  // Both visible bot forms submit an explicit mode to the local opponent endpoint.
+  // One selection form submits configured IDs, including an extra config-only entry.
   const html = readFileSync(`${__dirname}/../../frontend/index.html`, "utf8");
-  assert.match(html, /<form[^>]+id="bot-form"[\s\S]*?<button[^>]+id="bot-button"/);
-  assert.match(html, /<form[^>]+id="hard-form"[\s\S]*?<button[^>]+id="hard-button"/);
+  assert.match(
+    html,
+    /<form[^>]+id="bot-form"[\s\S]*?<select[^>]+id="bot-select"[\s\S]*?<button[^>]+id="bot-button"/,
+  );
+  assert.doesNotMatch(html, /hard-form|hard-button|Simple|Hard/);
   assert.match(html, /id="opponent-fallback"/);
   assert.match(html, /id="tab-host"/);
   assert.match(html, /id="tab-join"/);
@@ -849,76 +947,367 @@ async function main() {
   globalThis.WebSocket = class {
     static CONNECTING = 0;
     static OPEN = 1;
+    static instances = [];
     readyState = 0;
-    addEventListener() {}
+    listeners = new Map();
+    constructor() {
+      WebSocket.instances.push(this);
+    }
+    addEventListener(type, listener) {
+      this.listeners.set(type, listener);
+    }
+    dispatch(type, event) {
+      this.listeners.get(type)?.(event);
+    }
+    close() {
+      this.readyState = 3;
+    }
   };
   const requests = [];
-  const idleSnapshot = {
-    ...session.snapshot,
-    version: 7,
+  const idleSnapshot = httpSnapshot({
     role: "none",
-    requestedOpponentMode: "none",
     opponentMode: "none",
-    opponentFallbackActive: false,
     connection: "idle",
     phase: "waiting",
-    localNickname: "",
     roundId: 60,
     tick: 0,
-  };
+  });
+  let catalogPayload = browserCatalog;
+  let catalogError = false;
+  let rejectSelection = false;
+  let rejectRestart = false;
+  let invalidActionResponse = false;
+  let holdNextCatalog = false;
+  let releaseOldCatalog = null;
+  let serverSnapshot = idleSnapshot;
   globalThis.fetch = async (path, options) => {
     requests.push({ path, options });
-    const requestedMode = path === "/api/local-opponent" ? JSON.parse(options.body).mode : "none";
-    const data =
+    if (path === "/api/bots") {
+      if (catalogError) throw new Error("Network failure with sensitive detail");
+      const payload = catalogPayload;
+      if (holdNextCatalog) {
+        holdNextCatalog = false;
+        await new Promise((resolve) => {
+          releaseOldCatalog = resolve;
+        });
+      }
+      return { ok: true, text: async () => JSON.stringify(payload) };
+    }
+    if (path === "/api/local-opponent" && rejectSelection) {
+      return {
+        ok: false,
+        status: 400,
+        text: async () => JSON.stringify({ error: "Выбранный бот недоступен." }),
+      };
+    }
+    if (path === "/api/restart" && rejectRestart) {
+      serverSnapshot = idleSnapshot;
+      pushSnapshot(serverSnapshot); // Backend stops before the failed rematch response arrives.
+      return {
+        ok: false,
+        status: 400,
+        text: async () => JSON.stringify({ error: "Бот не смог продолжить игру." }),
+      };
+    }
+    if (path === "/api/quick" && invalidActionResponse) {
+      return { ok: true, text: async () => JSON.stringify({ version: 7, role: "host" }) };
+    }
+    const selected =
       path === "/api/local-opponent"
-        ? {
-            ...idleSnapshot,
-            role: "host",
-            requestedOpponentMode: requestedMode,
-            opponentMode: requestedMode,
-            connection: "connected",
-            phase: "countdown",
-            localNickname: "Browser Tester",
-            roundId: 61,
-          }
-        : idleSnapshot;
-    return { ok: true, text: async () => JSON.stringify(data) };
+        ? browserCatalog.bots.find((bot) => bot.id === JSON.parse(options.body).botId)
+        : null;
+    const data = selected
+      ? {
+          ...idleSnapshot,
+          ...botIdentity(selected.id, selected.name),
+          role: "host",
+          connection: "connected",
+          phase: "countdown",
+          localNickname: "Browser Tester",
+          roundId: 61,
+        }
+      : idleSnapshot;
+    if (path === "/api/local-opponent" || path === "/api/leave") serverSnapshot = data;
+    return {
+      ok: true,
+      text: async () => JSON.stringify(path === "/api/status" ? serverSnapshot : data),
+    };
   };
+  const { encode } = await import("@msgpack/msgpack");
+  const pushSnapshot = (next) => {
+    const payload = [
+      8,
+      ["none", "host", "guest"].indexOf(next.role),
+      [
+        "idle",
+        "waiting",
+        "connecting",
+        "connected",
+        "incomingChallenge",
+        "awaitingAcceptance",
+        "searching",
+      ].indexOf(next.connection),
+      next.message,
+      next.udpPort,
+      next.localAddresses,
+      next.peerAddress,
+      next.leftY,
+      next.rightY,
+      next.ballX,
+      next.ballY,
+      next.ballVx,
+      next.ballVy,
+      next.leftScore,
+      next.rightScore,
+      ["waiting", "countdown", "playing", "gameover"].indexOf(next.phase),
+      next.countdown,
+      next.tick,
+      next.roundId,
+      next.pingMs,
+      [],
+      next.localNickname,
+      next.peerNickname,
+      ["none", "lan", "bot"].indexOf(next.opponentMode),
+      next.requestedBotId,
+      next.requestedBotName,
+      next.effectiveBotId,
+      next.effectiveBotName,
+      next.opponentFallbackActive,
+      next.botFallbackReason,
+    ];
+    WebSocket.instances
+      .at(-1)
+      .dispatch("message", { data: Uint8Array.from(encode(payload)).buffer });
+  };
+  const catalogRequests = () => requests.filter((request) => request.path === "/api/bots").length;
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
   const { startGame } = await import("../../.artifacts/frontend-test/game.js");
   ui.playerNickname.value = "Browser Tester";
   startGame();
+  await flush();
+  assert.equal(ui.botSelect.value, "calm");
+  assert.equal(ui.botSelect.children.length, 3);
+  assert.equal(ui.botButton.disabled, false);
   ui.botForm.dispatch("submit");
-  await new Promise((resolve) => setImmediate(resolve));
+  await flush();
   const botRequest = requests.find((request) => request.path === "/api/local-opponent");
   assert.ok(botRequest);
   assert.equal(botRequest.options.method, "POST");
   assert.deepEqual(JSON.parse(botRequest.options.body), {
     nickname: "Browser Tester",
-    mode: "simple",
+    botId: "calm",
   });
-  assert.equal(ui.arenaModeLabel.textContent, "Против бота · Simple");
-  assert.equal(ui.leftPlayer.textContent, "Browser Tester");
-  assert.equal(ui.rightPlayer.textContent, "Бот Simple");
+  assert.equal(ui.arenaModeLabel.textContent, "Против бота · Тихий");
+  assert.equal(ui.rightPlayer.textContent, "Бот Тихий");
+  assert.equal(ui.botSelect.disabled, true);
+  assert.ok(requests.filter((request) => request.path === "/api/bots").length >= 2);
 
   ui.leaveButton.dispatch("click");
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(ui.hardButton.disabled, false);
-  ui.hardForm.dispatch("submit");
-  await new Promise((resolve) => setImmediate(resolve));
-  const hardRequest = requests.find(
+  await flush();
+  ui.botSelect.value = "config-only-opponent";
+  ui.botSelect.dispatch("change");
+  ui.botForm.dispatch("submit");
+  await flush();
+  const extraRequest = requests.find(
     (request) =>
-      request.path === "/api/local-opponent" && JSON.parse(request.options.body).mode === "hard",
+      request.path === "/api/local-opponent" &&
+      JSON.parse(request.options.body).botId === "config-only-opponent",
   );
-  assert.ok(hardRequest);
-  assert.deepEqual(JSON.parse(hardRequest.options.body), {
+  assert.ok(extraRequest);
+  assert.deepEqual(JSON.parse(extraRequest.options.body), {
     nickname: "Browser Tester",
-    mode: "hard",
+    botId: "config-only-opponent",
   });
-  assert.equal(ui.arenaModeLabel.textContent, "Против бота · Hard");
-  assert.equal(ui.rightPlayer.textContent, "Бот Hard");
+  assert.equal(ui.rightPlayer.textContent, "Бот Дополнительный бот из конфигурации");
+  assert.equal(ui.botSelect.value, "config-only-opponent");
+  ui.leaveButton.dispatch("click");
+  await flush();
+  assert.equal(ui.botSelect.value, "config-only-opponent");
 
+  // A failed start refreshes truthful availability and keeps the requested selection visible.
+  ui.botSelect.value = "predictive";
+  ui.botSelect.dispatch("change");
+  catalogPayload = {
+    ...browserCatalog,
+    bots: browserCatalog.bots.map((bot) =>
+      bot.id === "predictive"
+        ? {
+            ...bot,
+            availability: "unavailable",
+            availabilityReason: "Выбранный бот недоступен.",
+            canPlay: false,
+          }
+        : bot,
+    ),
+  };
+  rejectSelection = true;
+  ui.botForm.dispatch("submit");
+  await flush();
+  assert.equal(ui.botSelect.value, "predictive");
+  assert.equal(ui.botButton.disabled, true);
+  assert.match(ui.botCatalogStatus.textContent, /Выбранный бот недоступен/);
+  assert.equal(
+    ui.botSelect.children.find((option) => option.value === "predictive").disabled,
+    true,
+  );
+
+  // A terminal strategy failure refreshes once, preserving the failed selection. A late
+  // catalog response started before that failure cannot restore stale playable status.
+  rejectSelection = false;
+  catalogPayload = browserCatalog;
+  setBotCatalog(browserCatalog);
+  ui.botSelect.value = "calm";
+  ui.botSelect.dispatch("change");
+  holdNextCatalog = true;
+  ui.botForm.dispatch("submit");
+  await flush();
+  assert.equal(typeof releaseOldCatalog, "function");
+  const beforeTerminalFailure = catalogRequests();
+  catalogPayload = {
+    ...browserCatalog,
+    bots: browserCatalog.bots.map((bot) =>
+      bot.id === "calm"
+        ? {
+            ...bot,
+            availability: "unavailable",
+            availabilityReason: "Выбранный бот перестал отвечать.",
+            canPlay: false,
+          }
+        : bot,
+    ),
+  };
+  serverSnapshot = idleSnapshot;
+  pushSnapshot(serverSnapshot);
+  await flush();
+  assert.equal(catalogRequests(), beforeTerminalFailure + 1);
+  assert.equal(ui.botSelect.value, "calm");
+  assert.equal(ui.botButton.disabled, true);
+  assert.match(ui.botCatalogStatus.textContent, /перестал отвечать/);
+  pushSnapshot({ ...idleSnapshot, tick: 1 });
+  pushSnapshot({ ...idleSnapshot, tick: 2 });
+  await flush();
+  assert.equal(catalogRequests(), beforeTerminalFailure + 1);
+  releaseOldCatalog();
+  await flush();
+  assert.equal(ui.botButton.disabled, true);
+  assert.equal(ui.botSelect.children.find((option) => option.value === "calm").disabled, true);
+
+  // An unsolicited runtime fallback refreshes primary availability once and keeps both
+  // names/reason visible. Later ticks preserve the selection without catalog fetches.
+  catalogPayload = browserCatalog;
+  setBotCatalog(browserCatalog);
+  ui.botSelect.value = "predictive";
+  ui.botSelect.dispatch("change");
+  ui.botForm.dispatch("submit");
+  await flush();
+  const beforeFallback = catalogRequests();
+  catalogPayload = {
+    ...browserCatalog,
+    bots: browserCatalog.bots.map((bot) =>
+      bot.id === "predictive"
+        ? {
+            ...bot,
+            availability: "unavailable",
+            availabilityReason: "Выбранный бот перестал отвечать.",
+            fallbackBotId: "calm",
+            canPlay: true,
+          }
+        : bot,
+    ),
+  };
+  serverSnapshot = {
+    ...serverSnapshot,
+    ...botIdentity("predictive", "Прогноз", "calm", "Тихий"),
+    opponentFallbackActive: true,
+    botFallbackReason: "Выбранный бот перестал отвечать.",
+    phase: "playing",
+    tick: 10,
+  };
+  pushSnapshot(serverSnapshot);
+  await flush();
+  assert.equal(catalogRequests(), beforeFallback + 1);
+  assert.equal(ui.botSelect.value, "predictive");
+  assert.match(ui.botCatalogStatus.textContent, /перестал отвечать/);
+  assert.match(ui.opponentFallback.textContent, /Прогноз.*Тихий.*перестал отвечать/);
+  pushSnapshot({ ...serverSnapshot, tick: 11 });
+  await flush();
+  assert.equal(catalogRequests(), beforeFallback + 1);
+  ui.leaveButton.dispatch("click");
+  await flush();
+
+  // A failed rematch that stops during the POST refreshes once rather than relying on
+  // a later rejected Play attempt; its snapshot transition shares the POST's refresh.
+  catalogPayload = browserCatalog;
+  setBotCatalog(browserCatalog);
+  ui.botSelect.value = "calm";
+  ui.botSelect.dispatch("change");
+  ui.botForm.dispatch("submit");
+  await flush();
+  serverSnapshot = { ...serverSnapshot, phase: "gameover", tick: 100 };
+  pushSnapshot(serverSnapshot);
+  const beforeRematchFailure = catalogRequests();
+  catalogPayload = {
+    ...browserCatalog,
+    bots: browserCatalog.bots.map((bot) =>
+      bot.id === "calm"
+        ? {
+            ...bot,
+            availability: "unavailable",
+            availabilityReason: "Бот не смог продолжить игру.",
+            canPlay: false,
+          }
+        : bot,
+    ),
+  };
+  rejectRestart = true;
+  ui.restartButton.dispatch("click");
+  await flush();
+  assert.equal(catalogRequests(), beforeRematchFailure + 1);
+  assert.equal(ui.botSelect.value, "calm");
+  assert.equal(ui.botButton.disabled, true);
+  assert.match(ui.botCatalogStatus.textContent, /не смог продолжить игру/);
+  assert.equal(ui.leaveButton.disabled, true);
+
+  // Parser errors returned by a POST remain Russian in the visible toast.
+  invalidActionResponse = true;
+  ui.quickForm.dispatch("submit");
+  await flush();
+  assert.match(ui.toast.textContent, /некорректный ответ/);
+  assert.doesNotMatch(ui.toast.textContent, /Unsupported|Invalid snapshot/);
+
+  // Fetch errors offer retry in Russian, and configured HTML-looking metadata remains text.
+  catalogError = true;
+  ui.botCatalogRetry.dispatch("click");
+  await flush();
+  assert.equal(ui.botCatalogRetry.hidden, false);
+  assert.match(ui.botCatalogStatus.textContent, /Не удалось загрузить ботов/);
+  assert.doesNotMatch(ui.botCatalogStatus.textContent, /Network|sensitive/);
+  catalogError = false;
+  catalogPayload = {
+    ...browserCatalog,
+    bots: browserCatalog.bots.map((bot) =>
+      bot.id === "config-only-opponent" ? { ...bot, name: "<b>Настроенный бот</b>" } : bot,
+    ),
+  };
+  ui.botCatalogRetry.dispatch("click");
+  await flush();
+  assert.equal(ui.botCatalogRetry.hidden, true);
+  assert.match(
+    ui.botSelect.children.find((option) => option.value === "config-only-opponent").textContent,
+    /<b>Настроенный бот<\/b>/,
+  );
+  const replacements = ui.botSelect.replacementCount;
+  renderView({ ...idleSnapshot, tick: 1 }, false, false);
+  renderView({ ...idleSnapshot, tick: 2 }, false, false);
+  assert.equal(ui.botSelect.replacementCount, replacements);
+  assert.equal(ui.botSelect.value, "calm");
+  setBotCatalog({ version: 8, defaultBotId: "calm", bots: [] });
+  renderView(idleSnapshot, false, false);
+  assert.equal(ui.botButton.disabled, true);
+  assert.match(ui.botCatalogStatus.textContent, /нет ботов/);
+  assert.equal(ui.quickButton.disabled, false);
   console.log(
-    "Frontend behavior checks passed: motion, prediction, events, Simple and Hard views, fallback, LAN, and bot forms.",
+    "Frontend behavior checks passed: motion, prediction, events, bot identities/fallback, LAN, catalog refresh, and generic selection.",
   );
 }
 

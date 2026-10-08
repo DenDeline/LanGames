@@ -22,9 +22,7 @@ if (args.Length == 1 && args[0] == "--hard-benchmark")
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddBotCatalog(builder.Configuration);
 builder.Services.AddSingleton<IBotStrategyFactory, TrackerBotStrategyFactory>();
-// Narrow diagnostic/integration override for the frozen default model profile.
-builder.Services.AddSingleton<IBotStrategyFactory>(services => new OnnxBotStrategyFactory(
-    services.GetRequiredService<IHostEnvironment>(), Environment.GetEnvironmentVariable("LANPONG_HARD_MODEL_PATH")));
+builder.Services.AddSingleton<IBotStrategyFactory, OnnxBotStrategyFactory>();
 builder.Services.AddSingleton<BotRuntime>();
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonSerializerContext.Default));
@@ -34,12 +32,14 @@ var app = builder.Build();
 // Freeze the startup configuration even before gameplay starts consuming the catalog.
 _ = app.Services.GetRequiredService<BotCatalog>();
 var peer = app.Services.GetRequiredService<PongPeer>();
+var bots = app.Services.GetRequiredService<BotRuntime>();
 
 app.UseWebSockets();
 app.UseDefaultFiles();
 app.UseStaticFiles();
 
 app.MapGet("/api/status", () => peer.Snapshot());
+app.MapGet("/api/bots", () => bots.DescribeCatalog());
 
 app.MapPost("/api/quick", async (QuickGameRequest request) =>
 {
@@ -58,17 +58,7 @@ app.MapPost("/api/local-opponent", async (LocalOpponentRequest request) =>
 {
     try
     {
-        switch (request.Mode ?? OpponentMode.Simple)
-        {
-            case OpponentMode.Simple:
-                await peer.StartLocalOpponentAsync(request.Nickname);
-                break;
-            case OpponentMode.Hard:
-                await peer.StartHardLocalOpponentAsync(request.Nickname);
-                break;
-            default:
-                return Results.BadRequest(new ErrorResponse("Выберите режим Simple или Hard."));
-        }
+        await peer.StartBotAsync(request.Nickname, request.BotId);
         return Results.Ok(peer.Snapshot());
     }
     catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
@@ -175,13 +165,14 @@ app.Run();
 
 internal sealed record HostRequest(int Port, string Nickname);
 internal sealed record QuickGameRequest(string Nickname);
-internal sealed record LocalOpponentRequest(string Nickname, OpponentMode? Mode = null);
+internal sealed record LocalOpponentRequest(string Nickname, string? BotId);
 internal sealed record JoinRequest(string Address, int Port, string Nickname);
 internal sealed record ErrorResponse(string Error);
 internal sealed record DiscoverResponse(DiscoveredHost[] Hosts);
 
 [JsonSourceGenerationOptions(JsonSerializerDefaults.Web)]
 [JsonSerializable(typeof(PongSnapshot))]
+[JsonSerializable(typeof(BotCatalogResponse))]
 [JsonSerializable(typeof(HostRequest))]
 [JsonSerializable(typeof(QuickGameRequest))]
 [JsonSerializable(typeof(LocalOpponentRequest))]

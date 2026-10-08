@@ -94,7 +94,8 @@ export class FeedbackController {
       this.resyncFeedbackOnNextSnapshot ||
       this.seenEventRound === null ||
       previous.role !== next.role ||
-      previous.requestedOpponentMode !== next.requestedOpponentMode ||
+      previous.opponentMode !== next.opponentMode ||
+      previous.requestedBotId !== next.requestedBotId ||
       previous.connection !== "connected";
     this.resyncFeedbackOnNextSnapshot = false;
     if (enteringSession || next.roundId !== this.seenEventRound) {

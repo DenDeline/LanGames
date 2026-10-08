@@ -3,14 +3,6 @@ using Microsoft.Extensions.Logging;
 
 namespace LanPong;
 
-internal enum BotAvailabilityState
-{
-    Ready,
-    NotChecked,
-    Unavailable,
-    Disabled
-}
-
 internal sealed record BotAvailability(BotAvailabilityState State, string? Reason);
 
 internal sealed class BotUnavailableException(string botId, string reason) : InvalidOperationException(reason)
@@ -59,19 +51,52 @@ internal sealed class BotRuntime
     public BotAvailability GetAvailability(string botId)
     {
         var entry = Resolve(botId);
-        if (!entry.Enabled) return new(BotAvailabilityState.Disabled, "This bot is disabled.");
+        if (!entry.Enabled) return new(BotAvailabilityState.Disabled, "Этот бот отключён.");
         lock (_availabilityGate)
             if (_availability.TryGetValue(botId, out var known)) return known;
         return entry.Onnx is null
             ? new(BotAvailabilityState.Ready, null)
-            : new(BotAvailabilityState.NotChecked, "The model will be checked when selected.");
+            : new(BotAvailabilityState.NotChecked, "Модель будет проверена при выборе бота.");
+    }
+
+    public BotCatalogResponse DescribeCatalog()
+    {
+        // One coherent view of latched failures; this never invokes a factory or reads model files.
+        lock (_availabilityGate)
+        {
+            var descriptors = new BotDescriptor[Catalog.Entries.Length];
+            for (var index = 0; index < descriptors.Length; index++)
+            {
+                var entry = Catalog.Entries[index];
+                var availability = GetAvailability(entry.Id);
+                var canPlay = false;
+                if (entry.Enabled)
+                {
+                    var candidate = entry;
+                    while (true)
+                    {
+                        if (GetAvailability(candidate.Id).State is BotAvailabilityState.Ready or BotAvailabilityState.NotChecked)
+                        {
+                            canPlay = true;
+                            break;
+                        }
+                        if (candidate.FallbackBotId is not { } fallbackId) break;
+                        candidate = Resolve(fallbackId);
+                    }
+                }
+                descriptors[index] = new(entry.Id, entry.Name, entry.Description, entry.Style,
+                    entry.Difficulty, entry.Category, entry.Order, entry.Glyph, entry.Enabled,
+                    entry.FallbackBotId, availability.State, availability.Reason, canPlay);
+            }
+            return new(Catalog.DefaultBotId, descriptors);
+        }
     }
 
     // Call before entering the simulation state lock: Reset can read/hash/warm native resources here.
-    public PreparedBotSession Prepare(string botId)
+    public PreparedBotSession Prepare(string? botId)
     {
         var requested = Resolve(botId);
-        if (!requested.Enabled) throw new InvalidOperationException("This bot is disabled.");
+        if (!requested.Enabled) throw new InvalidOperationException("Этот бот отключён.");
         var candidates = new List<PreparedBotSession.Candidate>();
         string? firstFailure = null;
         try
@@ -107,7 +132,7 @@ internal sealed class BotRuntime
                 entry = Resolve(fallbackId);
             }
             if (candidates.Count == 0)
-                throw new BotUnavailableException(requested.Id, firstFailure ?? "This bot is unavailable.");
+                throw new BotUnavailableException(requested.Id, firstFailure ?? "Этот бот недоступен.");
             return new(this, requested, candidates, candidates[0].Definition.Id == requested.Id ? null : firstFailure);
         }
         catch
@@ -118,10 +143,12 @@ internal sealed class BotRuntime
         }
     }
 
-    private BotDefinition Resolve(string botId)
+    private BotDefinition Resolve(string? botId)
     {
-        if (botId is null || !Catalog.TryGet(botId, out var entry))
-            throw new ArgumentException("Unknown bot ID.", nameof(botId));
+        if (string.IsNullOrWhiteSpace(botId))
+            throw new ArgumentException("Выберите бота.");
+        if (!Catalog.TryGet(botId, out var entry))
+            throw new ArgumentException("Неизвестный бот.");
         return entry!;
     }
 
@@ -139,11 +166,11 @@ internal sealed class BotRuntime
     {
         var reason = duringPreparation
             ? entry.Onnx is not null && error is (FileNotFoundException or DirectoryNotFoundException)
-                ? "The configured model is missing."
+                ? "Модель бота не найдена."
                 : entry.Onnx is not null && error is InvalidDataException
-                    ? "The configured model could not be verified."
-                    : "The bot could not be prepared."
-            : "The bot stopped responding.";
+                    ? "Модель бота не прошла проверку."
+                    : "Не удалось подготовить бота."
+            : "Бот перестал отвечать.";
         lock (_availabilityGate)
             _availability[entry.Id] = new(BotAvailabilityState.Unavailable, reason);
         return reason;

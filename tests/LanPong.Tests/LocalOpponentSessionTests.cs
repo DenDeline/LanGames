@@ -7,26 +7,30 @@ namespace LanPong.Tests;
 public sealed class LocalOpponentSessionTests
 {
     [Test]
-    public async Task StartLocalOpponentAsync_AdvancesBothAssignedPaddlesWithoutUdpAndSupportsRematchAndLeave()
+    public async Task StartBotAsync_AdvancesBothAssignedPaddlesWithoutUdpAndSupportsRematchAndLeave()
     {
         var opponent = new TrackedBotController();
         var factory = TrackerFactory(_ => opponent);
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
             BotTestSupport.Runtime([BotTestSupport.Tracker()], factory));
 
-        await peer.StartLocalOpponentAsync("Игрок");
+        await peer.StartBotAsync("Игрок", "tracker");
         var started = peer.Snapshot();
         await Assert.That(started.Role).IsEqualTo(PeerRole.Host);
-        await Assert.That(started.OpponentMode).IsEqualTo(OpponentMode.Simple);
-        await Assert.That(started.RequestedOpponentMode).IsEqualTo(OpponentMode.Simple);
+        await Assert.That(started.OpponentMode).IsEqualTo(OpponentMode.Bot);
+        await Assert.That(started.RequestedBotId).IsEqualTo("tracker");
         await Assert.That(started.OpponentFallbackActive).IsFalse();
-        await Assert.That(started.Version).IsEqualTo(7);
+        await Assert.That(started.Version).IsEqualTo(8);
         await Assert.That(started.Connection).IsEqualTo(ConnectionState.Connected);
         await Assert.That(started.Phase).IsEqualTo(GamePhase.Countdown);
         await Assert.That(started.UdpPort).IsEqualTo(0);
         await Assert.That(started.PeerAddress).IsNull();
         await Assert.That(started.PingMs).IsNull();
-        await Assert.That(started.PeerNickname).IsEqualTo("Компьютер");
+        await Assert.That(started.PeerNickname).IsNull();
+        await Assert.That(started.RequestedBotName).IsEqualTo("tracker");
+        await Assert.That(started.EffectiveBotId).IsEqualTo("tracker");
+        await Assert.That(started.EffectiveBotName).IsEqualTo("tracker");
+        await Assert.That(started.BotFallbackReason).IsNull();
         await Assert.That(started.RecentEvents.Single().Kind).IsEqualTo(GameEventKind.MatchStart);
 
         var browserController = Guid.NewGuid();
@@ -56,32 +60,35 @@ public sealed class LocalOpponentSessionTests
     }
 
     [Test]
-    public async Task StartLocalOpponentAsync_UsesVersionedBrowserSnapshotAndCanReturnToLanHosting()
+    public async Task StartBotAsync_UsesVersionedBrowserSnapshotAndCanReturnToLanHosting()
     {
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
             BotTestSupport.Runtime([BotTestSupport.Tracker()], TrackerFactory(_ => new TrackedBotController())));
-        await peer.StartLocalOpponentAsync("Игрок");
+        await peer.StartBotAsync("Игрок", "tracker");
         var local = peer.Snapshot();
         var buffer = new ArrayBufferWriter<byte>();
         BrowserWebSocketProtocol.WriteSnapshot(local, buffer);
         var (fieldCount, version, role, connection, udpPort, noPeerAddress, mode,
-            requestedMode, fallback, atEnd) =
+            requestedId, effectiveId, fallback, reason, atEnd) =
             ReadBrowserHeader(buffer.WrittenMemory);
 
-        await Assert.That(fieldCount).IsEqualTo(26);
-        await Assert.That(version).IsEqualTo(7);
+        await Assert.That(fieldCount).IsEqualTo(30);
+        await Assert.That(version).IsEqualTo(8);
         await Assert.That(role).IsEqualTo((int)PeerRole.Host);
         await Assert.That(connection).IsEqualTo((int)ConnectionState.Connected);
         await Assert.That(udpPort).IsEqualTo(0);
         await Assert.That(noPeerAddress).IsTrue();
-        await Assert.That(mode).IsEqualTo((int)OpponentMode.Simple);
-        await Assert.That(requestedMode).IsEqualTo((int)OpponentMode.Simple);
+        await Assert.That(mode).IsEqualTo((int)OpponentMode.Bot);
+        await Assert.That(requestedId).IsEqualTo("tracker");
+        await Assert.That(effectiveId).IsEqualTo("tracker");
+        await Assert.That(reason).IsNull();
         await Assert.That(fallback).IsFalse();
         await Assert.That(atEnd).IsTrue();
 
         await peer.LeaveAsync();
         await Assert.That(peer.Snapshot().OpponentMode).IsEqualTo(OpponentMode.None);
-        await Assert.That(peer.Snapshot().RequestedOpponentMode).IsEqualTo(OpponentMode.None);
+        await Assert.That(peer.Snapshot().RequestedBotId).IsNull();
+        await Assert.That(peer.Snapshot().EffectiveBotId).IsNull();
         int port;
         using (var reserved = new System.Net.Sockets.UdpClient(0))
             port = ((System.Net.IPEndPoint)reserved.Client.LocalEndPoint!).Port;
@@ -89,7 +96,8 @@ public sealed class LocalOpponentSessionTests
         var lobby = peer.Snapshot();
         await Assert.That(lobby.Role).IsEqualTo(PeerRole.Host);
         await Assert.That(lobby.OpponentMode).IsEqualTo(OpponentMode.Lan);
-        await Assert.That(lobby.RequestedOpponentMode).IsEqualTo(OpponentMode.Lan);
+        await Assert.That(lobby.RequestedBotId).IsNull();
+        await Assert.That(lobby.EffectiveBotId).IsNull();
         await Assert.That(lobby.OpponentFallbackActive).IsFalse();
         await Assert.That(lobby.Connection).IsEqualTo(ConnectionState.Waiting);
         await Assert.That(lobby.UdpPort).IsEqualTo(port);
@@ -98,7 +106,7 @@ public sealed class LocalOpponentSessionTests
     }
 
     [Test]
-    public async Task StartHardLocalOpponentAsync_WhenModelIsMissing_ReportsFallbackAndKeepsSessionPlayable()
+    public async Task StartModelBotAsync_WhenModelIsMissing_ReportsFallbackAndKeepsSessionPlayable()
     {
         var missingModel = Path.Combine(Path.GetTempPath(), $"missing-lanpong-{Guid.NewGuid():N}.onnx");
         var runtime = BotTestSupport.Runtime([BotTestSupport.Tracker(name: "Simple"),
@@ -106,15 +114,15 @@ public sealed class LocalOpponentSessionTests
             new TrackerBotStrategyFactory(), OnnxFactory(entry => new OnnxLocalOpponentController(entry.Onnx!)));
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, runtime);
 
-        await Assert.That(peer.HardOpponentStatus.Requested).IsFalse();
-        await peer.StartHardLocalOpponentAsync("Игрок");
+        await Assert.That(peer.BotStatus).IsNull();
+        await peer.StartBotAsync("Игрок", "model");
         var started = peer.Snapshot();
-        var status = peer.HardOpponentStatus;
-        await Assert.That(status.Requested).IsTrue();
-        await Assert.That(status.FallbackActive).IsTrue();
-        await Assert.That(string.IsNullOrWhiteSpace(status.Reason)).IsFalse();
-        await Assert.That(started.OpponentMode).IsEqualTo(OpponentMode.Simple);
-        await Assert.That(started.RequestedOpponentMode).IsEqualTo(OpponentMode.Hard);
+        var status = peer.BotStatus;
+        await Assert.That(status!.RequestedBotId).IsEqualTo("model");
+        await Assert.That(status.EffectiveBotId).IsEqualTo("tracker");
+        await Assert.That(string.IsNullOrWhiteSpace(status.FallbackReason)).IsFalse();
+        await Assert.That(started.OpponentMode).IsEqualTo(OpponentMode.Bot);
+        await Assert.That(started.RequestedBotId).IsEqualTo("model");
         await Assert.That(started.OpponentFallbackActive).IsTrue();
         await Assert.That(started.Connection).IsEqualTo(ConnectionState.Connected);
         await Assert.That(started.UdpPort).IsEqualTo(0);
@@ -126,29 +134,29 @@ public sealed class LocalOpponentSessionTests
         await Assert.That(playing.Tick).IsGreaterThan(started.Tick);
         peer.Restart();
         await Assert.That(peer.Snapshot().RoundId).IsEqualTo(started.RoundId + 1);
-        await Assert.That(peer.HardOpponentStatus.FallbackActive).IsTrue();
-        await Assert.That(peer.Snapshot().RequestedOpponentMode).IsEqualTo(OpponentMode.Hard);
+        await Assert.That(peer.BotStatus!.EffectiveBotId).IsEqualTo("tracker");
+        await Assert.That(peer.Snapshot().RequestedBotId).IsEqualTo("model");
         await Assert.That(peer.Snapshot().OpponentFallbackActive).IsTrue();
-        await Assert.That(peer.Snapshot().OpponentMode).IsEqualTo(OpponentMode.Simple);
+        await Assert.That(peer.Snapshot().OpponentMode).IsEqualTo(OpponentMode.Bot);
         await Assert.That(peer.Snapshot().Message.Contains("Simple", StringComparison.Ordinal)).IsTrue();
 
         await peer.LeaveAsync();
-        await Assert.That(peer.HardOpponentStatus.Requested).IsFalse();
-        await Assert.That(peer.HardOpponentStatus.FallbackActive).IsFalse();
-        await Assert.That(peer.HardOpponentStatus.Reason).IsNull();
+        await Assert.That(peer.BotStatus).IsNull();
+        await Assert.That(peer.Snapshot().BotFallbackReason).IsNull();
         await Assert.That(peer.Snapshot().OpponentMode).IsEqualTo(OpponentMode.None);
-        await Assert.That(peer.Snapshot().RequestedOpponentMode).IsEqualTo(OpponentMode.None);
+        await Assert.That(peer.Snapshot().RequestedBotId).IsNull();
+        await Assert.That(peer.Snapshot().EffectiveBotId).IsNull();
         await Assert.That(peer.Snapshot().OpponentFallbackActive).IsFalse();
 
-        await peer.StartLocalOpponentAsync("Игрок");
-        await Assert.That(peer.HardOpponentStatus.Requested).IsFalse();
-        await Assert.That(peer.Snapshot().RequestedOpponentMode).IsEqualTo(OpponentMode.Simple);
+        await peer.StartBotAsync("Игрок", "tracker");
+        await Assert.That(peer.BotStatus!.RequestedBotId).IsEqualTo("tracker");
+        await Assert.That(peer.Snapshot().RequestedBotId).IsEqualTo("tracker");
         await Assert.That(peer.Snapshot().Message.Contains("Hard", StringComparison.Ordinal)).IsFalse();
         await peer.LeaveAsync();
     }
 
     [Test]
-    public async Task StartHardLocalOpponentAsync_WithFrozenModel_ReportsHardAcrossRematch()
+    public async Task StartModelBotAsync_WithFrozenModel_PreservesSelectedIdentityAcrossRematch()
     {
         OnnxLocalOpponentController? hard = null;
         var runtime = BotTestSupport.Runtime([BotTestSupport.Tracker(),
@@ -157,10 +165,10 @@ public sealed class LocalOpponentSessionTests
             OnnxFactory(entry => hard = new OnnxLocalOpponentController(entry.Onnx!)));
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, runtime);
 
-        await peer.StartHardLocalOpponentAsync("Игрок");
+        await peer.StartBotAsync("Игрок", "model");
         var started = peer.Snapshot();
-        await Assert.That(started.OpponentMode).IsEqualTo(OpponentMode.Hard);
-        await Assert.That(started.RequestedOpponentMode).IsEqualTo(OpponentMode.Hard);
+        await Assert.That(started.OpponentMode).IsEqualTo(OpponentMode.Bot);
+        await Assert.That(started.RequestedBotId).IsEqualTo("model");
         await Assert.That(started.OpponentFallbackActive).IsFalse();
         await Assert.That(hard!.ModelSha256).IsEqualTo(HardLocalOpponentController.ExpectedModelSha256);
         await WaitForAsync(peer, snapshot => snapshot.Tick > started.Tick);
@@ -168,14 +176,17 @@ public sealed class LocalOpponentSessionTests
         peer.Restart();
         var restarted = peer.Snapshot();
         await Assert.That(restarted.RoundId).IsEqualTo(started.RoundId + 1);
-        await Assert.That(restarted.OpponentMode).IsEqualTo(OpponentMode.Hard);
-        await Assert.That(restarted.RequestedOpponentMode).IsEqualTo(OpponentMode.Hard);
+        await Assert.That(restarted.OpponentMode).IsEqualTo(OpponentMode.Bot);
+        await Assert.That(restarted.RequestedBotId).IsEqualTo("model");
+        await Assert.That(restarted.EffectiveBotId).IsEqualTo("model");
         await Assert.That(restarted.OpponentFallbackActive).IsFalse();
 
         await peer.LeaveAsync();
         var left = peer.Snapshot();
         await Assert.That(left.OpponentMode).IsEqualTo(OpponentMode.None);
-        await Assert.That(left.RequestedOpponentMode).IsEqualTo(OpponentMode.None);
+        await Assert.That(left.RequestedBotId).IsNull();
+        await Assert.That(left.EffectiveBotId).IsNull();
+        await Assert.That(left.BotFallbackReason).IsNull();
         await Assert.That(left.OpponentFallbackActive).IsFalse();
     }
 
@@ -196,7 +207,7 @@ public sealed class LocalOpponentSessionTests
     }
 
     [Test]
-    public async Task StartHardLocalOpponentAsync_WhenInferenceFails_UpdatesStatusWithoutStoppingClock()
+    public async Task StartModelBotAsync_WhenInferenceFails_UpdatesStatusWithoutStoppingClock()
     {
         var inference = new ThrowingInferenceSession();
         var runtime = BotTestSupport.Runtime([BotTestSupport.Tracker(name: "Simple"),
@@ -205,20 +216,22 @@ public sealed class LocalOpponentSessionTests
             OnnxFactory(entry => new OnnxLocalOpponentController(entry.Onnx!, inference)));
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, runtime);
 
-        await peer.StartHardLocalOpponentAsync("Игрок");
-        await Assert.That(peer.HardOpponentStatus.Requested).IsTrue();
-        await Assert.That(peer.HardOpponentStatus.FallbackActive).IsFalse();
-        await Assert.That(peer.Snapshot().OpponentMode).IsEqualTo(OpponentMode.Hard);
-        await Assert.That(peer.Snapshot().RequestedOpponentMode).IsEqualTo(OpponentMode.Hard);
+        await peer.StartBotAsync("Игрок", "model");
+        await Assert.That(peer.BotStatus!.RequestedBotId).IsEqualTo("model");
+        await Assert.That(peer.BotStatus.EffectiveBotId).IsEqualTo("model");
+        await Assert.That(peer.BotStatus.FallbackReason).IsNull();
+        await Assert.That(peer.Snapshot().OpponentMode).IsEqualTo(OpponentMode.Bot);
+        await Assert.That(peer.Snapshot().RequestedBotId).IsEqualTo("model");
         await Assert.That(peer.Snapshot().OpponentFallbackActive).IsFalse();
 
-        var fallback = await WaitForAsync(peer, _ => peer.HardOpponentStatus.FallbackActive && inference.Disposed,
+        var fallback = await WaitForAsync(peer, _ => peer.BotStatus?.EffectiveBotId == "tracker" && inference.Disposed,
             TimeSpan.FromSeconds(5));
         await Assert.That(fallback.Message.Contains("Simple", StringComparison.Ordinal)).IsTrue();
-        await Assert.That(fallback.OpponentMode).IsEqualTo(OpponentMode.Simple);
-        await Assert.That(fallback.RequestedOpponentMode).IsEqualTo(OpponentMode.Hard);
+        await Assert.That(fallback.OpponentMode).IsEqualTo(OpponentMode.Bot);
+        await Assert.That(fallback.RequestedBotId).IsEqualTo("model");
+        await Assert.That(fallback.EffectiveBotId).IsEqualTo("tracker");
         await Assert.That(fallback.OpponentFallbackActive).IsTrue();
-        await Assert.That(peer.HardOpponentStatus.Reason).IsNotNull();
+        await Assert.That(peer.BotStatus!.FallbackReason).IsNotNull();
         await Assert.That(inference.Disposed).IsTrue();
 
         var advanced = await WaitForAsync(peer, snapshot => snapshot.Tick > fallback.Tick);
@@ -227,7 +240,7 @@ public sealed class LocalOpponentSessionTests
     }
 
     private static (int FieldCount, int Version, int Role, int Connection, int UdpPort,
-        bool NoPeerAddress, int Mode, int RequestedMode, bool Fallback, bool AtEnd)
+        bool NoPeerAddress, int Mode, string? RequestedId, string? EffectiveId, bool Fallback, string? Reason, bool AtEnd)
         ReadBrowserHeader(ReadOnlyMemory<byte> bytes)
     {
         var reader = new MessagePackReader(new ReadOnlySequence<byte>(bytes));
@@ -241,10 +254,14 @@ public sealed class LocalOpponentSessionTests
         var noPeerAddress = reader.TryReadNil();
         for (var field = 7; field < 23; field++) reader.Skip();
         var mode = reader.ReadInt32();
-        var requestedMode = reader.ReadInt32();
+        var requestedId = reader.ReadString();
+        reader.Skip(); // Requested name.
+        var effectiveId = reader.ReadString();
+        reader.Skip(); // Effective name.
         var fallback = reader.ReadBoolean();
+        var reason = reader.ReadString();
         return (fieldCount, version, role, connection, udpPort, noPeerAddress,
-            mode, requestedMode, fallback, reader.End);
+            mode, requestedId, effectiveId, fallback, reason, reader.End);
     }
 
     private static async Task<PongSnapshot> WaitForAsync(PongPeer peer, Func<PongSnapshot, bool> predicate,

@@ -31,8 +31,14 @@ Worker evidence: zero-warning Release build, 16 focused catalog tests, 122 total
 
 Carry forward: catalog names permit 64 characters while human nicknames remain limited to 24; browser contracts must represent bot identity without accidentally applying the human nickname cap. Runtime ownership, availability, fallback, and path resolution are next.
 
-### Step 2 — in review
+### Step 2 — accepted
 
 Initial controller review confirms configured tracker behavior and strict ONNX failure reporting, with replay parity checks against the trained default controller. Prepared fallback resources permit tick-time switching without loading models or disposing native resources under the state lock.
 
 Coordinator refinement: preserve the prior leave-before-start contract. The first generic runtime draft intentionally allowed active bot replacement, but that behavior expands the scope and would admit two queued starts successively. The worker is adjusting it to one admission/one rejection and matching tests. This clarifies research target 7 before contract migration.
+
+Commit: `a34d425eedc8d9f854d3dceb2a1b9780d0edbc3a` (`refactor(bots): resolve opponents through strategy registry`). Final source confirms the generic path preserves leave-before-start; a deterministic barrier test proves one admitted start and one rejection. Coordinator and independent backend reviews found no remaining blockers.
+
+Worker evidence: 160 total .NET tests, including 11 configured-controller, 14 runtime, and 13 new session tests; zero-warning Release compilation; frontend/build, source integration, macOS ARM64 Native AOT publish/smoke and full native integration all pass. Only existing MessagePack IL3053/IL2104 publish warnings remain. Working tree was clean at the boundary.
+
+Carry forward: temporary version-7 mode adapters and model-path diagnostic override exist solely to keep the old browser/integration contract coherent. Remove production compatibility branches in step 3 while preserving standalone training/model diagnostics. Catalog discovery reports uninitialized models as not checked; known failures remain until restart. Slow native disposal outside `_gate` can still delay the clock if a disposal blocks; consider measurements in step 6 before changing cleanup scheduling.

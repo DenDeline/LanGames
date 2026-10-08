@@ -264,10 +264,8 @@ public enum OpponentMode
     None = 0,
     [JsonStringEnumMemberName("lan")]
     Lan = 1,
-    [JsonStringEnumMemberName("simple")]
-    Simple = 2,
-    [JsonStringEnumMemberName("hard")]
-    Hard = 3
+    [JsonStringEnumMemberName("bot")]
+    Bot = 2
 }
 
 public sealed record PongSnapshot(
@@ -294,8 +292,12 @@ public sealed record PongSnapshot(
     string LocalNickname,
     string? PeerNickname,
     OpponentMode OpponentMode,
-    OpponentMode RequestedOpponentMode = OpponentMode.None,
-    bool OpponentFallbackActive = false)
+    string? RequestedBotId = null,
+    string? RequestedBotName = null,
+    string? EffectiveBotId = null,
+    string? EffectiveBotName = null,
+    bool OpponentFallbackActive = false,
+    string? BotFallbackReason = null)
 {
     // HTTP snapshots and browser WebSocket snapshots share the same contract version.
     public int Version => BrowserWebSocketProtocol.Version;

@@ -109,17 +109,19 @@
             </div>
 
             <form class="bot-offer" id="bot-form">
-              <span class="bot-label">ОДИН ИГРОК · SIMPLE</span>
-              <p>Простой бот на этом устройстве. Вы управляете левой ракеткой.</p>
-              <button class="primary-button bot-button" id="bot-button" type="submit">
-                Играть · Simple
+              <span class="bot-label">ОДИН ИГРОК</span>
+              <label for="bot-select">Бот-соперник</label>
+              <select id="bot-select" aria-describedby="bot-catalog-status" disabled>
+                <option value="">Загружаем ботов…</option>
+              </select>
+              <p id="bot-catalog-status" role="status" aria-live="polite">
+                Загружаем список соперников…
+              </p>
+              <button class="secondary-button" id="bot-catalog-retry" type="button" hidden>
+                Повторить
               </button>
-            </form>
-            <form class="bot-offer hard-offer" id="hard-form">
-              <span class="bot-label">ОДИН ИГРОК · HARD</span>
-              <p>Более сильный бот на этом устройстве. Вы управляете левой ракеткой.</p>
-              <button class="primary-button bot-button" id="hard-button" type="submit">
-                Играть · Hard
+              <button class="primary-button bot-button" id="bot-button" type="submit" disabled>
+                Играть с ботом
               </button>
             </form>
             <p class="mode-divider">или играйте с другом по сети</p>
@@ -242,7 +244,7 @@
               aria-live="polite"
               hidden
             >
-              Hard недоступен — сейчас играет Simple.
+              Выбранный бот недоступен. Игра продолжается против другого соперника.
             </p>
             <dl class="session-details">
               <div>

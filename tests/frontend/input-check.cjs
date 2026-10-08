@@ -34,7 +34,7 @@ async function main() {
       this.editable = editable;
     }
     closest() {
-      return this.editable ? "input" : null;
+      return this.editable || null;
     }
   };
   globalThis.window = eventTarget();
@@ -60,7 +60,7 @@ async function main() {
   const motion = new MotionModel();
   const snapshot = {
     ...defaultSnapshot,
-    opponentMode: "simple",
+    opponentMode: "bot",
     role: "host",
     connection: "connected",
     phase: "playing",
@@ -86,6 +86,11 @@ async function main() {
   assert.equal(input.axis, 0);
   assert.equal(
     window.dispatch("keydown", { key: "s", target: new Element(true) }).prevented,
+    undefined,
+  );
+  assert.equal(input.axis, 0);
+  assert.equal(
+    window.dispatch("keydown", { key: "ArrowDown", target: new Element("select") }).prevented,
     undefined,
   );
   assert.equal(input.axis, 0);
@@ -120,7 +125,7 @@ async function main() {
   assert.deepEqual(changes.slice(0, 3), [-1, 0, 1]);
 
   console.log(
-    "Frontend input checks passed: keyboard and touch drive the left paddle in Simple mode.",
+    "Frontend input checks passed: keyboard and touch drive the left paddle against a configured bot.",
   );
 }
 

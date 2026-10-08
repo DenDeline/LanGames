@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { encode } from "@msgpack/msgpack";
-import { parseSnapshot } from "../../.artifacts/frontend-test/snapshot.js";
+import { defaultSnapshot, parseSnapshot } from "../../.artifacts/frontend-test/snapshot.js";
+import { parseBotCatalog } from "../../.artifacts/frontend-test/botCatalog.js";
 import { decodeWsSnapshot, encodeWsAxis } from "../../.artifacts/frontend-test/wsProtocol.js";
 
 const snapshot = [
-  7,
+  8,
   1,
   3,
   "Игра началась!",
@@ -34,27 +35,18 @@ const snapshot = [
   "Лиса",
   "Кот",
   1,
-  1,
+  null,
+  null,
+  null,
+  null,
   false,
+  null,
 ];
-
-function frame(value) {
-  return Uint8Array.from(encode(value)).buffer;
-}
-
-assert.equal(snapshot.length, 26);
-assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(-1))), [0x92, 7, 0xff]);
-assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(0))), [0x92, 7, 0]);
-assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(1))), [0x92, 7, 1]);
-assert.throws(() => encodeWsAxis(2), RangeError);
-assert.throws(() => encodeWsAxis(0.5), RangeError);
-
-const decoded = decodeWsSnapshot(frame(snapshot));
-assert.deepEqual(decoded, {
+const frame = (value) => Uint8Array.from(encode(value)).buffer;
+const expected = {
+  ...defaultSnapshot,
   role: "host",
   opponentMode: "lan",
-  requestedOpponentMode: "lan",
-  opponentFallbackActive: false,
   connection: "connected",
   message: "Игра началась!",
   udpPort: 47777,
@@ -82,7 +74,22 @@ assert.deepEqual(decoded, {
     { id: "123454:0:4", kind: "goal", tick: 123454, x: 1, y: 0.45 },
     { id: "123455:0:5", kind: "match", tick: 123455, x: 0.5, y: 0.5 },
   ],
-});
+};
+assert.equal(snapshot.length, 30);
+for (const axis of [-1, 0, 1]) {
+  assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(axis))), [
+    0x92,
+    8,
+    axis === -1 ? 0xff : axis,
+  ]);
+}
+assert.throws(() => encodeWsAxis(2), RangeError);
+assert.throws(() => encodeWsAxis(0.5), RangeError);
+assert.deepEqual(decodeWsSnapshot(frame(snapshot)), expected);
+assert.deepEqual(
+  parseSnapshot({ ...expected, events: undefined, recentEvents: expected.events }),
+  expected,
+);
 
 const ipv6 = [...snapshot];
 ipv6[5] = ["::1", "fe80::1234%3"];
@@ -91,61 +98,42 @@ assert.deepEqual(decodeWsSnapshot(frame(ipv6))?.localAddresses, ipv6[5]);
 assert.equal(decodeWsSnapshot(frame(ipv6))?.peerAddress, ipv6[6]);
 
 const idle = [...snapshot];
-idle[1] = 0;
-idle[2] = 0;
-idle[6] = null;
-idle[15] = 0;
-idle[19] = null;
-idle[22] = null;
-idle[23] = 0;
-idle[24] = 0;
-assert.equal(decodeWsSnapshot(frame(idle))?.role, "none");
+idle[1] = idle[2] = idle[4] = idle[15] = idle[23] = 0;
+idle[6] = idle[19] = idle[22] = null;
 assert.equal(decodeWsSnapshot(frame(idle))?.opponentMode, "none");
-assert.equal(decodeWsSnapshot(frame(idle))?.requestedOpponentMode, "none");
-assert.equal(decodeWsSnapshot(frame(idle))?.peerAddress, null);
-assert.equal(decodeWsSnapshot(frame(idle))?.peerNickname, null);
-assert.equal(decodeWsSnapshot(frame(idle))?.pingMs, null);
+assert.equal(decodeWsSnapshot(frame(idle))?.requestedBotId, null);
 
-const localOpponent = [...snapshot];
-localOpponent[4] = 0;
-localOpponent[6] = null;
-localOpponent[19] = null;
-localOpponent[22] = "Компьютер";
-localOpponent[23] = 2;
-localOpponent[24] = 2;
-assert.equal(localOpponent.length, 26);
-const decodedLocalOpponent = decodeWsSnapshot(frame(localOpponent));
-assert.equal(decodedLocalOpponent?.role, "host");
-assert.equal(decodedLocalOpponent?.connection, "connected");
-assert.equal(decodedLocalOpponent?.udpPort, 0);
-assert.equal(decodedLocalOpponent?.peerAddress, null);
-assert.equal(decodedLocalOpponent?.pingMs, null);
-assert.equal(decodedLocalOpponent?.peerNickname, "Компьютер");
-assert.equal(decodedLocalOpponent?.opponentMode, "simple");
-assert.equal(decodedLocalOpponent?.requestedOpponentMode, "simple");
+const local = [...snapshot];
+local[4] = 0;
+local[6] = local[19] = local[22] = null;
+local[23] = 2;
+local[24] = local[26] = "config-only-opponent";
+local[25] = local[27] = "Бот с именем длиннее человеческого ника — ".padEnd(64, "я");
+assert.equal(local[25].length, 64);
+const decodedLocal = decodeWsSnapshot(frame(local));
+assert.equal(decodedLocal?.opponentMode, "bot");
+assert.equal(decodedLocal?.peerNickname, null);
+assert.equal(decodedLocal?.requestedBotId, "config-only-opponent");
+assert.equal(decodedLocal?.effectiveBotName.length, 64);
+assert.deepEqual(parseSnapshot(decodedLocal), decodedLocal);
+const fallback = [...local];
+fallback[26] = "configured-rescue";
+fallback[27] = "Другой настроенный соперник";
+fallback[28] = true;
+fallback[29] = "Выбранный бот перестал отвечать.";
+const decodedFallback = decodeWsSnapshot(frame(fallback));
+assert.equal(decodedFallback?.requestedBotId, "config-only-opponent");
+assert.equal(decodedFallback?.effectiveBotId, "configured-rescue");
+assert.equal(decodedFallback?.opponentFallbackActive, true);
+assert.deepEqual(parseSnapshot(decodedFallback), decodedFallback);
 
-const hardOpponent = [...localOpponent];
-hardOpponent[23] = 3;
-hardOpponent[24] = 3;
-assert.equal(decodeWsSnapshot(frame(hardOpponent))?.opponentMode, "hard");
-assert.equal(decodeWsSnapshot(frame(hardOpponent))?.opponentFallbackActive, false);
-
-const hardFallback = [...hardOpponent];
-hardFallback[23] = 2;
-hardFallback[25] = true;
-assert.equal(decodeWsSnapshot(frame(hardFallback))?.opponentMode, "simple");
-assert.equal(decodeWsSnapshot(frame(hardFallback))?.requestedOpponentMode, "hard");
-assert.equal(decodeWsSnapshot(frame(hardFallback))?.opponentFallbackActive, true);
-
-for (const mode of ["none", "lan", "simple", "hard"]) {
-  assert.equal(parseSnapshot({ opponentMode: mode }).opponentMode, mode);
-  assert.equal(parseSnapshot({ requestedOpponentMode: mode }).requestedOpponentMode, mode);
+for (const version of [undefined, 7, 6, 9, "8"]) {
+  assert.throws(() => parseSnapshot({ ...expected, version }), RangeError);
 }
-assert.equal(parseSnapshot({ opponentMode: "unknown" }).opponentMode, "none");
-assert.equal(parseSnapshot({ opponentFallbackActive: true }).opponentFallbackActive, true);
-assert.equal(parseSnapshot({ version: 7 }).opponentFallbackActive, false);
-assert.throws(() => parseSnapshot({ version: 6 }), RangeError);
-
+for (const value of ["simple", "hard", "unknown", 2, null]) {
+  assert.throws(() => parseSnapshot({ ...expected, opponentMode: value }), TypeError);
+}
+assert.throws(() => parseSnapshot({ version: 8 }), TypeError);
 for (const [ordinal, name] of [
   [4, "incomingChallenge"],
   [5, "awaitingAcceptance"],
@@ -156,59 +144,124 @@ for (const [ordinal, name] of [
   pending[15] = 0;
   assert.equal(decodeWsSnapshot(frame(pending))?.connection, name);
 }
-
-function reject(index, value) {
-  const changed = [...snapshot];
+function reject(index, value, source = snapshot) {
+  const changed = [...source];
   changed[index] = value;
-  assert.equal(decodeWsSnapshot(frame(changed)), null);
+  assert.equal(decodeWsSnapshot(frame(changed)), null, `Unexpected acceptance of field ${index}`);
 }
-
-reject(0, 6); // Unsupported previous protocol version.
-reject(1, 3); // Unknown role enum.
-reject(2, "connected"); // JSON enum is not valid on the binary socket.
-reject(2, 7); // Unknown connection state.
-reject(4, -1); // Invalid UDP port.
-reject(5, ["127.0.0.1", 5]); // Invalid address element.
-reject(7, "0.5"); // Invalid coordinate.
-reject(17, -1); // Invalid tick.
-reject(20, null); // Events must be an array.
-reject(21, ""); // The local nickname is required.
-reject(21, "x".repeat(25)); // Nicknames are bounded.
-reject(22, 42); // The peer nickname is a string or null.
-reject(23, 4); // Unknown opponent mode.
-reject(23, "simple"); // JSON enum is not valid on the binary socket.
-reject(24, 4); // Unknown requested opponent mode.
-reject(24, "hard"); // JSON enum is not valid on the binary socket.
-reject(25, 1); // Fallback flag must be a boolean.
+for (const version of [7, 6, 9, "8"]) reject(0, version);
+reject(1, 3);
+reject(2, "connected");
+reject(2, 7);
+reject(4, -1);
+reject(5, ["127.0.0.1", 5]);
+reject(7, "0.5");
+reject(17, -1);
+reject(20, null);
+reject(21, "");
+reject(21, "x".repeat(25));
+reject(21, "bad\u0000nickname");
+reject(22, "x".repeat(25));
+reject(22, 42);
+reject(23, 3);
+reject(23, "bot");
+reject(24, "outside-bot");
+reject(28, 1);
+reject(29, "outside-bot");
+reject(24, "UPPERCASE", local);
+reject(24, "bad--id", local);
+reject(24, "valid-looking\n", local);
+reject(24, "a".repeat(65), local);
+reject(25, "x".repeat(65), local);
+reject(26, null, local);
+reject(27, "", local);
+reject(22, "Компьютер", local);
+reject(4, 47777, local);
+reject(6, "127.0.0.1:47777", local);
+reject(19, 8, local);
+reject(29, "Unexpected reason", local);
+reject(28, true, local);
+reject(29, null, fallback);
+reject(26, local[24], fallback);
 reject(
   20,
-  Array.from({ length: 13 }, (_, index) => [`event-${index}`, 1, 1, 0.5, 0.5]),
+  Array.from({ length: 13 }, (_, i) => [`event-${i}`, 1, 1, 0.5, 0.5]),
 );
-
-function rejectEvent(event) {
+for (const event of [
+  "goal",
+  ["id", 4, 123, 1],
+  ["", 4, 123, 1, 0.5],
+  ["x".repeat(81), 4, 123, 1, 0.5],
+  ["id", 0, 123, 1, 0.5],
+  ["id", 6, 123, 1, 0.5],
+  ["id", 4.5, 123, 1, 0.5],
+  ["id", 4, -1, 1, 0.5],
+  ["id", 4, 1.5, 1, 0.5],
+  ["id", 4, 123, -0.01, 0.5],
+  ["id", 4, 123, 1.01, 0.5],
+  ["id", 4, 123, 1, Number.NaN],
+])
   reject(20, [event]);
-}
-
-rejectEvent("goal");
-rejectEvent(["id", 4, 123, 1]);
-rejectEvent(["", 4, 123, 1, 0.5]);
-rejectEvent(["x".repeat(81), 4, 123, 1, 0.5]);
-rejectEvent(["id", 0, 123, 1, 0.5]);
-rejectEvent(["id", 6, 123, 1, 0.5]);
-rejectEvent(["id", 4.5, 123, 1, 0.5]);
-rejectEvent(["id", 4, -1, 1, 0.5]);
-rejectEvent(["id", 4, 1.5, 1, 0.5]);
-rejectEvent(["id", 4, 123, -0.01, 0.5]);
-rejectEvent(["id", 4, 123, 1.01, 0.5]);
-rejectEvent(["id", 4, 123, 1, Number.NaN]);
+for (const changes of [
+  { requestedBotId: "wrong--id" },
+  { requestedBotName: "x".repeat(65) },
+  { effectiveBotId: null },
+  { peerNickname: "Компьютер" },
+  { udpPort: 47777 },
+  { opponentFallbackActive: true },
+])
+  assert.throws(() => parseSnapshot({ ...decodedLocal, ...changes }), TypeError);
 assert.equal(decodeWsSnapshot(frame(snapshot.slice(0, -1))), null);
 assert.equal(decodeWsSnapshot(frame({ role: "host" })), null);
 assert.equal(decodeWsSnapshot(new ArrayBuffer(0)), null);
-
 const valid = new Uint8Array(frame(snapshot));
 const trailing = new Uint8Array(valid.length + 1);
 trailing.set(valid);
 assert.equal(decodeWsSnapshot(trailing.buffer), null);
 assert.equal(decodeWsSnapshot(frame(snapshot))?.tick, 123456);
 
-console.log("Frontend MessagePack checks passed: controls, snapshots, and invalid frames.");
+const catalogBot = {
+  id: "config-only-opponent",
+  name: local[25],
+  description: "Настроенный соперник",
+  style: "Стиль",
+  difficulty: "Сложность",
+  category: "Категория",
+  order: 10,
+  glyph: "◇",
+  enabled: true,
+  fallbackBotId: null,
+  availability: "notChecked",
+  availabilityReason: "Проверим при выборе.",
+  canPlay: true,
+};
+const catalog = { version: 8, defaultBotId: catalogBot.id, bots: [catalogBot] };
+assert.deepEqual(parseBotCatalog(catalog), catalog);
+assert.deepEqual(parseBotCatalog({ ...catalog, bots: [] }).bots, []);
+for (const version of [undefined, 7, 9])
+  assert.throws(() => parseBotCatalog({ ...catalog, version }), RangeError);
+for (const changes of [
+  { id: "Upper" },
+  { id: "valid-looking\n" },
+  { name: "x".repeat(65) },
+  { description: "x".repeat(513) },
+  { style: "x".repeat(129) },
+  { difficulty: "" },
+  { category: "x".repeat(65) },
+  { glyph: "x".repeat(17) },
+  { order: -1 },
+  { enabled: "true" },
+  { availability: "unknown" },
+  { canPlay: 1 },
+  { fallbackBotId: "bad--id" },
+  { enabled: false },
+  { availabilityReason: 10 },
+])
+  assert.throws(
+    () => parseBotCatalog({ ...catalog, bots: [{ ...catalogBot, ...changes }] }),
+    TypeError,
+  );
+assert.throws(() => parseBotCatalog({ ...catalog, bots: [catalogBot, catalogBot] }), TypeError);
+console.log(
+  "Frontend v8 protocol checks passed: strict HTTP/MessagePack parity, bot identities, catalog, and invalid frames.",
+);

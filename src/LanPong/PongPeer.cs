@@ -86,13 +86,11 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
                 ? _connection == ConnectionState.Connected && _guestTimeline.Started
                     ? _confirmedGuestEvents : []
                 : state.RecentEvents.ToArray();
-            var requestedOpponentMode = _botSession is { } bot
-                ? LegacyOpponentMode(bot.Requested)
+            var opponentMode = _botSession is not null
+                ? OpponentMode.Bot
                 : _role != PeerRole.None || _connection == ConnectionState.Searching
                     ? OpponentMode.Lan : OpponentMode.None;
-            var opponentFallbackActive = _botSession is { FallbackReason: not null };
-            var opponentMode = _botSession is { } effectiveBot
-                ? LegacyOpponentMode(effectiveBot.Effective) : requestedOpponentMode;
+            var opponentFallbackActive = _botIdentity?.FallbackReason is not null;
             var message = opponentFallbackActive
                 ? _botFallbackMessage!
                 : _message;
@@ -104,20 +102,9 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
                 state.LeftScore, state.RightScore, state.Phase,
                 state.Countdown, state.TickNumber, state.RoundId, _ping.PingMs, events,
                 _localNickname, _peerNickname, opponentMode,
-                requestedOpponentMode, opponentFallbackActive);
-        }
-    }
-
-    internal (bool Requested, bool FallbackActive, string? Reason) HardOpponentStatus
-    {
-        get
-        {
-            lock (_gate)
-            {
-                var requested = _botSession?.Requested.Onnx is not null;
-                return (requested, requested && _botSession?.FallbackReason is not null,
-                    requested ? _botSession?.FallbackReason : null);
-            }
+                _botIdentity?.RequestedBotId, _botIdentity?.RequestedName,
+                _botIdentity?.EffectiveBotId, _botIdentity?.EffectiveName,
+                opponentFallbackActive, _botIdentity?.FallbackReason);
         }
     }
 
@@ -145,20 +132,6 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
         finally { _transition.Release(); }
     }
 
-    // Temporary adapters for the version 7 browser contract; removed with bot-ID HTTP/WS contracts.
-    public Task StartLocalOpponentAsync(string nickname) =>
-        StartBotAsync(nickname, LegacyBotId(BotSettingsKind.Tracker));
-
-    internal Task StartHardLocalOpponentAsync(string nickname) =>
-        StartBotAsync(nickname, LegacyBotId(BotSettingsKind.Onnx));
-
-    private string LegacyBotId(BotSettingsKind kind) => _bots.Catalog.Entries.FirstOrDefault(entry =>
-        entry.Enabled && (kind == BotSettingsKind.Tracker ? entry.Tracker is not null : entry.Onnx is not null))?.Id
-        ?? throw new InvalidOperationException("Выбранный режим бота недоступен.");
-
-    private static OpponentMode LegacyOpponentMode(BotDefinition entry) =>
-        entry.Onnx is not null ? OpponentMode.Hard : OpponentMode.Simple;
-
     internal BotSessionIdentity? BotStatus
     {
         get
@@ -182,11 +155,11 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
         _botIdentity = new BotSessionIdentity(bot.Requested.Id, bot.Requested.Name,
             bot.Effective.Id, bot.Effective.Name, bot.FallbackReason);
         _botFallbackMessage = bot.FallbackReason is null ? null
-            : $"Бот «{bot.Requested.Name}» ({LegacyOpponentMode(bot.Requested)}) недоступен. " +
-              $"Игра продолжается против «{bot.Effective.Name}» ({LegacyOpponentMode(bot.Effective)}).";
+            : $"Бот «{bot.Requested.Name}» недоступен. " +
+              $"Игра продолжается против «{bot.Effective.Name}».";
     }
 
-    public async Task StartBotAsync(string nickname, string botId)
+    public async Task StartBotAsync(string nickname, string? botId)
     {
         var selectedNickname = PlayerNickname.Normalize(nickname);
         await _transition.WaitAsync();
@@ -216,7 +189,7 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
                 UpdateBotIdentityLocked();
                 candidate = null; // Peer now owns the fully prepared session.
                 _localNickname = selectedNickname;
-                _peerNickname = "Компьютер";
+                _peerNickname = null;
                 _role = PeerRole.Host;
                 _connection = ConnectionState.Connected;
                 _message = "Локальная игра началась!";

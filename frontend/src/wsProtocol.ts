@@ -1,5 +1,5 @@
 import { Decoder, encode } from "@msgpack/msgpack";
-import type { PongSnapshot } from "./snapshot.js";
+import { parseSnapshot, type PongSnapshot } from "./snapshot.js";
 
 export type {
   PeerRole,
@@ -13,11 +13,11 @@ export type {
 
 // The WebSocket array layout is independent of the JSON HTTP response shape.
 // Change the version whenever indices or enum ordinals change.
-const VERSION = 7;
-const SNAPSHOT_FIELDS = 26;
+const VERSION = 8;
+const SNAPSHOT_FIELDS = 30;
 const MAX_SNAPSHOT_BYTES = 16 * 1024;
 const ROLES = ["none", "host", "guest"] as const;
-const OPPONENT_MODES = ["none", "lan", "simple", "hard"] as const;
+const OPPONENT_MODES = ["none", "lan", "bot"] as const;
 const CONNECTIONS = [
   "idle",
   "waiting",
@@ -45,14 +45,6 @@ const controlFrames = [
 
 function isIndex(value: unknown, length: number): value is number {
   return Number.isInteger(value) && (value as number) >= 0 && (value as number) < length;
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-function isNonnegativeInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value) && (value as number) >= 0;
 }
 
 export function encodeWsAxis(axis: number): ArrayBuffer {
@@ -97,96 +89,70 @@ export function decodeWsSnapshot(bytes: ArrayBuffer): PongSnapshot | null {
     localNickname,
     peerNickname,
     opponentMode,
-    requestedOpponentMode,
+    requestedBotId,
+    requestedBotName,
+    effectiveBotId,
+    effectiveBotName,
     opponentFallbackActive,
+    botFallbackReason,
   ]: unknown[] = frame;
 
   if (
     !isIndex(role, ROLES.length) ||
     !isIndex(opponentMode, OPPONENT_MODES.length) ||
-    !isIndex(requestedOpponentMode, OPPONENT_MODES.length) ||
-    typeof opponentFallbackActive !== "boolean" ||
     !isIndex(connection, CONNECTIONS.length) ||
     !isIndex(phase, PHASES.length) ||
-    typeof message !== "string" ||
-    !isNonnegativeInteger(udpPort) ||
-    udpPort > 65535 ||
-    !Array.isArray(localAddresses) ||
-    !localAddresses.every((address) => typeof address === "string") ||
-    (peerAddress !== null && typeof peerAddress !== "string") ||
-    typeof localNickname !== "string" ||
-    localNickname.length === 0 ||
-    localNickname.length > 24 ||
-    (peerNickname !== null &&
-      (typeof peerNickname !== "string" ||
-        peerNickname.length === 0 ||
-        peerNickname.length > 24)) ||
-    !isFiniteNumber(leftY) ||
-    !isFiniteNumber(rightY) ||
-    !isFiniteNumber(ballX) ||
-    !isFiniteNumber(ballY) ||
-    !isFiniteNumber(ballVx) ||
-    !isFiniteNumber(ballVy) ||
-    !isFiniteNumber(countdown) ||
-    !isNonnegativeInteger(leftScore) ||
-    !isNonnegativeInteger(rightScore) ||
-    !isNonnegativeInteger(tick) ||
-    !isNonnegativeInteger(roundId) ||
-    (pingMs !== null && !isFiniteNumber(pingMs)) ||
     !Array.isArray(events) ||
-    events.length > 12 ||
     !events.every(
       (event) =>
         Array.isArray(event) &&
         event.length === 5 &&
-        typeof event[0] === "string" &&
-        event[0].length > 0 &&
-        event[0].length <= 80 &&
         Number.isInteger(event[1]) &&
         event[1] >= 1 &&
-        event[1] <= EVENT_KINDS.length &&
-        isNonnegativeInteger(event[2]) &&
-        isFiniteNumber(event[3]) &&
-        isFiniteNumber(event[4]) &&
-        event[3] >= 0 &&
-        event[3] <= 1 &&
-        event[4] >= 0 &&
-        event[4] <= 1,
+        event[1] <= EVENT_KINDS.length,
     )
   )
     return null;
-
-  return {
-    role: ROLES[role],
-    opponentMode: OPPONENT_MODES[opponentMode],
-    requestedOpponentMode: OPPONENT_MODES[requestedOpponentMode],
-    opponentFallbackActive,
-    connection: CONNECTIONS[connection],
-    message,
-    udpPort,
-    localAddresses,
-    peerAddress,
-    localNickname,
-    peerNickname,
-    leftY,
-    rightY,
-    ballX,
-    ballY,
-    ballVx,
-    ballVy,
-    leftScore,
-    rightScore,
-    phase: PHASES[phase],
-    countdown,
-    tick,
-    roundId,
-    pingMs,
-    events: events.map((event) => ({
-      id: event[0],
-      kind: EVENT_KINDS[event[1] - 1],
-      tick: event[2],
-      x: event[3],
-      y: event[4],
-    })),
-  };
+  try {
+    return parseSnapshot({
+      version: VERSION,
+      role: ROLES[role],
+      connection: CONNECTIONS[connection],
+      phase: PHASES[phase],
+      opponentMode: OPPONENT_MODES[opponentMode],
+      requestedBotId,
+      requestedBotName,
+      effectiveBotId,
+      effectiveBotName,
+      opponentFallbackActive,
+      botFallbackReason,
+      message,
+      udpPort,
+      localAddresses,
+      peerAddress,
+      localNickname,
+      peerNickname,
+      leftY,
+      rightY,
+      ballX,
+      ballY,
+      ballVx,
+      ballVy,
+      leftScore,
+      rightScore,
+      countdown,
+      tick,
+      roundId,
+      pingMs,
+      events: events.map((event) => ({
+        id: event[0],
+        kind: EVENT_KINDS[event[1] - 1],
+        tick: event[2],
+        x: event[3],
+        y: event[4],
+      })),
+    });
+  } catch {
+    return null;
+  }
 }

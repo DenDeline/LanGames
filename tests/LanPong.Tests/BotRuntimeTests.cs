@@ -24,11 +24,11 @@ public sealed class BotRuntimeTests
     }
 
     [Test]
-    public async Task Factories_ResolveContentRootAndRestrictLegacyOverrideWithoutOpeningModels()
+    public async Task Factories_ResolveContentRootWithoutOpeningModels()
     {
         var root = Path.Combine(Path.GetTempPath(), "lanpong-catalog-factory");
         var environment = new TestEnvironment { ContentRootPath = root };
-        var factory = new OnnxBotStrategyFactory(environment, "diagnostics/missing.onnx");
+        var factory = new OnnxBotStrategyFactory(environment);
         var catalog = Catalog([Onnx("trained"), Onnx("custom", path: "Models/custom.onnx"),
             Onnx("different-hash", checksum: new string('a', 64)),
             Onnx("absolute", path: Path.Combine(root, "absolute.onnx"))]);
@@ -37,7 +37,7 @@ public sealed class BotRuntimeTests
         using var custom = (OnnxLocalOpponentController)factory.Create(Find(catalog, "custom"));
         using var differentHash = (OnnxLocalOpponentController)factory.Create(Find(catalog, "different-hash"));
         using var absolute = (OnnxLocalOpponentController)factory.Create(Find(catalog, "absolute"));
-        await Assert.That(trained.ModelPath).IsEqualTo(Path.Combine(root, "diagnostics/missing.onnx"));
+        await Assert.That(trained.ModelPath).IsEqualTo(Path.Combine(root, "Models/hard-v1.onnx"));
         await Assert.That(custom.ModelPath).IsEqualTo(Path.Combine(root, "Models/custom.onnx"));
         await Assert.That(differentHash.ModelPath).IsEqualTo(Path.Combine(root, "Models/hard-v1.onnx"));
         await Assert.That(absolute.ModelPath).IsEqualTo(Path.Combine(root, "absolute.onnx"));
@@ -98,7 +98,7 @@ public sealed class BotRuntimeTests
 
         await Assert.That(session.Requested.Id).IsEqualTo("primary");
         await Assert.That(session.Effective.Id).IsEqualTo("target");
-        await Assert.That(session.FallbackReason).IsEqualTo("The bot could not be prepared.");
+        await Assert.That(session.FallbackReason).IsEqualTo("Не удалось подготовить бота.");
         await Assert.That(factory.Controllers[0].DisposeCount).IsEqualTo(1);
         await Assert.That(factory.Controllers[1].DisposeCount).IsEqualTo(0);
         await Assert.That(runtime.GetAvailability("primary").State).IsEqualTo(BotAvailabilityState.Unavailable);
@@ -135,11 +135,11 @@ public sealed class BotRuntimeTests
                 new TrackerBotStrategyFactory());
             var missing = Capture(() => runtime.Prepare("missing"));
             await Assert.That(missing is BotUnavailableException).IsTrue();
-            await Assert.That(missing!.Message).IsEqualTo("The configured model is missing.");
+            await Assert.That(missing!.Message).IsEqualTo("Модель бота не найдена.");
             await Assert.That(runtime.GetAvailability("missing").Reason).IsEqualTo(missing.Message);
             using var wrong = runtime.Prepare("wrong");
             await Assert.That(wrong.Effective.Id).IsEqualTo("target");
-            await Assert.That(wrong.FallbackReason).IsEqualTo("The configured model could not be verified.");
+            await Assert.That(wrong.FallbackReason).IsEqualTo("Модель бота не прошла проверку.");
         }
         finally { Directory.Delete(root, recursive: true); }
     }
@@ -165,7 +165,7 @@ public sealed class BotRuntimeTests
         using var session = runtime.Prepare("primary");
         await Assert.That(session.GetAxis(Playing())).IsEqualTo(-1);
         await Assert.That(session.Effective.Id).IsEqualTo("backup");
-        await Assert.That(session.FallbackReason).IsEqualTo("The bot stopped responding.");
+        await Assert.That(session.FallbackReason).IsEqualTo("Бот перестал отвечать.");
         await Assert.That(tracker.Controllers.Single().DisposeCount).IsEqualTo(0);
         await Assert.That(onnx.Controllers.Single().ResetCount).IsEqualTo(1);
         await Assert.That(runtime.GetAvailability("primary").Reason).IsEqualTo(session.FallbackReason);
@@ -176,7 +176,7 @@ public sealed class BotRuntimeTests
         await Assert.That(onnx.Created.Count).IsEqualTo(1);
         await Assert.That(onnx.Controllers.Single().ResetCount).IsEqualTo(2);
         await Assert.That(session.Effective.Id).IsEqualTo("backup");
-        await Assert.That(session.FallbackReason).IsEqualTo("The bot stopped responding.");
+        await Assert.That(session.FallbackReason).IsEqualTo("Бот перестал отвечать.");
     }
 
     [Test]

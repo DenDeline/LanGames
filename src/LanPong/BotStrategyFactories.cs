@@ -18,7 +18,7 @@ internal sealed class TrackerBotStrategyFactory : IBotStrategyFactory
             throw new InvalidOperationException("A tracker strategy requires tracker settings."));
 }
 
-internal sealed class OnnxBotStrategyFactory(IHostEnvironment environment, string? legacyModelPath = null)
+internal sealed class OnnxBotStrategyFactory(IHostEnvironment environment)
     : IBotStrategyFactory
 {
     public BotStrategyDescriptor Descriptor { get; } = new(BotStrategyDescriptor.OnnxId, BotSettingsKind.Onnx);
@@ -27,14 +27,7 @@ internal sealed class OnnxBotStrategyFactory(IHostEnvironment environment, strin
     {
         var settings = entry.Onnx ??
             throw new InvalidOperationException("An ONNX strategy requires ONNX settings.");
-        // Preserve the historical diagnostic override only for the unchanged trained profile.
-        var path = legacyModelPath is not null &&
-                   string.Equals(settings.ModelPath, "Models/hard-v1.onnx", StringComparison.Ordinal) &&
-                   string.Equals(settings.ExpectedSha256, HardLocalOpponentController.ExpectedModelSha256,
-                       StringComparison.OrdinalIgnoreCase)
-            ? legacyModelPath
-            : settings.ModelPath;
-        path = Path.GetFullPath(path, environment.ContentRootPath);
+        var path = Path.GetFullPath(settings.ModelPath, environment.ContentRootPath);
         return new OnnxLocalOpponentController(settings with { ModelPath = path });
     }
 }

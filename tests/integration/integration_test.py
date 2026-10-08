@@ -23,10 +23,11 @@ SNAPSHOT_FIELDS = (
     "peerAddress", "leftY", "rightY", "ballX", "ballY", "ballVx", "ballVy",
     "leftScore", "rightScore", "phase", "countdown", "tick", "roundId", "pingMs",
     "recentEvents", "localNickname", "peerNickname", "opponentMode",
-    "requestedOpponentMode", "opponentFallbackActive",
+    "requestedBotId", "requestedBotName", "effectiveBotId", "effectiveBotName",
+    "opponentFallbackActive", "botFallbackReason",
 )
 ROLES = ("none", "host", "guest")
-OPPONENT_MODES = ("none", "lan", "simple", "hard")
+OPPONENT_MODES = ("none", "lan", "bot")
 CONNECTIONS = (
     "idle", "waiting", "connecting", "connected", "incomingChallenge", "awaitingAcceptance",
     "searching",
@@ -39,6 +40,12 @@ CANCELED_CHALLENGE_ID = "00112233445566778899aabbccddeeff"
 HOST_NICKNAME = "Хозяин"
 GUEST_NICKNAME = "Гость"
 RAW_NICKNAME = "RawGuest"
+BOT_NAMES = {"lada": "Лада", "iskra": "Искра", "vektor": "Вектор"}
+LONG_BOT_NAME = "Настроенный тренировочный соперник ".ljust(64, "я")
+CATALOG_BOT_FIELDS = {
+    "id", "name", "description", "style", "difficulty", "category", "order", "glyph",
+    "enabled", "fallbackBotId", "availability", "availabilityReason", "canPlay",
+}
 
 
 def wire_challenge_packet(tag, request_id, nickname=None):
@@ -95,17 +102,14 @@ def decode_snapshot(frame):
     values = msgpack_helper("decode", frame[1])
     assert isinstance(values, list) and len(values) == len(SNAPSHOT_FIELDS), values
     snapshot = dict(zip(SNAPSHOT_FIELDS, values))
-    assert snapshot["version"] == 7, snapshot
+    assert snapshot["version"] == 8, snapshot
     snapshot["role"] = ROLES[snapshot["role"]]
     snapshot["opponentMode"] = OPPONENT_MODES[snapshot["opponentMode"]]
-    snapshot["requestedOpponentMode"] = OPPONENT_MODES[snapshot["requestedOpponentMode"]]
-    assert type(snapshot["opponentFallbackActive"]) is bool, snapshot
     snapshot["connection"] = CONNECTIONS[snapshot["connection"]]
     snapshot["phase"] = PHASES[snapshot["phase"]]
     assert isinstance(snapshot["localAddresses"], list), snapshot
     assert isinstance(snapshot["message"], str), snapshot
-    assert isinstance(snapshot["localNickname"], str) and snapshot["localNickname"], snapshot
-    assert snapshot["peerNickname"] is None or isinstance(snapshot["peerNickname"], str), snapshot
+    validate_snapshot_identity(snapshot)
     events = snapshot["recentEvents"]
     assert isinstance(events, list) and len(events) <= 12, snapshot
     event_ids = set()
@@ -124,13 +128,75 @@ def decode_snapshot(frame):
     return snapshot
 
 
-def expect_opponent(snapshot, requested, actual, fallback=False):
-    assert snapshot["version"] == 7, snapshot
-    assert snapshot["requestedOpponentMode"] == requested, snapshot
-    assert snapshot["opponentMode"] == actual, snapshot
+def validate_snapshot_identity(snapshot):
+    assert snapshot["version"] == 8 and "requestedOpponentMode" not in snapshot, snapshot
+    assert snapshot["opponentMode"] in OPPONENT_MODES, snapshot
+    assert isinstance(snapshot["localNickname"], str) and 0 < len(snapshot["localNickname"]) <= 24, snapshot
+    assert (snapshot["peerNickname"] is None or
+            isinstance(snapshot["peerNickname"], str) and 0 < len(snapshot["peerNickname"]) <= 24), snapshot
+    assert type(snapshot["opponentFallbackActive"]) is bool, snapshot
+    for field in ("requestedBotId", "effectiveBotId"):
+        value = snapshot[field]
+        assert value is None or isinstance(value, str) and re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*", value), snapshot
+    for field in ("requestedBotName", "effectiveBotName"):
+        value = snapshot[field]
+        assert value is None or isinstance(value, str) and 0 < len(value) <= 64, snapshot
+    reason = snapshot["botFallbackReason"]
+    assert reason is None or isinstance(reason, str) and reason.strip(), snapshot
+    if snapshot["opponentMode"] == "bot":
+        assert snapshot["peerNickname"] is None, snapshot
+        assert all(snapshot[field] is not None for field in
+                   ("requestedBotId", "requestedBotName", "effectiveBotId", "effectiveBotName")), snapshot
+        assert snapshot["opponentFallbackActive"] is (snapshot["requestedBotId"] != snapshot["effectiveBotId"]), snapshot
+        if snapshot["opponentFallbackActive"]:
+            assert reason is not None and re.search("[А-Яа-яЁё]", reason), snapshot
+    else:
+        assert all(snapshot[field] is None for field in
+                   ("requestedBotId", "requestedBotName", "effectiveBotId", "effectiveBotName", "botFallbackReason")), snapshot
+        assert snapshot["opponentFallbackActive"] is False, snapshot
+
+
+def expect_opponent(snapshot, mode, requested_id=None, effective_id=None, fallback=False,
+                    requested_name=None, effective_name=None):
+    validate_snapshot_identity(snapshot)
+    assert snapshot["opponentMode"] == mode, snapshot
+    assert snapshot["requestedBotId"] == requested_id, snapshot
+    assert snapshot["effectiveBotId"] == effective_id, snapshot
     assert snapshot["opponentFallbackActive"] is fallback, snapshot
-    if fallback:
-        assert "Hard" in snapshot["message"] and "Simple" in snapshot["message"], snapshot
+    if requested_id is not None:
+        assert snapshot["requestedBotName"] == (requested_name or BOT_NAMES[requested_id]), snapshot
+        assert snapshot["effectiveBotName"] == (effective_name or BOT_NAMES[effective_id]), snapshot
+    if not fallback:
+        assert snapshot["botFallbackReason"] is None, snapshot
+
+
+def expect_identity_parity(http_snapshot, ws_snapshot):
+    fields = ("opponentMode", "requestedBotId", "requestedBotName", "effectiveBotId",
+              "effectiveBotName", "opponentFallbackActive", "botFallbackReason", "peerNickname")
+    assert {field: http_snapshot[field] for field in fields} == {
+        field: ws_snapshot[field] for field in fields}, (http_snapshot, ws_snapshot)
+
+
+def expect_catalog(port, expected_ids=("lada", "iskra", "vektor"), default_id="lada"):
+    catalog = request(port, "/api/bots")
+    assert set(catalog) == {"version", "defaultBotId", "bots"}, catalog
+    assert catalog["version"] == 8 and catalog["defaultBotId"] == default_id, catalog
+    bots = catalog["bots"]
+    assert isinstance(bots, list) and [bot["id"] for bot in bots] == list(expected_ids), catalog
+    assert bots == sorted(bots, key=lambda bot: (bot["order"], bot["id"])), catalog
+    for bot in bots:
+        # An exact public shape excludes model paths, checksums, strategy settings, and native details.
+        assert set(bot) == CATALOG_BOT_FIELDS, bot
+        assert isinstance(bot["name"], str) and 0 < len(bot["name"]) <= 64, bot
+        assert all(isinstance(bot[field], str) and bot[field] for field in
+                   ("description", "style", "difficulty", "category")), bot
+        assert type(bot["order"]) is int and type(bot["enabled"]) is bool and type(bot["canPlay"]) is bool, bot
+        assert bot["glyph"] is None or isinstance(bot["glyph"], str), bot
+        assert bot["availability"] in ("ready", "notChecked", "unavailable", "disabled"), bot
+        assert bot["availabilityReason"] is None or isinstance(bot["availabilityReason"], str), bot
+        if bot["availability"] == "disabled":
+            assert not bot["enabled"] and not bot["canPlay"], bot
+    return {bot["id"]: bot for bot in bots}
 
 
 def wait_for_ws_event(conn, kind, event_id=None, seconds=3):
@@ -156,7 +222,10 @@ def request(port, path, payload=None):
         method="POST" if data is not None else "GET",
     )
     with urllib.request.urlopen(req, timeout=3) as response:
-        return json.load(response)
+        value = json.load(response)
+        if isinstance(value, dict) and "opponentMode" in value:
+            validate_snapshot_identity(value)
+        return value
 
 
 def expect_bad_request(port, path, payload):
@@ -164,6 +233,9 @@ def expect_bad_request(port, path, payload):
         request(port, path, payload)
     except urllib.error.HTTPError as error:
         assert error.code == 400, (path, payload, error.code)
+        body = json.load(error)
+        assert set(body) == {"error"} and isinstance(body["error"], str) and body["error"], body
+        return body
     else:
         raise AssertionError(f"Expected HTTP 400 for {path}: {payload}")
 
@@ -477,7 +549,7 @@ try:
     page = urllib.request.urlopen("http://127.0.0.1:5180/").read()
     assert b"game-canvas" in page
     assert b'id="bot-form"' in page and b'id="bot-button"' in page
-    assert b'id="hard-form"' in page and b'id="hard-button"' in page
+    assert b'id="bot-select"' in page and b'id="bot-catalog-status"' in page
     assert b'id="opponent-fallback"' in page
     assert b'id="tab-host"' in page and b'id="tab-join"' in page
     assets = re.findall(rb'(?:src|href)="(/assets/[^"]+)"', page)
@@ -489,8 +561,13 @@ try:
     for port in (5180, 5181):
         idle = request(port, "/api/status")
         assert idle["role"] == "none" and idle["connection"] == "idle", idle
-        expect_opponent(idle, "none", "none")
+        expect_opponent(idle, "none")
         assert idle["phase"] == "waiting", idle
+        catalog = expect_catalog(port)
+        assert catalog["lada"]["availability"] == catalog["iskra"]["availability"] == "ready", catalog
+        assert catalog["vektor"]["availability"] == "notChecked", catalog
+        assert all(bot["canPlay"] for bot in catalog.values()), catalog
+        assert expect_catalog(port)["vektor"]["availability"] == "notChecked", catalog
 
     for nickname in (None, "", "   "):
         expect_bad_request(5180, "/api/host", {"port": 47888, "nickname": nickname})
@@ -500,23 +577,31 @@ try:
     for nickname in (None, "", "   "):
         expect_bad_request(5180, "/api/quick", {"nickname": nickname})
     expect_bad_request(5180, "/api/quick", {})
-    for nickname in (None, "", "   "):
-        expect_bad_request(5180, "/api/local-opponent", {"nickname": nickname})
+    for nickname in (None, "", "   ", "x" * 25, "\x01Name"):
+        expect_bad_request(5180, "/api/local-opponent", {"nickname": nickname, "botId": "lada"})
     expect_bad_request(5180, "/api/local-opponent", {})
-    expect_bad_request(5180, "/api/local-opponent", {"nickname": "Player", "mode": "expert"})
-    expect_bad_request(5180, "/api/local-opponent", {"nickname": "Player", "mode": "lan"})
+    expect_bad_request(5180, "/api/local-opponent", {"nickname": "Player"})
+    for bot_id in (None, "", "   ", "unknown", "Lada"):
+        expect_bad_request(5180, "/api/local-opponent", {"nickname": "Player", "botId": bot_id})
+    for legacy_mode in ("simple", "hard", "lan", "expert"):
+        expect_bad_request(5180, "/api/local-opponent", {"nickname": "Player", "mode": legacy_mode})
 
-    local = request(5180, "/api/local-opponent", {"nickname": "LocalPlayer"})
+    local = request(5180, "/api/local-opponent", {"nickname": "LocalPlayer", "botId": "lada"})
     assert local["role"] == "host" and local["connection"] == "connected", local
-    expect_opponent(local, "simple", "simple")
+    expect_opponent(local, "bot", "lada", "lada")
     assert local["udpPort"] == 0 and local["peerAddress"] is None, local
-    assert local["pingMs"] is None and local["peerNickname"] == "Компьютер", local
+    assert local["pingMs"] is None and local["peerNickname"] is None, local
     assert local["phase"] == "countdown", local
-    expect_bad_request(5180, "/api/local-opponent", {"nickname": "Again"})
+    expect_bad_request(5180, "/api/local-opponent", {"nickname": "Again", "botId": "vektor"})
+    preserved = request(5180, "/api/status")
+    expect_opponent(preserved, "bot", "lada", "lada")
+    assert preserved["roundId"] == local["roundId"], (local, preserved)
+    assert expect_catalog(5180)["vektor"]["availability"] == "notChecked"
     with websocket(5180) as local_ws:
         local_frame = decode_snapshot(recv_frame(local_ws))
         assert local_frame["role"] == "host" and local_frame["connection"] == "connected", local_frame
-        expect_opponent(local_frame, "simple", "simple")
+        expect_opponent(local_frame, "bot", "lada", "lada")
+        expect_identity_parity(local, local_frame)
         assert local_frame["udpPort"] == 0 and local_frame["peerAddress"] is None, local_frame
         controls = control_packets()
         for _ in range(8):
@@ -536,21 +621,22 @@ try:
 
         wait_until("Simple bot tracks the live serve", simple_tracks_serve)
         restarted = request(5180, "/api/restart", {})
-        expect_opponent(restarted, "simple", "simple")
+        expect_opponent(restarted, "bot", "lada", "lada")
         assert restarted["roundId"] == local["roundId"] + 1, restarted
         assert restarted["phase"] == "countdown" and restarted["leftScore"] == 0, restarted
     left_local = request(5180, "/api/leave", {})
     assert left_local["role"] == "none" and left_local["connection"] == "idle", left_local
-    expect_opponent(left_local, "none", "none")
+    expect_opponent(left_local, "none")
     assert left_local["phase"] == "waiting" and left_local["tick"] == 0, left_local
 
-    hard = request(5180, "/api/local-opponent", {"nickname": "HardPlayer", "mode": "hard"})
+    hard = request(5180, "/api/local-opponent", {"nickname": "ModelPlayer", "botId": "vektor"})
     assert hard["role"] == "host" and hard["connection"] == "connected", hard
-    expect_opponent(hard, "hard", "hard")
-    assert hard["phase"] == "countdown" and hard["peerNickname"] == "Компьютер", hard
+    expect_opponent(hard, "bot", "vektor", "vektor")
+    assert hard["phase"] == "countdown" and hard["peerNickname"] is None, hard
     with websocket(5180) as hard_ws:
         hard_frame = decode_snapshot(recv_frame(hard_ws))
-        expect_opponent(hard_frame, "hard", "hard")
+        expect_opponent(hard_frame, "bot", "vektor", "vektor")
+        expect_identity_parity(hard, hard_frame)
         for _ in range(8):
             send_binary(hard_ws, controls[-1])
             time.sleep(0.03)
@@ -562,44 +648,97 @@ try:
                              state["leftY"] < 0.48) else None
 
         played_hard = wait_until("Hard match enters play and accepts browser control", hard_playing)
-        expect_opponent(played_hard, "hard", "hard")
+        expect_opponent(played_hard, "bot", "vektor", "vektor")
         hard_rematch = request(5180, "/api/restart", {})
-        expect_opponent(hard_rematch, "hard", "hard")
+        expect_opponent(hard_rematch, "bot", "vektor", "vektor")
         assert hard_rematch["roundId"] == hard["roundId"] + 1, hard_rematch
         assert hard_rematch["phase"] == "countdown" and hard_rematch["leftScore"] == 0
     hard_left = request(5180, "/api/leave", {})
-    expect_opponent(hard_left, "none", "none")
+    expect_opponent(hard_left, "none")
     assert hard_left["role"] == "none" and hard_left["connection"] == "idle", hard_left
+    assert expect_catalog(5180)["vektor"]["availability"] == "ready"
 
     # A separate process with an absent model must stay playable and report the
-    # requested and actual modes independently over both HTTP and WebSocket.
+    # requested/effective identities over HTTP/WS, without exposing internal model details.
     missing_model = log_dir / "missing-hard-v1.onnx"
     assert not missing_model.exists(), missing_model
     fallback_log = open(log_dir / "pong-hard-missing-model.log", "w")
     fallback_process = launch(
         5182, fallback_log,
-        {"LANPONG_HARD_MODEL_PATH": str(missing_model)},
+        {
+            "Bots__Entries__0__Name": LONG_BOT_NAME,
+            "Bots__Entries__0__Order": "40",
+            "Bots__Entries__1__Enabled": "false",
+            "Bots__Entries__1__Order": "5",
+            "Bots__Entries__2__Onnx__ModelPath": str(missing_model),
+            "Bots__Entries__2__Order": "40",
+            "Bots__Entries__3__Id": "unusable-model",
+            "Bots__Entries__3__Name": "Без резерва",
+            "Bots__Entries__3__Description": "Модель без настроенного резерва.",
+            "Bots__Entries__3__Style": "Обученная политика",
+            "Bots__Entries__3__Difficulty": "Продвинутый",
+            "Bots__Entries__3__Category": "Контракт",
+            "Bots__Entries__3__Order": "20",
+            "Bots__Entries__3__StrategyId": "onnx",
+            "Bots__Entries__3__Onnx__ModelPath": str(missing_model),
+            "Bots__Entries__3__Onnx__ExpectedSha256": "5d5d3cf0910d967cf2d6dc60e8fe0b63f772060178bf6673f6ddc5cdba98ab5a",
+            "Bots__Entries__3__Onnx__InferenceCadenceTicks": "9",
+        },
     )
     try:
         wait_until("fallback web server", lambda: request(5182, "/api/status"))
-        fallback = request(5182, "/api/local-opponent", {"nickname": "Fallback", "mode": "hard"})
-        expect_opponent(fallback, "hard", "simple", fallback=True)
+        expected_ids = ("iskra", "unusable-model", "lada", "vektor")
+        catalog = expect_catalog(5182, expected_ids)
+        assert catalog["iskra"]["availability"] == "disabled", catalog
+        assert catalog["vektor"]["availability"] == catalog["unusable-model"]["availability"] == "notChecked", catalog
+        assert catalog["lada"]["name"] == LONG_BOT_NAME, catalog
+        expect_bad_request(5182, "/api/local-opponent", {"nickname": "Player", "botId": "iskra"})
+        error = expect_bad_request(5182, "/api/local-opponent", {"nickname": "Player", "botId": "unusable-model"})
+        assert str(missing_model) not in error["error"] and re.search("[А-Яа-яЁё]", error["error"]), error
+        unavailable = expect_catalog(5182, expected_ids)["unusable-model"]
+        assert unavailable["availability"] == "unavailable" and not unavailable["canPlay"], unavailable
+        assert re.search("[А-Яа-яЁё]", unavailable["availabilityReason"]), unavailable
+        assert str(missing_model) not in unavailable["availabilityReason"], unavailable
+        expect_opponent(request(5182, "/api/status"), "none")
+        boundary_nickname = "Игрок" + "я" * 19
+        long_named = request(5182, "/api/local-opponent", {"nickname": boundary_nickname, "botId": "lada"})
+        assert long_named["localNickname"] == boundary_nickname, long_named
+        expect_opponent(long_named, "bot", "lada", "lada", requested_name=LONG_BOT_NAME, effective_name=LONG_BOT_NAME)
+        for rejected_id in ("unknown", "iskra", "unusable-model", "vektor"):
+            expect_bad_request(5182, "/api/local-opponent", {"nickname": "Other", "botId": rejected_id})
+            preserved = request(5182, "/api/status")
+            expect_identity_parity(long_named, preserved)
+            assert preserved["roundId"] == long_named["roundId"], preserved
+        assert expect_catalog(5182, expected_ids)["vektor"]["availability"] == "notChecked"
+        with websocket(5182) as long_name_ws:
+            expect_identity_parity(long_named, decode_snapshot(recv_frame(long_name_ws)))
+        request(5182, "/api/leave", {})
+        fallback = request(5182, "/api/local-opponent", {"nickname": "Fallback", "botId": "vektor"})
+        expect_opponent(fallback, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
         assert fallback["role"] == "host" and fallback["connection"] == "connected", fallback
+        assert str(missing_model) not in fallback["botFallbackReason"], fallback
+        catalog = expect_catalog(5182, expected_ids)
+        assert catalog["vektor"]["availability"] == "unavailable" and catalog["vektor"]["canPlay"], catalog
         with websocket(5182) as fallback_ws:
             fallback_frame = decode_snapshot(recv_frame(fallback_ws))
-            expect_opponent(fallback_frame, "hard", "simple", fallback=True)
+            expect_opponent(fallback_frame, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
+            expect_identity_parity(fallback, fallback_frame)
 
             def fallback_advanced():
                 state = request(5182, "/api/status")
                 return state if state["tick"] >= fallback["tick"] + 12 else None
 
             advanced = wait_until("fallback match clock keeps advancing", fallback_advanced)
-            expect_opponent(advanced, "hard", "simple", fallback=True)
+            expect_opponent(advanced, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
             fallback_rematch = request(5182, "/api/restart", {})
-            expect_opponent(fallback_rematch, "hard", "simple", fallback=True)
+            expect_opponent(fallback_rematch, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
             assert fallback_rematch["roundId"] == fallback["roundId"] + 1, fallback_rematch
         fallback_left = request(5182, "/api/leave", {})
-        expect_opponent(fallback_left, "none", "none")
+        expect_opponent(fallback_left, "none")
+        assert expect_catalog(5182, expected_ids)["vektor"]["availability"] == "unavailable"
+        retry = request(5182, "/api/local-opponent", {"nickname": "Retry", "botId": "vektor"})
+        expect_opponent(retry, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
+        request(5182, "/api/leave", {})
     finally:
         if fallback_process.poll() is None:
             fallback_process.terminate()
@@ -609,7 +748,7 @@ try:
     require_mdns_loopback = os.environ.get("LANPONG_REQUIRE_MDNS_LOOPBACK") == "1"
     host = request(5180, "/api/host", host_payload())
     assert host["role"] == "host" and host["connection"] == "waiting", host
-    expect_opponent(host, "lan", "lan")
+    expect_opponent(host, "lan")
     assert host["localNickname"] == HOST_NICKNAME and host["peerNickname"] is None, host
     # A datagram with a valid Hello prefix must still be rejected in full when
     # the receive buffer truncates it at the packet-size boundary.
@@ -726,16 +865,17 @@ try:
         controls = control_packets()
         snapshot, host_serve = wait_for_ws_event(host_ws, 1)
         assert snapshot["role"] == "host" and snapshot["connection"] == "connected", snapshot
-        expect_opponent(snapshot, "lan", "lan")
+        expect_opponent(snapshot, "lan")
         assert "tick" in snapshot and "leftY" in snapshot and "rightY" in snapshot, snapshot
         guest_snapshot, guest_serve = wait_for_ws_event(guest_ws, 1, host_serve[0])
         assert guest_snapshot["role"] == "guest" and guest_snapshot["connection"] == "connected", guest_snapshot
-        expect_opponent(guest_snapshot, "lan", "lan")
+        expect_opponent(guest_snapshot, "lan")
         assert guest_serve == host_serve, (host_serve, guest_serve)
 
         send_text(host_ws, '{"axis":1}')
         send_binary(host_ws, b"\x90")  # Wrong array shape.
-        send_binary(host_ws, b"\x92\x03\x01")  # Wrong protocol version.
+        send_binary(host_ws, b"\x92\x07\x01")  # Superseded browser protocol version.
+        send_binary(host_ws, b"\x92\x09\x01")  # Unsupported future browser protocol version.
         send_binary(host_ws, b"\xc1")  # Reserved MessagePack prefix.
         send_binary(host_ws, controls[1] + b"\x00")  # A second packed value.
         send_binary(host_ws, controls[1] + bytes(257 - len(controls[1])))
@@ -745,7 +885,7 @@ try:
 
         # Both frames use the current protocol version, so each reaches axis
         # validation rather than being rejected by the version check.
-        for malformed_axis in (b"\x92\x07\xa2up", b"\x92\x07\x02"):
+        for malformed_axis in (b"\x92\x08\xa2up", b"\x92\x08\x02"):
             send_binary(host_ws, malformed_axis)
             time.sleep(0.15)
             after_axis = request(5180, "/api/status")
@@ -1059,7 +1199,7 @@ try:
     accept_challenge()
     terminate_connected_process(processes[0], 5180, 5181, "idle", "none", "host")
 
-    print("PASS: local Simple and Hard start/input/play/rematch/leave, missing-model Hard-to-Simple fallback with persistent status, versioned HTTP and MessagePack WebSocket contract, static UI, discovery, pending challenge acceptance/decline/cancel, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, Quick Game port selection/cancellation/auto-accept/matching, and graceful host/guest shutdown")
+    print("PASS: configured catalog bots start/input/play/rematch/leave, missing-model explicit fallback with persistent requested/effective identity, catalog metadata/availability/ordering/error cases, version 8 HTTP and MessagePack WebSocket contract, static UI, discovery, pending challenge acceptance/decline/cancel, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, Quick Game port selection/cancellation/auto-accept/matching, and graceful host/guest shutdown")
 finally:
     for process in processes:
         if process.poll() is None:

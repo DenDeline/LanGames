@@ -13,7 +13,7 @@ public sealed class PeerEnumWireTests
     public async Task Snapshot_EnumValuesKeepTheBrowserJsonContract()
     {
         var modeOrdinals = Enum.GetValues<OpponentMode>().Select(mode => (int)mode);
-        await Assert.That(string.Join(',', modeOrdinals)).IsEqualTo("0,1,2,3");
+        await Assert.That(string.Join(',', modeOrdinals)).IsEqualTo("0,1,2");
 
         foreach (var (role, name) in new[]
                  {
@@ -30,17 +30,18 @@ public sealed class PeerEnumWireTests
                  {
                      (OpponentMode.None, "none"),
                      (OpponentMode.Lan, "lan"),
-                     (OpponentMode.Simple, "simple"),
-                     (OpponentMode.Hard, "hard")
+                     (OpponentMode.Bot, "bot")
                  })
         {
             using var json = JsonDocument.Parse(JsonSerializer.Serialize(
                 Snapshot(PeerRole.Host, ConnectionState.Connected, GamePhase.Playing) with
                 { OpponentMode = mode }, AppJsonSerializerContext.Default.PongSnapshot));
             await Assert.That(json.RootElement.GetProperty("opponentMode").GetString()).IsEqualTo(name);
-            await Assert.That(json.RootElement.GetProperty("version").GetInt32()).IsEqualTo(7);
-            await Assert.That(json.RootElement.GetProperty("requestedOpponentMode").GetString())
-                .IsEqualTo("none");
+            await Assert.That(json.RootElement.GetProperty("version").GetInt32()).IsEqualTo(8);
+            await Assert.That(json.RootElement.TryGetProperty("requestedOpponentMode", out _)).IsFalse();
+            foreach (var property in new[] { "requestedBotId", "requestedBotName", "effectiveBotId",
+                         "effectiveBotName", "botFallbackReason" })
+                await Assert.That(json.RootElement.GetProperty(property).ValueKind).IsEqualTo(JsonValueKind.Null);
             await Assert.That(json.RootElement.GetProperty("opponentFallbackActive").GetBoolean())
                 .IsFalse();
         }
@@ -48,15 +49,24 @@ public sealed class PeerEnumWireTests
         using (var json = JsonDocument.Parse(JsonSerializer.Serialize(
                    Snapshot(PeerRole.Host, ConnectionState.Connected, GamePhase.Playing) with
                    {
-                       OpponentMode = OpponentMode.Simple,
-                       RequestedOpponentMode = OpponentMode.Hard,
-                       OpponentFallbackActive = true
+                       OpponentMode = OpponentMode.Bot,
+                       RequestedBotId = "trained-model", RequestedBotName = "Trained profile",
+                       EffectiveBotId = "tuned-tracker", EffectiveBotName = "Tuned profile",
+                       OpponentFallbackActive = true, BotFallbackReason = "Модель бота не найдена."
                    }, AppJsonSerializerContext.Default.PongSnapshot)))
         {
             await Assert.That(json.RootElement.GetProperty("opponentMode").GetString())
-                .IsEqualTo("simple");
-            await Assert.That(json.RootElement.GetProperty("requestedOpponentMode").GetString())
-                .IsEqualTo("hard");
+                .IsEqualTo("bot");
+            await Assert.That(json.RootElement.GetProperty("requestedBotId").GetString())
+                .IsEqualTo("trained-model");
+            await Assert.That(json.RootElement.GetProperty("requestedBotName").GetString())
+                .IsEqualTo("Trained profile");
+            await Assert.That(json.RootElement.GetProperty("effectiveBotId").GetString())
+                .IsEqualTo("tuned-tracker");
+            await Assert.That(json.RootElement.GetProperty("effectiveBotName").GetString())
+                .IsEqualTo("Tuned profile");
+            await Assert.That(json.RootElement.GetProperty("botFallbackReason").GetString())
+                .IsEqualTo("Модель бота не найдена.");
             await Assert.That(json.RootElement.GetProperty("opponentFallbackActive").GetBoolean())
                 .IsTrue();
         }

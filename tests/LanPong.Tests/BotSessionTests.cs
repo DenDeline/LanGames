@@ -138,8 +138,9 @@ public sealed class BotSessionTests
         await Assert.That(peer.BotStatus).IsNull();
         await Assert.That(created[1].DisposeCount).IsEqualTo(1);
         await Assert.That(peer.Snapshot().OpponentMode).IsEqualTo(OpponentMode.Lan);
-        await Assert.That(peer.Snapshot().RequestedOpponentMode).IsEqualTo(OpponentMode.Lan);
-        await Assert.That(peer.HardOpponentStatus.Requested).IsFalse();
+        await Assert.That(peer.Snapshot().RequestedBotId).IsNull();
+        await Assert.That(peer.Snapshot().EffectiveBotId).IsNull();
+        await Assert.That(peer.Snapshot().BotFallbackReason).IsNull();
         await Assert.That(peer.Snapshot().PeerNickname).IsNull();
     }
 
@@ -179,7 +180,7 @@ public sealed class BotSessionTests
         await Assert.That(trackers.Definitions.Count).IsEqualTo(1);
         await peer.LeaveAsync();
         await Assert.That(peer.BotStatus).IsNull();
-        await Assert.That(peer.HardOpponentStatus.Reason).IsNull();
+        await Assert.That(peer.Snapshot().BotFallbackReason).IsNull();
         await Assert.That(fallback.DisposeCount).IsEqualTo(1);
     }
 
