@@ -23,15 +23,15 @@ The coordinator performs research, decomposition, coordination, and review. Its 
 | 2 | Registered bot strategies, truthful availability/fallback, and session lifecycle resolving a selected entry | Reviewed: `a34d425` |
 | 3 | Catalog-based browser API and versioned session contracts, replacing simple/hard public selection | Reviewed: `2881f34` |
 | Checkpoint A | Review steps 1–3 together; reconcile configuration, availability, migration, and UI needs | Complete |
-| 4 | Responsive native radio-card catalog, selected profile, honest availability, and one Play action | Assigned |
-| 5 | Close actual gaps: config-only fourth bot, UI states, configured behavior and browser/LAN integration | Ready after step 4 review |
+| 4 | Responsive native radio-card catalog, selected profile, honest availability, and one Play action | Reviewed: `3083f37` |
+| 5 | Close actual gaps: config-only fourth bot, UI states, configured behavior and browser/LAN integration | Assigned |
 | 6 | Benchmark actual configured runtime; optimize evidenced costs and verify Native AOT | Ready after step 5 review |
 | Checkpoint B | Review steps 4–6 together; reconcile performance, UX, and final validation needs | Required |
 | 7 | Final published-app validation, configuration/operator documentation, and delivery evidence | Ready after checkpoint B |
 
 ## Step boundaries and review gates
 
-Implementation chat: **Implement configurable bot catalog**, thread `01a11af7-357d-7593-a957-5a83a56b56b3`, project `lanpong`, same checkout. Branch: `codex/bot-catalog`. Steps 1–3 and checkpoint A are reviewed; only step 4 is currently assigned. The worker commits each bounded step and stops for review. The coordinator is authorized by the human to send subsequent step assignments to this chat.
+Implementation chat: **Implement configurable bot catalog**, thread `01a11af7-357d-7593-a957-5a83a56b56b3`, project `lanpong`, same checkout. Branch: `codex/bot-catalog`. Steps 1–4 and checkpoint A are reviewed; only step 5 is currently assigned. The worker commits each bounded step and stops for review. The coordinator is authorized by the human to send subsequent step assignments to this chat.
 
 Research and architecture decisions are in [research.md](research.md). They are a specification for this feature, with routine implementation detail left to the worker.
 
@@ -77,3 +77,4 @@ No extra production library, preview .NET migration, UDP contract change, hot re
 - 2026-10-08: Step 1 reviewed at `d2c7b1b`. Sixteen catalog tests and 122 total .NET tests pass; frontend/build, existing integration, Native AOT publish/smoke pass. Only prior MessagePack IL3053/IL2104 publish warnings remain. The worker removed configuration reload callbacks so invalid live edits cannot affect startup-only options. Step 2 is next; no plan reconciliation checkpoint is due yet.
 - 2026-10-08: Step 2 reviewed at `a34d425`. All 160 .NET tests, frontend/build, source integration, Native AOT smoke and full published integration pass. Controllers use configured tuning and preprepared fallback chains; ownership/disposal and one-admission concurrent starts are covered. Model availability is honest (`not checked` before lazy initialization) and known failures remain latched until restart. Step 3 must remove temporary browser adapters and use safe public descriptors; checkpoint A follows that step.
 - 2026-10-08: Step 3 reviewed at `2881f34`, with 164 .NET tests plus frontend/format/build, source integration, Native AOT smoke and full published integration passing. Safe catalog discovery, required IDs, separate bot-name bounds, and v8 requested/effective identity are covered. Checkpoint A reconciled the remaining steps as above; only step 4 is dispatched next.
+- 2026-10-08: Step 4 reviewed at `3083f37`. Frontend/format/build, Release build and 20 catalog/API tests pass. Desktop/320/390 browser evidence includes retry, fallback, long metadata and long-name game-over layouts. Coordinator independently confirmed native arrow selection, successful launch visibility/focus and leave at 390px. Source review accepts bounded start/rematch status reconciliation with exact bot/round guards. Step 5 is assigned only to real process-level coverage gaps.

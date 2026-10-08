@@ -416,6 +416,16 @@ def launch(port, log, extra_env=None):
     )
 
 
+def stop_process(process):
+    if process.poll() is None:
+        process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5)
+
+
 def terminate_connected_process(process, port, remote_port, remote_connection, remote_role, role):
     with websocket(port) as conn:
         assert decode_snapshot(recv_frame(conn))["connection"] == "connected"
@@ -531,6 +541,137 @@ class UdpRelay:
             except OSError:
                 if not self.stop.is_set():
                     raise
+
+
+def check_configured_tracker_process(log_dir):
+    port = 5183
+    bot_id = "catalog-tracker"
+    bot_name = '<b>Настроенный соперник</b> «Каталог»'.ljust(64, "я")
+    assert 24 < len(bot_name) <= 64
+    metadata = {
+        "id": bot_id,
+        "name": bot_name,
+        "description": "<img src=x> Соперник, добавленный только через конфигурацию.",
+        "style": "Широкая зона покоя, спокойная позиция",
+        "difficulty": "Настраиваемый",
+        "category": "<i>Каталог конфигурации</i>",
+        "order": 20,
+        "glyph": "<>",
+        "enabled": True,
+        "fallbackBotId": None,
+        "availability": "ready",
+        "availabilityReason": None,
+        "canPlay": True,
+    }
+    # The environment provider merges a fourth array entry into shipped appsettings.
+    # Only its dead zone differs from Lada, making configured behavior observable.
+    configured_env = {
+        "Bots__DefaultBotId": bot_id,
+        **{f"Bots__Entries__3__{field[0].upper() + field[1:]}":
+           str(metadata[field]).lower() if isinstance(metadata[field], bool) else str(metadata[field])
+           for field in ("id", "name", "description", "style", "difficulty", "category", "order", "glyph", "enabled")},
+        "Bots__Entries__3__StrategyId": "tracker",
+        "Bots__Entries__3__Tracker__ObservationIntervalTicks": "9",
+        "Bots__Entries__3__Tracker__ObservationActivationX": "0.72",
+        "Bots__Entries__3__Tracker__LookAheadSeconds": "0.25",
+        "Bots__Entries__3__Tracker__TargetDeadZone": "0.5",
+    }
+    configured_log = open(log_dir / "pong-extra-tracker.log", "w")
+    configured_process = launch(port, configured_log, configured_env)
+    try:
+        wait_until("configured tracker web server", lambda: request(port, "/api/status"))
+        # A tied display order also proves the ordinal-ID secondary ordering.
+        expected_ids = ("lada", bot_id, "iskra", "vektor")
+        catalog = expect_catalog(port, expected_ids, bot_id)
+        assert catalog[bot_id] == metadata, catalog[bot_id]
+        assert catalog["vektor"]["availability"] == "notChecked", catalog
+
+        baseline = request(port, "/api/local-opponent", {"nickname": "Baseline", "botId": "lada"})
+
+        def baseline_moves():
+            state = request(port, "/api/status")
+            return state if state["phase"] == "playing" and state["rightY"] > 0.52 else None
+
+        moving = wait_until("configured-process baseline tracker moves toward serve", baseline_moves)
+        expect_opponent(moving, "bot", "lada", "lada")
+        assert moving["tick"] > baseline["tick"], moving
+        expect_opponent(request(port, "/api/leave", {}), "none")
+
+        selected = request(port, "/api/local-opponent", {"nickname": "CatalogPlayer", "botId": bot_id})
+        expect_opponent(selected, "bot", bot_id, bot_id, requested_name=bot_name, effective_name=bot_name)
+        assert selected["phase"] == "countdown" and selected["rightY"] == 0.5, selected
+        with websocket(port) as selected_ws:
+            expect_identity_parity(selected, decode_snapshot(recv_frame(selected_ws)))
+            controls = control_packets()
+            for _ in range(8):
+                send_binary(selected_ws, controls[-1])
+                time.sleep(0.03)
+
+            approach_seen = False
+            live_samples = 0
+
+            def configured_stays_centered():
+                nonlocal approach_seen, live_samples
+                state = request(port, "/api/status")
+                assert state["rightY"] == 0.5, state
+                if state["phase"] == "playing":
+                    live_samples += 1
+                    approach_seen |= state["ballVx"] > 0 and state["ballX"] >= 0.72 and abs(state["ballY"] - 0.5) > 0.02
+                return state if approach_seen and state["tick"] >= selected["tick"] + 180 else None
+
+            stationary = wait_until("configured dead zone holds paddle through live approach", configured_stays_centered)
+            expect_identity_parity(selected, stationary)
+            assert live_samples >= 4 and stationary["leftY"] < 0.48, stationary
+
+        rematch = request(port, "/api/restart", {})
+        expect_identity_parity(selected, rematch)
+        assert rematch["roundId"] == selected["roundId"] + 1, rematch
+        assert rematch["phase"] == "countdown" and rematch["leftScore"] == rematch["rightScore"] == 0, rematch
+        assert rematch["leftY"] == rematch["rightY"] == 0.5, rematch
+        with websocket(port) as rematch_ws:
+            expect_identity_parity(rematch, decode_snapshot(recv_frame(rematch_ws)))
+        departed = request(port, "/api/leave", {})
+        expect_opponent(departed, "none")
+        assert departed["role"] == "none" and departed["connection"] == "idle", departed
+        with websocket(port) as departed_ws:
+            expect_identity_parity(departed, decode_snapshot(recv_frame(departed_ws)))
+        assert expect_catalog(port, expected_ids, bot_id)[bot_id] == metadata
+
+        # The same configured process must release the bot and still host a LAN round.
+        expect_opponent(request(5181, "/api/status"), "none")
+        waiting = request(port, "/api/host", {"port": 47889, "nickname": "ConfiguredHost"})
+        expect_opponent(waiting, "lan")
+        request(5181, "/api/join", join_payload(port=47889))
+        wait_until("configured host receives LAN challenge", lambda:
+                   request(port, "/api/status")["connection"] == "incomingChallenge"
+                   and request(5181, "/api/status")["connection"] == "awaitingAcceptance")
+        request(port, "/api/accept", {})
+        wait_until("configured-process LAN gameplay", lambda:
+                   request(port, "/api/status")["phase"] == "playing"
+                   and request(5181, "/api/status")["phase"] == "playing")
+        lan_host = request(port, "/api/status")
+        lan_guest = request(5181, "/api/status")
+        expect_opponent(lan_host, "lan")
+        expect_opponent(lan_guest, "lan")
+        assert lan_host["peerNickname"] == GUEST_NICKNAME and lan_guest["peerNickname"] == "ConfiguredHost"
+        with websocket(port) as host_ws, websocket(5181) as guest_ws:
+            expect_identity_parity(lan_host, decode_snapshot(recv_frame(host_ws)))
+            expect_identity_parity(lan_guest, decode_snapshot(recv_frame(guest_ws)))
+            for _ in range(8):
+                send_binary(guest_ws, controls[1])
+                time.sleep(0.03)
+            wait_until("LAN guest controls configured host's right paddle", lambda:
+                       request(port, "/api/status")["rightY"] > lan_host["rightY"] + 0.02)
+        expect_opponent(request(5181, "/api/leave", {}), "none")
+        wait_until("configured host returns to LAN lobby", lambda:
+                   request(port, "/api/status")["connection"] == "waiting")
+        expect_opponent(request(port, "/api/leave", {}), "none")
+        print("PASS: configuration-only fourth tracker, exact metadata/default/order, HTTP/MessagePack identity, tuned movement, rematch/leave and configured-process LAN round")
+    finally:
+        try:
+            stop_process(configured_process)
+        finally:
+            configured_log.close()
 
 
 if TEST_BINARY is None:
@@ -659,92 +800,111 @@ try:
     assert hard_left["role"] == "none" and hard_left["connection"] == "idle", hard_left
     assert expect_catalog(5180)["vektor"]["availability"] == "ready"
 
-    # A separate process with an absent model must stay playable and report the
-    # requested/effective identities over HTTP/WS, without exposing internal model details.
+    check_configured_tracker_process(log_dir)
+
+    # Each real asset failure stays local to the selected model: the configured tracker
+    # remains playable, while discovery and HTTP/WS expose only safe availability/identity.
     missing_model = log_dir / "missing-hard-v1.onnx"
     assert not missing_model.exists(), missing_model
-    fallback_log = open(log_dir / "pong-hard-missing-model.log", "w")
-    fallback_process = launch(
-        5182, fallback_log,
-        {
-            "Bots__Entries__0__Name": LONG_BOT_NAME,
-            "Bots__Entries__0__Order": "40",
-            "Bots__Entries__1__Enabled": "false",
-            "Bots__Entries__1__Order": "5",
-            "Bots__Entries__2__Onnx__ModelPath": str(missing_model),
-            "Bots__Entries__2__Order": "40",
-            "Bots__Entries__3__Id": "unusable-model",
-            "Bots__Entries__3__Name": "Без резерва",
-            "Bots__Entries__3__Description": "Модель без настроенного резерва.",
-            "Bots__Entries__3__Style": "Обученная политика",
-            "Bots__Entries__3__Difficulty": "Продвинутый",
-            "Bots__Entries__3__Category": "Контракт",
-            "Bots__Entries__3__Order": "20",
-            "Bots__Entries__3__StrategyId": "onnx",
-            "Bots__Entries__3__Onnx__ModelPath": str(missing_model),
-            "Bots__Entries__3__Onnx__ExpectedSha256": "5d5d3cf0910d967cf2d6dc60e8fe0b63f772060178bf6673f6ddc5cdba98ab5a",
-            "Bots__Entries__3__Onnx__InferenceCadenceTicks": "9",
-        },
-    )
-    try:
-        wait_until("fallback web server", lambda: request(5182, "/api/status"))
-        expected_ids = ("iskra", "unusable-model", "lada", "vektor")
-        catalog = expect_catalog(5182, expected_ids)
-        assert catalog["iskra"]["availability"] == "disabled", catalog
-        assert catalog["vektor"]["availability"] == catalog["unusable-model"]["availability"] == "notChecked", catalog
-        assert catalog["lada"]["name"] == LONG_BOT_NAME, catalog
-        expect_bad_request(5182, "/api/local-opponent", {"nickname": "Player", "botId": "iskra"})
-        error = expect_bad_request(5182, "/api/local-opponent", {"nickname": "Player", "botId": "unusable-model"})
-        assert str(missing_model) not in error["error"] and re.search("[А-Яа-яЁё]", error["error"]), error
-        unavailable = expect_catalog(5182, expected_ids)["unusable-model"]
-        assert unavailable["availability"] == "unavailable" and not unavailable["canPlay"], unavailable
-        assert re.search("[А-Яа-яЁё]", unavailable["availabilityReason"]), unavailable
-        assert str(missing_model) not in unavailable["availabilityReason"], unavailable
-        expect_opponent(request(5182, "/api/status"), "none")
-        boundary_nickname = "Игрок" + "я" * 19
-        long_named = request(5182, "/api/local-opponent", {"nickname": boundary_nickname, "botId": "lada"})
-        assert long_named["localNickname"] == boundary_nickname, long_named
-        expect_opponent(long_named, "bot", "lada", "lada", requested_name=LONG_BOT_NAME, effective_name=LONG_BOT_NAME)
-        for rejected_id in ("unknown", "iskra", "unusable-model", "vektor"):
-            expect_bad_request(5182, "/api/local-opponent", {"nickname": "Other", "botId": rejected_id})
-            preserved = request(5182, "/api/status")
-            expect_identity_parity(long_named, preserved)
-            assert preserved["roundId"] == long_named["roundId"], preserved
-        assert expect_catalog(5182, expected_ids)["vektor"]["availability"] == "notChecked"
-        with websocket(5182) as long_name_ws:
-            expect_identity_parity(long_named, decode_snapshot(recv_frame(long_name_ws)))
-        request(5182, "/api/leave", {})
-        fallback = request(5182, "/api/local-opponent", {"nickname": "Fallback", "botId": "vektor"})
-        expect_opponent(fallback, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
-        assert fallback["role"] == "host" and fallback["connection"] == "connected", fallback
-        assert str(missing_model) not in fallback["botFallbackReason"], fallback
-        catalog = expect_catalog(5182, expected_ids)
-        assert catalog["vektor"]["availability"] == "unavailable" and catalog["vektor"]["canPlay"], catalog
-        with websocket(5182) as fallback_ws:
-            fallback_frame = decode_snapshot(recv_frame(fallback_ws))
-            expect_opponent(fallback_frame, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
-            expect_identity_parity(fallback, fallback_frame)
+    trained_model = (TEST_BINARY.parent if TEST_BINARY else PROJECT) / "Models" / "hard-v1.onnx"
+    damaged_bytes = bytearray(trained_model.read_bytes())
+    assert damaged_bytes, trained_model
+    damaged_bytes[0] ^= 0xff
+    corrupt_model = log_dir / "corrupt-hard-v1.onnx"
+    corrupt_model.write_bytes(damaged_bytes)
+    assert corrupt_model.read_bytes() != trained_model.read_bytes(), corrupt_model
+    for failure_case, model_path, expected_reason in (
+        ("missing", missing_model, "Модель бота не найдена."),
+        ("corrupt-checksum", corrupt_model, "Модель бота не прошла проверку."),
+    ):
+        fallback_log = open(log_dir / f"pong-model-{failure_case}.log", "w")
+        fallback_process = launch(
+            5182, fallback_log,
+            {
+                "Bots__Entries__0__Name": LONG_BOT_NAME,
+                "Bots__Entries__0__Order": "40",
+                "Bots__Entries__1__Enabled": "false",
+                "Bots__Entries__1__Order": "5",
+                "Bots__Entries__2__Onnx__ModelPath": str(model_path),
+                "Bots__Entries__2__Order": "40",
+                "Bots__Entries__3__Id": "unusable-model",
+                "Bots__Entries__3__Name": "Без резерва",
+                "Bots__Entries__3__Description": "Модель без настроенного резерва.",
+                "Bots__Entries__3__Style": "Обученная политика",
+                "Bots__Entries__3__Difficulty": "Продвинутый",
+                "Bots__Entries__3__Category": "Контракт",
+                "Bots__Entries__3__Order": "20",
+                "Bots__Entries__3__StrategyId": "onnx",
+                "Bots__Entries__3__Onnx__ModelPath": str(model_path),
+                "Bots__Entries__3__Onnx__ExpectedSha256": "5d5d3cf0910d967cf2d6dc60e8fe0b63f772060178bf6673f6ddc5cdba98ab5a",
+                "Bots__Entries__3__Onnx__InferenceCadenceTicks": "9",
+            },
+        )
+        try:
+            wait_until(f"{failure_case} fallback web server", lambda: request(5182, "/api/status"))
+            expected_ids = ("iskra", "unusable-model", "lada", "vektor")
+            catalog = expect_catalog(5182, expected_ids)
+            assert catalog["iskra"]["availability"] == "disabled", catalog
+            assert catalog["vektor"]["availability"] == catalog["unusable-model"]["availability"] == "notChecked", catalog
+            assert catalog["lada"]["name"] == LONG_BOT_NAME, catalog
+            expect_bad_request(5182, "/api/local-opponent", {"nickname": "Player", "botId": "iskra"})
+            error = expect_bad_request(5182, "/api/local-opponent", {"nickname": "Player", "botId": "unusable-model"})
+            assert str(model_path) not in error["error"] and re.search("[А-Яа-яЁё]", error["error"]), error
+            assert error["error"] == expected_reason, error
+            unavailable = expect_catalog(5182, expected_ids)["unusable-model"]
+            assert unavailable["availability"] == "unavailable" and not unavailable["canPlay"], unavailable
+            assert re.search("[А-Яа-яЁё]", unavailable["availabilityReason"]), unavailable
+            assert str(model_path) not in unavailable["availabilityReason"], unavailable
+            assert unavailable["availabilityReason"] == expected_reason, unavailable
+            expect_opponent(request(5182, "/api/status"), "none")
+            boundary_nickname = "Игрок" + "я" * 19
+            long_named = request(5182, "/api/local-opponent", {"nickname": boundary_nickname, "botId": "lada"})
+            assert long_named["localNickname"] == boundary_nickname, long_named
+            expect_opponent(long_named, "bot", "lada", "lada", requested_name=LONG_BOT_NAME, effective_name=LONG_BOT_NAME)
+            for rejected_id in ("unknown", "iskra", "unusable-model", "vektor"):
+                expect_bad_request(5182, "/api/local-opponent", {"nickname": "Other", "botId": rejected_id})
+                preserved = request(5182, "/api/status")
+                expect_identity_parity(long_named, preserved)
+                assert preserved["roundId"] == long_named["roundId"], preserved
+            assert expect_catalog(5182, expected_ids)["vektor"]["availability"] == "notChecked"
+            with websocket(5182) as long_name_ws:
+                expect_identity_parity(long_named, decode_snapshot(recv_frame(long_name_ws)))
+            request(5182, "/api/leave", {})
+            fallback = request(5182, "/api/local-opponent", {"nickname": "Fallback", "botId": "vektor"})
+            expect_opponent(fallback, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
+            assert fallback["role"] == "host" and fallback["connection"] == "connected", fallback
+            assert str(model_path) not in fallback["botFallbackReason"], fallback
+            assert fallback["botFallbackReason"] == expected_reason, fallback
+            catalog = expect_catalog(5182, expected_ids)
+            assert catalog["vektor"]["availability"] == "unavailable" and catalog["vektor"]["canPlay"], catalog
+            assert catalog["vektor"]["availabilityReason"] == expected_reason, catalog
+            with websocket(5182) as fallback_ws:
+                fallback_frame = decode_snapshot(recv_frame(fallback_ws))
+                expect_opponent(fallback_frame, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
+                expect_identity_parity(fallback, fallback_frame)
 
-            def fallback_advanced():
-                state = request(5182, "/api/status")
-                return state if state["tick"] >= fallback["tick"] + 12 else None
+                def fallback_advanced():
+                    state = request(5182, "/api/status")
+                    return state if state["phase"] == "playing" and state["tick"] >= fallback["tick"] + 12 else None
 
-            advanced = wait_until("fallback match clock keeps advancing", fallback_advanced)
-            expect_opponent(advanced, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
-            fallback_rematch = request(5182, "/api/restart", {})
-            expect_opponent(fallback_rematch, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
-            assert fallback_rematch["roundId"] == fallback["roundId"] + 1, fallback_rematch
-        fallback_left = request(5182, "/api/leave", {})
-        expect_opponent(fallback_left, "none")
-        assert expect_catalog(5182, expected_ids)["vektor"]["availability"] == "unavailable"
-        retry = request(5182, "/api/local-opponent", {"nickname": "Retry", "botId": "vektor"})
-        expect_opponent(retry, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
-        request(5182, "/api/leave", {})
-    finally:
-        if fallback_process.poll() is None:
-            fallback_process.terminate()
-        fallback_process.wait(timeout=5)
-        fallback_log.close()
+                advanced = wait_until(f"{failure_case} fallback match enters play and keeps advancing", fallback_advanced)
+                expect_opponent(advanced, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
+                fallback_rematch = request(5182, "/api/restart", {})
+                expect_opponent(fallback_rematch, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
+                assert fallback_rematch["roundId"] == fallback["roundId"] + 1, fallback_rematch
+                assert fallback_rematch["botFallbackReason"] == fallback["botFallbackReason"], fallback_rematch
+            fallback_left = request(5182, "/api/leave", {})
+            expect_opponent(fallback_left, "none")
+            assert expect_catalog(5182, expected_ids)["vektor"]["availability"] == "unavailable"
+            retry = request(5182, "/api/local-opponent", {"nickname": "Retry", "botId": "vektor"})
+            expect_opponent(retry, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
+            request(5182, "/api/leave", {})
+        finally:
+            try:
+                stop_process(fallback_process)
+            finally:
+                fallback_log.close()
+        print(f"PASS: {failure_case} model availability, explicit fallback play/rematch, HTTP/WS identity and leave cleanup")
 
     require_mdns_loopback = os.environ.get("LANPONG_REQUIRE_MDNS_LOOPBACK") == "1"
     host = request(5180, "/api/host", host_payload())
@@ -1200,7 +1360,7 @@ try:
     accept_challenge()
     terminate_connected_process(processes[0], 5180, 5181, "idle", "none", "host")
 
-    print("PASS: configured catalog bots start/input/play/rematch/leave, missing-model explicit fallback with persistent requested/effective identity, catalog metadata/availability/ordering/error cases, version 8 HTTP and MessagePack WebSocket contract, static UI, discovery, pending challenge acceptance/decline/cancel, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, Quick Game port selection/cancellation/auto-accept/matching, and graceful host/guest shutdown")
+    print("PASS: configuration-only fourth tracker and tuned configured-process LAN round, configured catalog bots start/input/play/rematch/leave, missing/corrupt-checksum explicit fallback with persistent requested/effective identity, catalog metadata/availability/ordering/error cases, version 8 HTTP and MessagePack WebSocket contract, static UI, discovery, pending challenge acceptance/decline/cancel, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, Quick Game port selection/cancellation/auto-accept/matching, and graceful host/guest shutdown")
 finally:
     for process in processes:
         if process.poll() is None:
