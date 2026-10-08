@@ -4,7 +4,7 @@
 
 Replace hardcoded simple/hard opponent selection with an appsettings-driven bot catalog and redesign the opponent experience using publicly documented Chess.com bot-selection patterns as reference. Breaking contract changes are authorized. Preserve LAN play, deterministic gameplay, and Native AOT support.
 
-The coordinator performs research, decomposition, coordination, and review. Its only repository writes are Markdown files in `docs/bot-catalog/`. A separate implementation chat executes exactly one assigned step at a time, runs appropriate checks, makes a conventional commit, reports evidence, and stops until the coordinator assigns the next step. No publishing or remote push is part of this goal.
+The coordinator performs research, decomposition, coordination, and review. Its only repository writes are Markdown files in `docs/bot-catalog/`. A separate implementation chat executes exactly one assigned step at a time, runs appropriate checks, makes a conventional commit, reports evidence, and stops until the coordinator assigns the next step. No remote deployment, release publication, or remote push is part of this goal; local Native AOT publishing is a validation step.
 
 ## Coordinator workflow
 
@@ -19,8 +19,8 @@ The coordinator performs research, decomposition, coordination, and review. Its 
 
 | Step | Outcome | Status |
 | --- | --- | --- |
-| 1 | Typed, validated appsettings bot catalog, reusable behavior settings, stable IDs, and immutable lookup | Assigned |
-| 2 | Registered bot strategies, truthful availability/fallback, and session lifecycle resolving a selected entry | Ready after step 1 review |
+| 1 | Typed, validated appsettings bot catalog, reusable behavior settings, stable IDs, and immutable lookup | Reviewed: `d2c7b1b` |
+| 2 | Registered bot strategies, truthful availability/fallback, and session lifecycle resolving a selected entry | Assigned |
 | 3 | Catalog-based browser API and versioned session contracts, replacing simple/hard public selection | Ready after step 2 review |
 | Checkpoint A | Review steps 1–3 together; reconcile configuration, availability, migration, and UI needs | Required |
 | 4 | Responsive, accessible opponent catalog and selected-bot details integrated with existing gameplay/LAN UI | Ready after checkpoint A |
@@ -31,7 +31,7 @@ The coordinator performs research, decomposition, coordination, and review. Its 
 
 ## Step boundaries and review gates
 
-Implementation chat: **Implement configurable bot catalog**, thread `01a11af7-357d-7593-a957-5a83a56b56b3`, project `lanpong`, same checkout. Only step 1 is currently assigned. The worker creates `codex/bot-catalog`, commits the bounded step, and stops for review. The coordinator is authorized by the human to send subsequent step assignments to this chat.
+Implementation chat: **Implement configurable bot catalog**, thread `01a11af7-357d-7593-a957-5a83a56b56b3`, project `lanpong`, same checkout. Branch: `codex/bot-catalog`. Step 1 is reviewed; only step 2 is currently assigned. The worker commits each bounded step and stops for review. The coordinator is authorized by the human to send subsequent step assignments to this chat.
 
 Research and architecture decisions are in [research.md](research.md). They are a specification for this feature, with routine implementation detail left to the worker.
 
@@ -58,3 +58,4 @@ Research and architecture decisions are in [research.md](research.md). They are 
 - 2026-10-08: Initial decomposition recorded before implementation. Repository is clean on `main`; project already targets .NET 10 and C# 14 and enables Native AOT. Research and baseline review are next.
 - 2026-10-08: Parallel backend, UX, and library research supports built-in options/generated binding, a registered strategy factory seam, immutable lookup, and native HTML selection. Public Chess.com UX informs catalog/selection flow; no undocumented backend claims are used. The plan is ready to dispatch step 1.
 - 2026-10-08: Step 1 dispatched to the separate implementation chat. Research also evaluated FluentValidation, Scrutor, Lit, Web Awesome, and Shoelace; built-in framework options and native HTML controls best fit the focused refactor.
+- 2026-10-08: Step 1 reviewed at `d2c7b1b`. Sixteen catalog tests and 122 total .NET tests pass; frontend/build, existing integration, Native AOT publish/smoke pass. Only prior MessagePack IL3053/IL2104 publish warnings remain. The worker removed configuration reload callbacks so invalid live edits cannot affect startup-only options. Step 2 is next; no plan reconciliation checkpoint is due yet.

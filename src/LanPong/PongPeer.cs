@@ -21,16 +21,17 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
     private readonly LocalControllerInputs _controllers = new();
     private readonly RejectedChallengeCache _rejectedChallenges = new();
     private readonly PeerPingTracker _ping = new();
-    private readonly ILocalOpponentController _localOpponent;
-    private readonly HardLocalOpponentController? _hardOpponent;
-    private ILocalOpponentController _activeLocalOpponent;
+    private readonly BotRuntime _bots;
+    private PreparedBotSession? _botSession;
+    private BotSessionIdentity? _botIdentity;
+    private BotDefinition? _identityEffectiveBot;
+    private string? _botFallbackMessage;
     private GameEvent[] _confirmedGuestEvents = [];
     private readonly string[] _localAddresses = GetLocalAddresses();
     private readonly Task _clockTask;
     private Task? _shutdownTask;
     private bool _stopping;
-    private bool _localOpponentActive;
-    private bool _hardOpponentRequested;
+    private bool _localOpponentActive => _botSession is not null;
     private int _disposed;
 
     private UdpClient? _socket;
@@ -66,13 +67,10 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
     private DateTime _lastHelloSent = DateTime.MinValue;
     private DateTime _lastRestartSent = DateTime.MinValue;
 
-    public PongPeer(ILogger<PongPeer> logger, ILocalOpponentController localOpponent,
-        HardLocalOpponentController? hardOpponent = null)
+    public PongPeer(ILogger<PongPeer> logger, BotRuntime bots)
     {
         _logger = logger;
-        _localOpponent = localOpponent;
-        _hardOpponent = hardOpponent;
-        _activeLocalOpponent = localOpponent;
+        _bots = bots;
         _mdns = new MdnsDiscovery(logger);
         _hostTimeline = new HostRollbackTimeline(_game);
         _guestTimeline = new GuestPredictionTimeline(_game);
@@ -88,15 +86,15 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
                 ? _connection == ConnectionState.Connected && _guestTimeline.Started
                     ? _confirmedGuestEvents : []
                 : state.RecentEvents.ToArray();
-            var requestedOpponentMode = _localOpponentActive
-                ? _hardOpponentRequested ? OpponentMode.Hard : OpponentMode.Simple
+            var requestedOpponentMode = _botSession is { } bot
+                ? LegacyOpponentMode(bot.Requested)
                 : _role != PeerRole.None || _connection == ConnectionState.Searching
                     ? OpponentMode.Lan : OpponentMode.None;
-            var opponentFallbackActive = requestedOpponentMode == OpponentMode.Hard &&
-                                         _hardOpponent?.IsFallbackActive == true;
-            var opponentMode = opponentFallbackActive ? OpponentMode.Simple : requestedOpponentMode;
+            var opponentFallbackActive = _botSession is { FallbackReason: not null };
+            var opponentMode = _botSession is { } effectiveBot
+                ? LegacyOpponentMode(effectiveBot.Effective) : requestedOpponentMode;
             var message = opponentFallbackActive
-                ? "Режим Hard недоступен. Игра продолжается против Simple."
+                ? _botFallbackMessage!
                 : _message;
             return new PongSnapshot(
                 _role, _connection, message, _udpPort, _localAddresses,
@@ -116,9 +114,9 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
         {
             lock (_gate)
             {
-                var requested = _localOpponentActive && _hardOpponentRequested;
-                return (requested, requested && _hardOpponent?.IsFallbackActive == true,
-                    requested ? _hardOpponent?.FallbackReason : null);
+                var requested = _botSession?.Requested.Onnx is not null;
+                return (requested, requested && _botSession?.FallbackReason is not null,
+                    requested ? _botSession?.FallbackReason : null);
             }
         }
     }
@@ -147,47 +145,89 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
         finally { _transition.Release(); }
     }
 
-    public Task StartLocalOpponentAsync(string nickname) => StartLocalOpponentCoreAsync(nickname, hard: false);
+    // Temporary adapters for the version 7 browser contract; removed with bot-ID HTTP/WS contracts.
+    public Task StartLocalOpponentAsync(string nickname) =>
+        StartBotAsync(nickname, LegacyBotId(BotSettingsKind.Tracker));
 
-    internal Task StartHardLocalOpponentAsync(string nickname) => StartLocalOpponentCoreAsync(nickname, hard: true);
+    internal Task StartHardLocalOpponentAsync(string nickname) =>
+        StartBotAsync(nickname, LegacyBotId(BotSettingsKind.Onnx));
 
-    private async Task StartLocalOpponentCoreAsync(string nickname, bool hard)
+    private string LegacyBotId(BotSettingsKind kind) => _bots.Catalog.Entries.FirstOrDefault(entry =>
+        entry.Enabled && (kind == BotSettingsKind.Tracker ? entry.Tracker is not null : entry.Onnx is not null))?.Id
+        ?? throw new InvalidOperationException("Выбранный режим бота недоступен.");
+
+    private static OpponentMode LegacyOpponentMode(BotDefinition entry) =>
+        entry.Onnx is not null ? OpponentMode.Hard : OpponentMode.Simple;
+
+    internal BotSessionIdentity? BotStatus
+    {
+        get
+        {
+            lock (_gate)
+                return _botIdentity;
+        }
+    }
+
+    private void UpdateBotIdentityLocked()
+    {
+        if (_botSession is not { } bot)
+        {
+            _botIdentity = null;
+            _identityEffectiveBot = null;
+            _botFallbackMessage = null;
+            return;
+        }
+        if (ReferenceEquals(_identityEffectiveBot, bot.Effective)) return;
+        _identityEffectiveBot = bot.Effective;
+        _botIdentity = new BotSessionIdentity(bot.Requested.Id, bot.Requested.Name,
+            bot.Effective.Id, bot.Effective.Name, bot.FallbackReason);
+        _botFallbackMessage = bot.FallbackReason is null ? null
+            : $"Бот «{bot.Requested.Name}» ({LegacyOpponentMode(bot.Requested)}) недоступен. " +
+              $"Игра продолжается против «{bot.Effective.Name}» ({LegacyOpponentMode(bot.Effective)}).";
+    }
+
+    public async Task StartBotAsync(string nickname, string botId)
     {
         var selectedNickname = PlayerNickname.Normalize(nickname);
         await _transition.WaitAsync();
+        PreparedBotSession? candidate = null;
         try
         {
             lock (_gate)
             {
                 if (_stopping) throw new InvalidOperationException("Приложение завершает работу.");
-                if (_role != PeerRole.None || _connection != ConnectionState.Idle ||
-                    _matchmakingTask is not null)
+                if (_role != PeerRole.None || _connection != ConnectionState.Idle || _matchmakingTask is not null)
                     throw new InvalidOperationException("Сначала покиньте текущую игру.");
-                if (hard && _hardOpponent is null)
-                    throw new InvalidOperationException("Режим Hard недоступен.");
-                CancelQuickMatchmakingLocked(clearLobby: true);
             }
 
-            await StopSocketAsync();
-            var opponent = hard ? _hardOpponent! : _localOpponent;
-            // Preparing the ONNX session can take longer than a fixed tick. No match is
-            // active here, so do that work outside the state lock.
-            opponent.Reset();
+            // File checks/native warmup run on a worker without holding the state lock.
+            // A failed selection has not yet changed any peer or controller state.
+            candidate = await Task.Run(() => _bots.Prepare(botId));
             lock (_gate)
             {
                 if (_stopping) throw new InvalidOperationException("Приложение завершает работу.");
-                _activeLocalOpponent = opponent;
-                _hardOpponentRequested = hard;
+                CancelQuickMatchmakingLocked(clearLobby: true);
+            }
+            await StopSocketAsync();
+            lock (_gate)
+            {
+                if (_stopping) throw new InvalidOperationException("Приложение завершает работу.");
+                _botSession = candidate;
+                UpdateBotIdentityLocked();
+                candidate = null; // Peer now owns the fully prepared session.
                 _localNickname = selectedNickname;
                 _peerNickname = "Компьютер";
                 _role = PeerRole.Host;
                 _connection = ConnectionState.Connected;
-                _message = hard ? "Локальная игра против Hard началась!" : "Локальная игра началась!";
+                _message = "Локальная игра началась!";
                 _game.StartMatch();
-                _localOpponentActive = true;
             }
         }
-        finally { _transition.Release(); }
+        finally
+        {
+            try { candidate?.Dispose(); }
+            finally { _transition.Release(); }
+        }
     }
 
     // The caller holds _transition. Port zero asks the OS to choose a free UDP port.
@@ -297,15 +337,33 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
 
     public void Restart()
     {
+        PreparedBotSession? failedBot = null;
+        List<IDisposable>? retired = null;
         lock (_gate)
         {
             if (_stopping) throw new InvalidOperationException("Приложение завершает работу.");
             if (_connection != ConnectionState.Connected) throw new InvalidOperationException("Сначала подключитесь к игре.");
             if (_role == PeerRole.Host)
             {
-                if (_localOpponentActive) _activeLocalOpponent.Reset();
-                _game.StartMatch();
-                if (!_localOpponentActive) _hostTimeline.Reset();
+                if (_botSession is { } bot)
+                {
+                    // All candidates were warmed before admission; resets only clear decision state.
+                    bot.Reset();
+                    UpdateBotIdentityLocked();
+                    retired = bot.TakeRetiredControllers();
+                    if (!bot.IsPlayable)
+                    {
+                        failedBot = bot;
+                        _botSession = null;
+                        UpdateBotIdentityLocked();
+                        ResetSocketLocked("Бот не смог продолжить игру. Выберите другого соперника.");
+                    }
+                }
+                if (failedBot is null)
+                {
+                    _game.StartMatch();
+                    if (!_localOpponentActive) _hostTimeline.Reset();
+                }
             }
             else if (_role == PeerRole.Guest)
             {
@@ -314,6 +372,10 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
                 _lastRestartSent = DateTime.MinValue;
             }
         }
+        BotRuntime.DisposeRetired(retired);
+        failedBot?.Dispose();
+        if (failedBot is not null)
+            throw new InvalidOperationException("Бот не смог продолжить игру. Выберите другого соперника.");
     }
 
     public async Task AcceptChallengeAsync()

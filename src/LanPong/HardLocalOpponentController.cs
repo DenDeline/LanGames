@@ -4,7 +4,7 @@ using OrtSessionOptions = Microsoft.ML.OnnxRuntime.SessionOptions;
 
 namespace LanPong;
 
-/// <summary>Production right-paddle policy; a failed model stays on Simple until disposal.</summary>
+/// <summary>Legacy diagnostics/training policy; a failed model stays on Simple until disposal.</summary>
 internal sealed class HardLocalOpponentController : ILocalOpponentController, IDisposable
 {
     internal const string ExpectedModelSha256 =

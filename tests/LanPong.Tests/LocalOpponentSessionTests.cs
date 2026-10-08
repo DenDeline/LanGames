@@ -9,8 +9,10 @@ public sealed class LocalOpponentSessionTests
     [Test]
     public async Task StartLocalOpponentAsync_AdvancesBothAssignedPaddlesWithoutUdpAndSupportsRematchAndLeave()
     {
-        var opponent = new TestOpponent();
-        await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, opponent);
+        var opponent = new TrackedBotController();
+        var factory = TrackerFactory(_ => opponent);
+        await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
+            BotTestSupport.Runtime([BotTestSupport.Tracker()], factory));
 
         await peer.StartLocalOpponentAsync("Игрок");
         var started = peer.Snapshot();
@@ -56,7 +58,8 @@ public sealed class LocalOpponentSessionTests
     [Test]
     public async Task StartLocalOpponentAsync_UsesVersionedBrowserSnapshotAndCanReturnToLanHosting()
     {
-        await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, new TestOpponent());
+        await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
+            BotTestSupport.Runtime([BotTestSupport.Tracker()], TrackerFactory(_ => new TrackedBotController())));
         await peer.StartLocalOpponentAsync("Игрок");
         var local = peer.Snapshot();
         var buffer = new ArrayBufferWriter<byte>();
@@ -98,9 +101,10 @@ public sealed class LocalOpponentSessionTests
     public async Task StartHardLocalOpponentAsync_WhenModelIsMissing_ReportsFallbackAndKeepsSessionPlayable()
     {
         var missingModel = Path.Combine(Path.GetTempPath(), $"missing-lanpong-{Guid.NewGuid():N}.onnx");
-        using var hard = new HardLocalOpponentController(missingModel);
-        await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
-            new SimpleLocalOpponentController(), hard);
+        var runtime = BotTestSupport.Runtime([BotTestSupport.Tracker(name: "Simple"),
+                BotTestSupport.Onnx(fallback: "tracker", path: missingModel)],
+            new TrackerBotStrategyFactory(), OnnxFactory(entry => new OnnxLocalOpponentController(entry.Onnx!)));
+        await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, runtime);
 
         await Assert.That(peer.HardOpponentStatus.Requested).IsFalse();
         await peer.StartHardLocalOpponentAsync("Игрок");
@@ -146,17 +150,19 @@ public sealed class LocalOpponentSessionTests
     [Test]
     public async Task StartHardLocalOpponentAsync_WithFrozenModel_ReportsHardAcrossRematch()
     {
-        using var hard = new HardLocalOpponentController(
-            Path.Combine(AppContext.BaseDirectory, "Models", "hard-v1.onnx"));
-        await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
-            new SimpleLocalOpponentController(), hard);
+        OnnxLocalOpponentController? hard = null;
+        var runtime = BotTestSupport.Runtime([BotTestSupport.Tracker(),
+                BotTestSupport.Onnx(path: BotTestSupport.ModelPath())],
+            new TrackerBotStrategyFactory(),
+            OnnxFactory(entry => hard = new OnnxLocalOpponentController(entry.Onnx!)));
+        await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, runtime);
 
         await peer.StartHardLocalOpponentAsync("Игрок");
         var started = peer.Snapshot();
         await Assert.That(started.OpponentMode).IsEqualTo(OpponentMode.Hard);
         await Assert.That(started.RequestedOpponentMode).IsEqualTo(OpponentMode.Hard);
         await Assert.That(started.OpponentFallbackActive).IsFalse();
-        await Assert.That(hard.ModelSha256).IsEqualTo(HardLocalOpponentController.ExpectedModelSha256);
+        await Assert.That(hard!.ModelSha256).IsEqualTo(HardLocalOpponentController.ExpectedModelSha256);
         await WaitForAsync(peer, snapshot => snapshot.Tick > started.Tick);
 
         peer.Restart();
@@ -177,7 +183,7 @@ public sealed class LocalOpponentSessionTests
     public async Task JoinAsync_ImmediateLeaveDoesNotRaceReceiverStartup()
     {
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
-            new SimpleLocalOpponentController());
+            BotTestSupport.Runtime([BotTestSupport.Tracker()], new TrackerBotStrategyFactory()));
 
         for (var attempt = 0; attempt < 32; attempt++)
         {
@@ -193,9 +199,11 @@ public sealed class LocalOpponentSessionTests
     public async Task StartHardLocalOpponentAsync_WhenInferenceFails_UpdatesStatusWithoutStoppingClock()
     {
         var inference = new ThrowingInferenceSession();
-        using var hard = new HardLocalOpponentController(inference);
-        await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
-            new SimpleLocalOpponentController(), hard);
+        var runtime = BotTestSupport.Runtime([BotTestSupport.Tracker(name: "Simple"),
+                BotTestSupport.Onnx(fallback: "tracker")],
+            new TrackerBotStrategyFactory(),
+            OnnxFactory(entry => new OnnxLocalOpponentController(entry.Onnx!, inference)));
+        await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, runtime);
 
         await peer.StartHardLocalOpponentAsync("Игрок");
         await Assert.That(peer.HardOpponentStatus.Requested).IsTrue();
@@ -204,7 +212,7 @@ public sealed class LocalOpponentSessionTests
         await Assert.That(peer.Snapshot().RequestedOpponentMode).IsEqualTo(OpponentMode.Hard);
         await Assert.That(peer.Snapshot().OpponentFallbackActive).IsFalse();
 
-        var fallback = await WaitForAsync(peer, _ => peer.HardOpponentStatus.FallbackActive,
+        var fallback = await WaitForAsync(peer, _ => peer.HardOpponentStatus.FallbackActive && inference.Disposed,
             TimeSpan.FromSeconds(5));
         await Assert.That(fallback.Message.Contains("Simple", StringComparison.Ordinal)).IsTrue();
         await Assert.That(fallback.OpponentMode).IsEqualTo(OpponentMode.Simple);
@@ -252,14 +260,11 @@ public sealed class LocalOpponentSessionTests
         throw new TimeoutException("Local opponent session did not advance both paddles.");
     }
 
-    private sealed class TestOpponent : ILocalOpponentController
-    {
-        public int ResetCount { get; private set; }
+    private static TestBotFactory TrackerFactory(Func<BotDefinition, ILocalOpponentController> create) =>
+        new(BotStrategyDescriptor.TrackerId, BotSettingsKind.Tracker, create);
 
-        public void Reset() => ResetCount++;
-
-        public int GetAxis(GameState state) => -1;
-    }
+    private static TestBotFactory OnnxFactory(Func<BotDefinition, ILocalOpponentController> create) =>
+        new(BotStrategyDescriptor.OnnxId, BotSettingsKind.Onnx, create);
 
     private sealed class ThrowingInferenceSession : IHardInferenceSession
     {

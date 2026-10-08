@@ -7,11 +7,17 @@ internal sealed partial class PongPeer
     private async Task<bool> StopSocketAsync(Func<bool>? canStop = null)
     {
         (UdpClient? Socket, CancellationTokenSource? Stop, Task? Receiver) detached;
+        PreparedBotSession? bot;
         lock (_gate)
         {
             if (canStop is not null && !canStop()) return false;
+            bot = _botSession;
+            _botSession = null;
+            UpdateBotIdentityLocked();
             detached = ResetSocketLocked();
         }
+        // Native cleanup never blocks snapshots or the simulation state lock.
+        bot?.Dispose();
         _mdns.SetHostPort(null);
         detached.Stop?.Cancel();
         detached.Socket?.Dispose();
@@ -32,9 +38,6 @@ internal sealed partial class PongPeer
                          _connection is (ConnectionState.Connecting or ConnectionState.AwaitingAcceptance);
         var detached = (_socket, _socketStop, _receiveTask);
         _socket = null;
-        _localOpponentActive = false;
-        _hardOpponentRequested = false;
-        _activeLocalOpponent = _localOpponent;
         _quickHostAutoAccept = false;
         _socketStop = null;
         _receiveTask = null;

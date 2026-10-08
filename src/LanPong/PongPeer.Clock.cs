@@ -16,6 +16,8 @@ internal sealed partial class PongPeer
         public WirePacket? Ping;
         public UdpClient? SocketToClose;
         public CancellationTokenSource? StopToClose;
+        public List<IDisposable>? BotControllersToDispose;
+        public PreparedBotSession? BotToDispose;
     }
 
     private async Task ClockAsync(CancellationToken cancellationToken)
@@ -39,7 +41,7 @@ internal sealed partial class PongPeer
                 {
                     actions = new ClockActions { Socket = _socket };
                     if (_localOpponentActive)
-                        TickLocalOpponentLocked(now, elapsed, ref accumulatedTime);
+                        TickLocalOpponentLocked(now, elapsed, ref accumulatedTime, ref actions);
                     else if (actions.Socket is null)
                     {
                         accumulatedTime = 0;
@@ -54,6 +56,8 @@ internal sealed partial class PongPeer
                         actions.Ping = _ping.CreatePing(_sessionId.Value, now);
                     _ping.Expire(now);
                 }
+                BotRuntime.DisposeRetired(actions.BotControllersToDispose);
+                actions.BotToDispose?.Dispose();
                 if (actions.Socket is { } socket && actions.Destination is { } destination)
                 {
                     if (actions.Packet is not null)
@@ -70,18 +74,32 @@ internal sealed partial class PongPeer
     }
 
     // Called under _gate. The local match uses the same fixed-step engine, without UDP or rollback.
-    private void TickLocalOpponentLocked(DateTime now, double elapsed, ref double accumulatedTime)
+    private void TickLocalOpponentLocked(DateTime now, double elapsed, ref double accumulatedTime,
+        ref ClockActions actions)
     {
+        var bot = _botSession!;
         var leftAxis = _controllers.GetAxis(now);
         accumulatedTime = Math.Min(accumulatedTime + elapsed,
             GameConstants.FixedStepSeconds * NetworkConstants.MaximumSimulationCatchUpSteps);
         for (var step = 0; step < NetworkConstants.MaximumSimulationCatchUpSteps &&
                            accumulatedTime >= GameConstants.FixedStepSeconds; step++)
         {
-            var rightAxis = Math.Clamp(_activeLocalOpponent.GetAxis(_game.Capture()), -1, 1);
+            var rightAxis = Math.Clamp(bot.GetAxis(_game.Capture()), -1, 1);
+            UpdateBotIdentityLocked();
+            if (!bot.IsPlayable)
+            {
+                _botSession = null;
+                UpdateBotIdentityLocked();
+                ResetSocketLocked("Бот не смог продолжить игру. Выберите другого соперника.");
+                actions.BotToDispose = bot;
+                actions.BotControllersToDispose = bot.TakeRetiredControllers();
+                accumulatedTime = 0;
+                return;
+            }
             _game.Advance(GameConstants.FixedStepSeconds, leftAxis, rightAxis);
             accumulatedTime -= GameConstants.FixedStepSeconds;
         }
+        actions.BotControllersToDispose = bot.TakeRetiredControllers();
     }
 
     // Called under _gate; the clock owns accumulatedTime and its send buffer.

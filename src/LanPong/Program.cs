@@ -21,13 +21,14 @@ if (args.Length == 1 && args[0] == "--hard-benchmark")
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddBotCatalog(builder.Configuration);
+builder.Services.AddSingleton<IBotStrategyFactory, TrackerBotStrategyFactory>();
+// Narrow diagnostic/integration override for the frozen default model profile.
+builder.Services.AddSingleton<IBotStrategyFactory>(services => new OnnxBotStrategyFactory(
+    services.GetRequiredService<IHostEnvironment>(), Environment.GetEnvironmentVariable("LANPONG_HARD_MODEL_PATH")));
+builder.Services.AddSingleton<BotRuntime>();
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonSerializerContext.Default));
 builder.Services.AddSingleton<PongPeer>();
-builder.Services.AddSingleton<ILocalOpponentController, SimpleLocalOpponentController>();
-// Diagnostic/test override; HardLocalOpponentController still requires the frozen SHA-256.
-builder.Services.AddSingleton(_ => new HardLocalOpponentController(
-    Environment.GetEnvironmentVariable("LANPONG_HARD_MODEL_PATH")));
 builder.Services.AddHostedService(services => services.GetRequiredService<PongPeer>());
 var app = builder.Build();
 // Freeze the startup configuration even before gameplay starts consuming the catalog.

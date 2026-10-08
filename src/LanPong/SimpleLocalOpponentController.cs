@@ -10,8 +10,19 @@ internal sealed class SimpleLocalOpponentController : ILocalOpponentController
     internal const double LookAheadSeconds = 0.25;
     internal const double TargetDeadZone = 0.018;
 
+    private readonly TrackerBotSettings _settings;
     private long _nextObservationTick;
     private double _targetY = ArenaCenter;
+
+    internal SimpleLocalOpponentController()
+        : this(new TrackerBotSettings(ObservationIntervalTicks, ObservationActivationX,
+            LookAheadSeconds, TargetDeadZone)) { }
+
+    internal SimpleLocalOpponentController(TrackerBotSettings settings)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        _settings = settings;
+    }
 
     public void Reset()
     {
@@ -31,25 +42,25 @@ internal sealed class SimpleLocalOpponentController : ILocalOpponentController
         else if (state.TickNumber >= _nextObservationTick)
         {
             _targetY = ObserveTarget(state);
-            _nextObservationTick = state.TickNumber + ObservationIntervalTicks;
+            _nextObservationTick = state.TickNumber + _settings.ObservationIntervalTicks;
         }
 
         var distance = _targetY - state.RightY;
-        return distance > TargetDeadZone ? 1 : distance < -TargetDeadZone ? -1 : 0;
+        return distance > _settings.TargetDeadZone ? 1 : distance < -_settings.TargetDeadZone ? -1 : 0;
     }
 
-    private static double ObserveTarget(GameState state)
+    private double ObserveTarget(GameState state)
     {
         // This pilot reacts only once the ball is in the right-hand approach.
         // The stronger teacher can prepare for the full flight instead.
-        if (state.BallVx <= 0 || state.BallX < ObservationActivationX ||
+        if (state.BallVx <= 0 || state.BallX < _settings.ObservationActivationX ||
             state.BallX >= RightContactX)
             return ArenaCenter;
 
         // Only look a short fixed time ahead. The contact plane caps that horizon
         // near the paddle, but this policy does not plan the full ball flight.
         var timeToPaddle = (RightContactX - state.BallX) / state.BallVx;
-        var horizon = Math.Min(timeToPaddle, LookAheadSeconds);
+        var horizon = Math.Min(timeToPaddle, _settings.LookAheadSeconds);
         var projectedY = state.BallY + state.BallVy * horizon;
         return Math.Clamp(ReflectFromWalls(projectedY), MinPaddleY, MaxPaddleY);
     }
