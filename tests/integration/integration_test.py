@@ -79,6 +79,7 @@ def msgpack_helper(operation, payload=b""):
     result = subprocess.run(
         ["node", str(MSGPACK_HELPER), operation],
         input=base64.b64encode(payload), capture_output=True, check=True, cwd=ROOT,
+        timeout=5,
     )
     return json.loads(result.stdout)
 

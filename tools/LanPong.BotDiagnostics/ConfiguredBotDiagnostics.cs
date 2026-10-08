@@ -8,8 +8,11 @@ using LanPong.Bots.Catalog;
 using LanPong.Bots.Configuration;
 using LanPong.Bots.Inference;
 using LanPong.Bots.Runtime;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
-namespace LanPong;
+namespace LanPong.BotDiagnostics;
 
 internal sealed record BotBenchmarkOptions(string? BotId = null, int Samples = 20_000, int Warmup = 20_000);
 internal sealed record BotBenchmarkCommand(BotBenchmarkOptions Options, string[] ConfigurationArguments);

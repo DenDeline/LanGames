@@ -1,4 +1,5 @@
 using System.Text.Json;
+using LanPong.BotDiagnostics;
 using LanPong.Bots.Catalog;
 using LanPong.Bots.Configuration;
 using LanPong.Bots.Runtime;

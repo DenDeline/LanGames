@@ -6,6 +6,7 @@
     <Project Path="tests/LanPong.Tests/LanPong.Tests.csproj" />
   </Folder>
   <Folder Name="/tools/">
+    <Project Path="tools/LanPong.BotDiagnostics/LanPong.BotDiagnostics.csproj" />
     <Project Path="tools/LanPong.TrainingData/LanPong.TrainingData.csproj" />
   </Folder>
 </Solution>

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the tiny, deterministic ONNX model used by the Native AOT smoke test.
+"""Generate the tiny, deterministic ONNX model used by the developer smoke probe.
 
 The model has one float32 input named ``input`` with shape [1] and one float32
 output named ``output`` with shape [1]. Its only node is Add(input, one), where
@@ -19,7 +19,7 @@ import struct
 from pathlib import Path
 
 
-DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "src/LanPong/Models/aot-smoke.onnx"
+DEFAULT_OUTPUT = Path(__file__).resolve().parents[1] / "tools/LanPong.BotDiagnostics/Models/aot-smoke.onnx"
 
 
 def varint(value: int) -> bytes:

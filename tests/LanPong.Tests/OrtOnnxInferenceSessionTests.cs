@@ -28,7 +28,7 @@ public sealed class OrtOnnxInferenceSessionTests
     [Test]
     public async Task WrongModelSchema_IsRejectedBeforeSessionCanBeUsed()
     {
-        await Assert.That(() => new OrtOnnxInferenceSession(BotTestSupport.ModelPath("aot-smoke.onnx")))
+        await Assert.That(() => new OrtOnnxInferenceSession(BotTestSupport.DiagnosticsModelPath()))
             .Throws<InvalidDataException>();
     }
 

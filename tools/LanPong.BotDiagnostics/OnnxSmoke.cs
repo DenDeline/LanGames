@@ -1,6 +1,6 @@
 using Microsoft.ML.OnnxRuntime;
 
-namespace LanPong;
+namespace LanPong.BotDiagnostics;
 
 /// <summary>Published-binary check that the managed and native ONNX Runtime paths both execute.</summary>
 internal static class OnnxSmoke

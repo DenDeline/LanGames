@@ -68,15 +68,21 @@ internal static class BotTestSupport
         return ((System.Net.IPEndPoint)reserved.Client.LocalEndPoint!).Port;
     }
 
-    internal static string ModelPath(string fileName = "hard-v1.onnx")
+    internal static string ModelPath(string fileName = "hard-v1.onnx") =>
+        FixturePath(Path.Combine("src", "LanPong", "Models", fileName));
+
+    internal static string DiagnosticsModelPath() =>
+        FixturePath(Path.Combine("tools", "LanPong.BotDiagnostics", "Models", "aot-smoke.onnx"));
+
+    private static string FixturePath(string relativePath)
     {
         for (var directory = new DirectoryInfo(AppContext.BaseDirectory);
              directory is not null; directory = directory.Parent)
         {
-            var path = Path.Combine(directory.FullName, "src", "LanPong", "Models", fileName);
+            var path = Path.Combine(directory.FullName, relativePath);
             if (File.Exists(path)) return path;
         }
-        throw new FileNotFoundException($"Test model {fileName} was not found.");
+        throw new FileNotFoundException($"Test model {Path.GetFileName(relativePath)} was not found.");
     }
 }
 

@@ -34,5 +34,11 @@ jobs:
         run: pnpm build
       - name: Test .NET solution
         run: dotnet test --solution LanPong.slnx --configuration Release
+      - name: Verify production dependency boundary
+        run: python tests/integration/verify_production_boundary.py
+      - name: Smoke-test developer bot diagnostics
+        env:
+          LANPONG_DIAGNOSTICS_DLL: ${{ github.workspace }}/tools/LanPong.BotDiagnostics/bin/Release/net10.0/LanPong.BotDiagnostics.dll
+        run: python tests/integration/bot_diagnostics_smoke_test.py
       - name: Run integration tests
         run: python tests/integration/integration_test.py

@@ -5,30 +5,6 @@ using LanPong;
 using LanPong.Bots.Catalog;
 using LanPong.Bots.Configuration;
 using LanPong.Bots.Runtime;
-using Microsoft.Extensions.Options;
-
-if (args.Length == 1 && args[0] == "--onnx-smoke")
-{
-    OnnxSmoke.Run();
-    return;
-}
-
-try
-{
-    if (ConfiguredBotDiagnostics.ParseCommand(args) is { } benchmark)
-    {
-        ConfiguredBotDiagnostics.Run(benchmark, Console.Out);
-        return;
-    }
-}
-catch (Exception error)
-{
-    Console.Error.WriteLine(error is ArgumentException or InvalidOperationException or OptionsValidationException
-        ? $"Configured bot benchmark failed: {error.Message}"
-        : "Configured bot benchmark failed during configuration or preparation.");
-    Environment.ExitCode = 1;
-    return;
-}
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddConfiguredBots(builder.Configuration);

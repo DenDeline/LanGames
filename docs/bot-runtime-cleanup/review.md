@@ -21,3 +21,11 @@ Validation inspected from `.artifacts/bot-runtime-cleanup-step1/logs/`:
 Working tree was clean at the worker's stop. Remaining configured diagnostics and tiny ONNX smoke are intentionally pending step 3. Step 1 is accepted; no other implementation step is authorized by this review record.
 
 Independent harness review also accepts the import boundary and unchanged runner. The shared Node decoder has no subprocess timeout; address that bounded validation robustness alongside step 3's published-smoke changes. A release matrix is configured for other platforms, but local evidence is macOS ARM64 only.
+
+## Step 2 — folders and namespaces
+
+Reviewed commit: `d84f8c409fe40a785eee810b0693f04c9d2e4fd1` (`refactor(bots): organize configured runtime by responsibility`).
+
+Seventeen production files move under `Bots/Configuration`, `Bots/Catalog`, `Bots/Strategies`, `Bots/Inference` and `Bots/Runtime`, with matching namespaces and explicit imports in app, training, tests and the temporarily retained diagnostics. Root's read-only comparison confirms every moved file body is identical after excluding using/namespace lines. Independent review finds coherent responsibilities and preserved assembly/internal access, telemetry initialization, frozen policy behavior and user Lock. Network/physics/input code retains its placement and behavior.
+
+Inspected `.artifacts/bot-runtime-cleanup-step2/logs/` and saved generated sources: all 173 tests pass; training builds cleanly and production/offline evaluation matches four historical trajectories exactly; generated binding, JSON, request delegates and native imports use the new types; fresh AOT publication and bounded healthy Vektor gameplay/HTTP/WebSocket smoke pass. Only the existing MessagePack AOT/trim warnings remain. Execution evidence is macOS ARM64. The worker stopped with a clean tree. Step 2 is accepted; remaining diagnostics are still pending step 3.

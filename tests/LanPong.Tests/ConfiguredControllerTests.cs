@@ -168,7 +168,7 @@ public sealed class ConfiguredControllerTests
     [Test]
     public async Task OnnxWrongShape_FailsPreparationWithoutHiddenFallback()
     {
-        var path = ModelPath("aot-smoke.onnx");
+        var path = BotTestSupport.DiagnosticsModelPath();
         using var file = File.OpenRead(path);
         var checksum = Convert.ToHexString(SHA256.HashData(file)).ToLowerInvariant();
         using var bot = new OnnxLocalOpponentController(new OnnxBotSettings(path, checksum, 9));
@@ -215,7 +215,7 @@ public sealed class ConfiguredControllerTests
         await Assert.That(() => bot.Reset()).Throws<ObjectDisposedException>();
     }
 
-    private static OnnxBotSettings ModelSettings() => new(ModelPath("hard-v1.onnx"),
+    private static OnnxBotSettings ModelSettings() => new(BotTestSupport.ModelPath(),
         BotModelV1.ExpectedSha256, RightBotObservationV1.InferenceCadenceTicks);
 
     private static OnnxBotSettings InjectedSettings(int cadence = 9) => new("<injected>",
@@ -255,17 +255,6 @@ public sealed class ConfiguredControllerTests
         await Assert.That(actual.Hits).IsEqualTo(expected.Hits);
         await Assert.That(actual.LastEventTick).IsEqualTo(expected.LastEventTick);
         await Assert.That(actual.EventOrdinal).IsEqualTo(expected.EventOrdinal);
-    }
-
-    private static string ModelPath(string fileName)
-    {
-        for (var directory = new DirectoryInfo(AppContext.BaseDirectory);
-             directory is not null; directory = directory.Parent)
-        {
-            var path = Path.Combine(directory.FullName, "src", "LanPong", "Models", fileName);
-            if (File.Exists(path)) return path;
-        }
-        throw new FileNotFoundException($"Test model {fileName} was not found.");
     }
 
     private sealed class FakeSession(params float[] logits) : IOnnxInferenceSession
