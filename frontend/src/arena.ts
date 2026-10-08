@@ -241,8 +241,8 @@ export class ArenaRenderer {
     const paddleHeight = height * PADDLE_HALF_HEIGHT * 2;
     const motion = this.motion.displayedMotion(now, snapshot);
     const localY = this.motion.displayedLocalPaddle(now, snapshot, this.getAxis());
-    const leftY = snapshot.role === "host" && localY !== null ? localY : motion.leftY;
-    const rightY = snapshot.role === "guest" && localY !== null ? localY : motion.rightY;
+    const leftY = snapshot.localSide === "left" && localY !== null ? localY : motion.leftY;
+    const rightY = snapshot.localSide === "right" && localY !== null ? localY : motion.rightY;
     this.drawPaddle(
       ctx,
       width * LEFT_PADDLE_CENTER_X - paddleWidth / 2,

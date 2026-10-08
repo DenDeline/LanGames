@@ -69,7 +69,7 @@ internal sealed partial class PongPeer
                 actions.Reply = new WelcomePacket
                 {
                     SessionId = _sessionId!.Value, RequestId = _acceptedChallengeId!.Value,
-                    Nickname = _localNickname
+                    Nickname = _localNickname, HostSide = _hostSide!.Value, RoundId = _game.RoundId
                 };
             }
         }
@@ -154,12 +154,9 @@ internal sealed partial class PongPeer
                 break;
             case RestartPacket restart when restart.SessionId == _sessionId:
                 _lastPeerSeen = now;
-                if (restart.RequestId != _lastRestartRequestId)
-                {
-                    _lastRestartRequestId = restart.RequestId;
-                    _game.StartMatch();
-                    _hostTimeline.Reset(PaddleSide.Left);
-                }
+                if (_connection == ConnectionState.Connected && restart.ExpectedRoundId > 0 &&
+                    restart.ExpectedRoundId == _game.RoundId && _game.Phase == GamePhase.GameOver)
+                    StartRematchLocked();
                 break;
             case ByePacket bye when bye.SessionId == _sessionId:
                 (actions.SocketToClose, actions.StopToClose, _) = EndHostMatchLocked(
@@ -167,6 +164,13 @@ internal sealed partial class PongPeer
                     "Соперник вышел. Нажмите «Быстрая игра», чтобы сыграть снова.");
                 break;
         }
+    }
+
+    private bool AcceptsSideStateLocked(StatePacket state)
+    {
+        if (_hostSide is not { } hostSide || state.RoundId < _sideRoundId) return false;
+        var expected = (state.RoundId - _sideRoundId) % 2 == 0 ? hostSide : PaddleSides.Opposite(hostSide);
+        return state.HostSide == expected;
     }
 
     private void HandleGuestPacketLocked(WirePacket packet, DateTime now, ref PacketActions actions)
@@ -188,12 +192,18 @@ internal sealed partial class PongPeer
             case WelcomePacket welcome when welcome.RequestId == _outgoingChallengeId &&
                                             _connection is (ConnectionState.Connecting or ConnectionState.AwaitingAcceptance):
                 _sessionId = welcome.SessionId;
+                SetBrowserMatchIdLocked(welcome.SessionId);
                 _lastStateSequence = -1;
                 _pendingRestartRequestId = null;
                 _restartAfterRound = 0;
+                _confirmedGuestFinishedRound = 0;
                 _ping.Reset();
                 _game.ResetWaiting();
-                _guestTimeline.Reset(PaddleSide.Left);
+                _hostSide = welcome.HostSide;
+                _sideRoundId = welcome.RoundId;
+                _game.RestoreCheckpoint(_game.Capture() with { RoundId = welcome.RoundId });
+                _controllers.Clear();
+                _guestTimeline.Reset(welcome.HostSide);
                 _lastInputSentTick = 0;
                 _connection = ConnectionState.Connected;
                 _peerNickname = welcome.Nickname;
@@ -211,10 +221,21 @@ internal sealed partial class PongPeer
                 _ping.Observe(pong);
                 break;
             case StatePacket state when _sessionId is not null && state.SessionId == _sessionId &&
-                                        state.Sequence > _lastStateSequence:
+                                        state.Sequence > _lastStateSequence && AcceptsSideStateLocked(state):
+                if (state.RoundId != _sideRoundId)
+                {
+                    _hostSide = state.HostSide;
+                    _sideRoundId = state.RoundId;
+                    _controllers.Clear();
+                    _guestTimeline.Reset(state.HostSide);
+                    _lastInputSentTick = 0;
+                }
                 _lastStateSequence = state.Sequence;
                 _lastPeerSeen = now;
                 _confirmedGuestEvents = state.RecentEvents!;
+                // Prediction may score the winning goal before the host. Admission and cancellation
+                // must follow this accepted authoritative phase, before speculative replay changes it.
+                _confirmedGuestFinishedRound = state.Phase == GamePhase.GameOver ? state.RoundId : 0;
                 _guestTimeline.Reconcile(state.ToGameState(), state.HostAxis, _ping.PingMs,
                     _controllers.GetAxis(now));
                 if (_game.TickNumber < _lastInputSentTick)
@@ -224,8 +245,13 @@ internal sealed partial class PongPeer
                     _lastInputSentTick = _game.TickNumber;
                     actions.Reply = _guestTimeline.CreateInputPacket(_sessionId.Value, ++_outSequence);
                 }
-                if (_pendingRestartRequestId is not null && state.RoundId > _restartAfterRound)
+                if (_pendingRestartRequestId is not null && (state.RoundId > _restartAfterRound ||
+                    state.RoundId == _restartAfterRound && state.Phase != GamePhase.GameOver))
+                {
                     _pendingRestartRequestId = null;
+                    _restartAfterRound = 0;
+                    _lastRestartSent = DateTime.MinValue;
+                }
                 break;
             // Welcome and Bye can arrive out of order while the first handshake is in flight.
             case ByePacket bye when bye.SessionId == _sessionId ||

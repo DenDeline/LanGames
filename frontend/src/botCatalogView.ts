@@ -159,7 +159,7 @@ export class BotCatalogView {
         ? "В списке пока нет ботов. Вы можете сыграть с другом по сети."
         : this.selectedId === null
           ? "Сейчас все боты недоступны. Вы можете сыграть с другом по сети."
-          : "Выберите соперника. Вы управляете левой ракеткой.",
+          : "Выберите соперника для игры.",
     );
     text(this.elements.summaryStatus, this.elements.status.textContent ?? "");
     this.elements.summaryStatus.hidden = this.selectedId !== null;

@@ -1,8 +1,9 @@
 import { Decoder, encode } from "@msgpack/msgpack";
-import { parseSnapshot, type PongSnapshot } from "./snapshot.js";
+import { parseSnapshot, validMatchId, type PongSnapshot } from "./snapshot.js";
 
 export type {
   PeerRole,
+  PaddleSide,
   OpponentMode,
   ConnectionState,
   GamePhase,
@@ -13,8 +14,8 @@ export type {
 
 // The WebSocket array layout is independent of the JSON HTTP response shape.
 // Change the version whenever indices or enum ordinals change.
-const VERSION = 8;
-const SNAPSHOT_FIELDS = 30;
+const VERSION = 9;
+const SNAPSHOT_FIELDS = 35;
 const MAX_SNAPSHOT_BYTES = 16 * 1024;
 const ROLES = ["none", "host", "guest"] as const;
 const OPPONENT_MODES = ["none", "lan", "bot"] as const;
@@ -37,18 +38,25 @@ const decoder = new Decoder({
   maxExtLength: 0,
 });
 
-const controlFrames = [
-  Uint8Array.from(encode([VERSION, -1])).buffer,
-  Uint8Array.from(encode([VERSION, 0])).buffer,
-  Uint8Array.from(encode([VERSION, 1])).buffer,
-];
-
 function isIndex(value: unknown, length: number): value is number {
   return Number.isInteger(value) && (value as number) >= 0 && (value as number) < length;
 }
 
-export function encodeWsAxis(axis: number): ArrayBuffer {
+let controlRound = 0;
+let controlMatch: string | null = null;
+let controlFrames: ArrayBuffer[] = [];
+
+export function encodeWsAxis(matchId: string, roundId: number, axis: number): ArrayBuffer {
+  if (!validMatchId(matchId)) throw new RangeError("Invalid match");
+  if (!Number.isSafeInteger(roundId) || roundId <= 0) throw new RangeError("Invalid round");
   if (!Number.isInteger(axis) || axis < -1 || axis > 1) throw new RangeError("Invalid axis");
+  if (matchId !== controlMatch || roundId !== controlRound) {
+    controlMatch = matchId;
+    controlRound = roundId;
+    controlFrames = [-1, 0, 1].map(
+      (value) => Uint8Array.from(encode([VERSION, matchId, roundId, value])).buffer,
+    );
+  }
   return controlFrames[axis + 1];
 }
 
@@ -95,9 +103,15 @@ export function decodeWsSnapshot(bytes: ArrayBuffer): PongSnapshot | null {
     effectiveBotName,
     opponentFallbackActive,
     botFallbackReason,
+    localSide,
+    matchId,
+    sourceId,
+    snapshotSequence,
+    canRematch,
   ]: unknown[] = frame;
 
   if (
+    (localSide !== null && localSide !== 1 && localSide !== 2) ||
     !isIndex(role, ROLES.length) ||
     !isIndex(opponentMode, OPPONENT_MODES.length) ||
     !isIndex(connection, CONNECTIONS.length) ||
@@ -117,6 +131,11 @@ export function decodeWsSnapshot(bytes: ArrayBuffer): PongSnapshot | null {
     return parseSnapshot({
       version: VERSION,
       role: ROLES[role],
+      localSide: localSide === null ? null : localSide === 1 ? "left" : "right",
+      matchId,
+      sourceId,
+      snapshotSequence,
+      canRematch,
       connection: CONNECTIONS[connection],
       phase: PHASES[phase],
       opponentMode: OPPONENT_MODES[opponentMode],

@@ -154,8 +154,8 @@ internal static class PongWebSocketEndpoint
             }
 
             if (discard) continue;
-            if (BrowserWebSocketProtocol.TryReadAxis(message.AsMemory(0, length), out var axis))
-                peer.SetInput(controllerId, axis);
+            if (BrowserWebSocketProtocol.TryReadAxis(message.AsMemory(0, length), out var matchId, out var roundId, out var axis))
+                peer.SetInput(controllerId, matchId, roundId, axis);
         }
     }
 }

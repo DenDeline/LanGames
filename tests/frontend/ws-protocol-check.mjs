@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import { encode } from "@msgpack/msgpack";
+import { encode, decode } from "@msgpack/msgpack";
 import { defaultSnapshot, parseSnapshot } from "../../.artifacts/frontend-test/snapshot.js";
 import { parseBotCatalog } from "../../.artifacts/frontend-test/botCatalog.js";
 import { decodeWsSnapshot, encodeWsAxis } from "../../.artifacts/frontend-test/wsProtocol.js";
 
+const sourceId = "abcdefabcdefabcdefabcdefabcdefab";
+const matchId = "1234567890abcdef1234567890abcdef";
 const snapshot = [
-  8,
+  9,
   1,
   3,
   "Игра началась!",
@@ -41,11 +43,20 @@ const snapshot = [
   null,
   false,
   null,
+  1,
+  matchId,
+  sourceId,
+  100,
+  false,
 ];
 const frame = (value) => Uint8Array.from(encode(value)).buffer;
 const expected = {
   ...defaultSnapshot,
   role: "host",
+  localSide: "left",
+  matchId,
+  sourceId,
+  snapshotSequence: 100,
   opponentMode: "lan",
   connection: "connected",
   message: "Игра началась!",
@@ -75,22 +86,69 @@ const expected = {
     { id: "123455:0:5", kind: "match", tick: 123455, x: 0.5, y: 0.5 },
   ],
 };
-assert.equal(snapshot.length, 30);
+assert.equal(snapshot.length, 35);
 for (const axis of [-1, 0, 1]) {
-  assert.deepEqual(Array.from(new Uint8Array(encodeWsAxis(axis))), [
-    0x92,
-    8,
-    axis === -1 ? 0xff : axis,
-  ]);
+  assert.deepEqual(decode(new Uint8Array(encodeWsAxis(matchId, 7, axis))), [9, matchId, 7, axis]);
 }
-assert.throws(() => encodeWsAxis(2), RangeError);
-assert.throws(() => encodeWsAxis(0.5), RangeError);
+assert.throws(() => encodeWsAxis(matchId, 7, 2), RangeError);
+assert.throws(() => encodeWsAxis(matchId, 7, 0.5), RangeError);
+assert.throws(() => encodeWsAxis(matchId, 0, 1), RangeError);
+assert.throws(() => encodeWsAxis(matchId, -1, 0), RangeError);
+assert.throws(() => encodeWsAxis(matchId, 1.5, 0), RangeError);
+assert.strictEqual(encodeWsAxis(matchId, 7, 1), encodeWsAxis(matchId, 7, 1));
 assert.deepEqual(decodeWsSnapshot(frame(snapshot)), expected);
+const humanRight = [...snapshot];
+humanRight[30] = 2;
+assert.deepEqual(decodeWsSnapshot(frame(humanRight)), { ...expected, localSide: "right" });
+for (const invalidSource of [undefined, null, 0, "", sourceId.toUpperCase(), "0".repeat(32)])
+  assert.throws(() => parseSnapshot({ ...expected, sourceId: invalidSource }), TypeError);
+for (const canRematch of [undefined, null, 0, 1, "true"])
+  assert.throws(() => parseSnapshot({ ...expected, canRematch }), TypeError);
+assert.throws(() => parseSnapshot({ ...expected, canRematch: true }), TypeError);
+assert.equal(parseSnapshot({ ...expected, phase: "gameover", canRematch: true }).canRematch, true);
+assert.equal(
+  parseSnapshot({ ...expected, phase: "gameover", canRematch: false }).canRematch,
+  false,
+);
+for (const snapshotSequence of [undefined, null, 0, -1, 0.5, "100", Number.MAX_SAFE_INTEGER + 1])
+  assert.throws(() => parseSnapshot({ ...expected, snapshotSequence }), TypeError);
+for (const invalidMatch of [
+  undefined,
+  null,
+  0,
+  "",
+  "random",
+  matchId.toUpperCase(),
+  "0".repeat(31),
+  "0".repeat(32),
+])
+  assert.throws(() => parseSnapshot({ ...expected, matchId: invalidMatch }), TypeError);
+assert.throws(() => encodeWsAxis("invalid", 7, 1), RangeError);
+assert.throws(() => encodeWsAxis("0".repeat(32), 7, 1), RangeError);
+for (const localSide of [undefined, null, 0, 1, 2, "random", "Left", "none"])
+  assert.throws(() => parseSnapshot({ ...expected, localSide }), TypeError);
+for (const localSide of ["left", "right"])
+  assert.throws(
+    () => parseSnapshot({ ...expected, connection: "incomingChallenge", localSide }),
+    TypeError,
+  );
+assert.equal(parseSnapshot({ ...expected, connection: "disconnected" }).localSide, "left");
 assert.deepEqual(
   parseSnapshot({ ...expected, events: undefined, recentEvents: expected.events }),
   expected,
 );
 
+const confirmedFinish = [...snapshot];
+confirmedFinish[15] = 3;
+confirmedFinish[34] = true;
+assert.equal(decodeWsSnapshot(frame(confirmedFinish))?.canRematch, true);
+assert.deepEqual(
+  parseSnapshot(decodeWsSnapshot(frame(confirmedFinish))),
+  decodeWsSnapshot(frame(confirmedFinish)),
+);
+const predictedFinish = [...confirmedFinish];
+predictedFinish[34] = false;
+assert.equal(decodeWsSnapshot(frame(predictedFinish))?.canRematch, false);
 const ipv6 = [...snapshot];
 ipv6[5] = ["::1", "fe80::1234%3"];
 ipv6[6] = "[::1]:47777";
@@ -99,7 +157,7 @@ assert.equal(decodeWsSnapshot(frame(ipv6))?.peerAddress, ipv6[6]);
 
 const idle = [...snapshot];
 idle[1] = idle[2] = idle[4] = idle[15] = idle[23] = 0;
-idle[6] = idle[19] = idle[22] = null;
+idle[6] = idle[19] = idle[22] = idle[30] = idle[31] = null;
 assert.equal(decodeWsSnapshot(frame(idle))?.opponentMode, "none");
 assert.equal(decodeWsSnapshot(frame(idle))?.requestedBotId, null);
 
@@ -127,13 +185,13 @@ assert.equal(decodedFallback?.effectiveBotId, "configured-rescue");
 assert.equal(decodedFallback?.opponentFallbackActive, true);
 assert.deepEqual(parseSnapshot(decodedFallback), decodedFallback);
 
-for (const version of [undefined, 7, 6, 9, "8"]) {
+for (const version of [undefined, 7, 6, 8, "9"]) {
   assert.throws(() => parseSnapshot({ ...expected, version }), RangeError);
 }
 for (const value of ["simple", "hard", "unknown", 2, null]) {
   assert.throws(() => parseSnapshot({ ...expected, opponentMode: value }), TypeError);
 }
-assert.throws(() => parseSnapshot({ version: 8 }), TypeError);
+assert.throws(() => parseSnapshot({ version: 9 }), TypeError);
 for (const [ordinal, name] of [
   [4, "incomingChallenge"],
   [5, "awaitingAcceptance"],
@@ -142,6 +200,7 @@ for (const [ordinal, name] of [
   const pending = [...snapshot];
   pending[2] = ordinal;
   pending[15] = 0;
+  pending[30] = pending[31] = null;
   assert.equal(decodeWsSnapshot(frame(pending))?.connection, name);
 }
 function reject(index, value, source = snapshot) {
@@ -149,7 +208,8 @@ function reject(index, value, source = snapshot) {
   changed[index] = value;
   assert.equal(decodeWsSnapshot(frame(changed)), null, `Unexpected acceptance of field ${index}`);
 }
-for (const version of [7, 6, 9, "8"]) reject(0, version);
+for (const version of [7, 6, 8, "9"]) reject(0, version);
+for (const value of [undefined, null, 0, 1, "true", true]) reject(34, value);
 reject(1, 3);
 reject(2, "connected");
 reject(2, 7);
@@ -168,6 +228,10 @@ reject(23, "bot");
 reject(24, "outside-bot");
 reject(28, 1);
 reject(29, "outside-bot");
+for (const value of [undefined, null, 0, 3, "left", "random"]) reject(30, value);
+for (const value of [undefined, null, 0, "invalid", matchId.toUpperCase()]) reject(31, value);
+for (const value of [undefined, null, 0, "invalid", sourceId.toUpperCase()]) reject(32, value);
+for (const value of [undefined, null, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) reject(33, value);
 reject(24, "UPPERCASE", local);
 reject(24, "bad--id", local);
 reject(24, "valid-looking\n", local);
@@ -235,10 +299,10 @@ const catalogBot = {
   availabilityReason: "Проверим при выборе.",
   canPlay: true,
 };
-const catalog = { version: 8, defaultBotId: catalogBot.id, bots: [catalogBot] };
+const catalog = { version: 9, defaultBotId: catalogBot.id, bots: [catalogBot] };
 assert.deepEqual(parseBotCatalog(catalog), catalog);
 assert.deepEqual(parseBotCatalog({ ...catalog, bots: [] }).bots, []);
-for (const version of [undefined, 7, 9])
+for (const version of [undefined, 7, 8])
   assert.throws(() => parseBotCatalog({ ...catalog, version }), RangeError);
 for (const changes of [
   { id: "Upper" },
@@ -263,5 +327,5 @@ for (const changes of [
   );
 assert.throws(() => parseBotCatalog({ ...catalog, bots: [catalogBot, catalogBot] }), TypeError);
 console.log(
-  "Frontend v8 protocol checks passed: strict HTTP/MessagePack parity, bot identities, catalog, and invalid frames.",
+  "Frontend v9 protocol checks passed: strict HTTP/MessagePack parity, bot identities, catalog, and invalid frames.",
 );

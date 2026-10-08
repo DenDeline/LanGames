@@ -43,11 +43,12 @@ def verify_catalog_contract(binary, port, base_url, status):
     assert digest == MODEL_SHA256, (MODEL_SHA256, digest)
 
     identity_fields = ("requestedBotId", "requestedBotName", "effectiveBotId", "effectiveBotName", "botFallbackReason")
-    assert status["version"] == 8 and "requestedOpponentMode" not in status, status
+    assert status["version"] == 9 and "requestedOpponentMode" not in status, status
+    assert status["canRematch"] is False, status
     assert status["opponentMode"] == "none" and status["opponentFallbackActive"] is False, status
     assert all(status[field] is None for field in identity_fields), status
     catalog = request_json(base_url, "/api/bots")
-    assert set(catalog) == {"version", "defaultBotId", "bots"} and catalog["version"] == 8, catalog
+    assert set(catalog) == {"version", "defaultBotId", "bots"} and catalog["version"] == 9, catalog
     bots = catalog["bots"]
     assert bots == sorted(bots, key=lambda bot: (bot["order"], bot["id"])), catalog
     by_id = {bot["id"]: bot for bot in bots}
@@ -57,15 +58,19 @@ def verify_catalog_contract(binary, port, base_url, status):
     assert all(by_id[bot_id]["availability"] == "ready" for bot_id in ("lada", "iskra")), catalog
 
     # Real play must execute several model decisions, beyond preparation and countdown.
-    started = request_json(base_url, "/api/local-opponent", {"nickname": "Smoke", "botId": "vektor"})
-    assert started["version"] == 8 and started["opponentMode"] == "bot", started
+    started = request_json(base_url, "/api/local-opponent", {"nickname": "Smoke", "botId": "vektor", "side": "left"})
+    assert started["version"] == 9 and started["opponentMode"] == "bot", started
+    assert started["localSide"] == "left", started
+    assert started["canRematch"] is False, started
     assert started["requestedBotId"] == started["effectiveBotId"] == "vektor", started
     assert started["requestedBotName"] == started["effectiveBotName"] == by_id["vektor"]["name"], started
     assert started["peerNickname"] is None and started["opponentFallbackActive"] is False, started
     assert started["botFallbackReason"] is None and "requestedOpponentMode" not in started, started
 
     def healthy(snapshot):
-        assert snapshot["version"] == 8 and snapshot["opponentMode"] == "bot", snapshot
+        assert snapshot["version"] == 9 and snapshot["opponentMode"] == "bot", snapshot
+        assert snapshot["localSide"] == "left", snapshot
+        assert snapshot["canRematch"] is False, snapshot
         assert snapshot["requestedBotId"] == snapshot["effectiveBotId"] == "vektor", snapshot
         assert snapshot["requestedBotName"] == snapshot["effectiveBotName"] == by_id["vektor"]["name"], snapshot
         assert snapshot["peerNickname"] is None and snapshot["opponentFallbackActive"] is False, snapshot
@@ -82,7 +87,7 @@ def verify_catalog_contract(binary, port, base_url, status):
         raise AssertionError("Published Vektor did not enter Playing")
 
     with websocket(port) as conn:
-        # Reuse the binary protocol fixture, including its exact v8 snapshot shape.
+        # Reuse the binary protocol fixture, including its exact v9 snapshot shape.
         while time.monotonic() < deadline:
             conn.settimeout(max(0.01, deadline - time.monotonic()))
             snapshot = decode_snapshot(recv_frame(conn))

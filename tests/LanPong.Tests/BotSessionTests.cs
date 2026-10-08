@@ -18,7 +18,7 @@ public sealed class BotSessionTests
         ], factory);
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, runtime);
 
-        await peer.StartBotAsync("Player", "calm");
+        await peer.StartBotAsync("Player", "calm", InitialSidePreference.Left);
         await Assert.That(peer.BotStatus!.RequestedBotId).IsEqualTo("calm");
         await Assert.That(peer.BotStatus.RequestedName).IsEqualTo("Calm profile");
         await Assert.That(peer.BotStatus.EffectiveBotId).IsEqualTo("calm");
@@ -26,7 +26,7 @@ public sealed class BotSessionTests
         await BotTestSupport.WaitForAsync(peer, snapshot => snapshot.RightY < 0.49);
 
         await peer.LeaveAsync();
-        await peer.StartBotAsync("Another player", "bold");
+        await peer.StartBotAsync("Another player", "bold", InitialSidePreference.Left);
         await Assert.That(peer.BotStatus!.RequestedBotId).IsEqualTo("bold");
         await Assert.That(peer.BotStatus.EffectiveName).IsEqualTo("Bold profile");
         await BotTestSupport.WaitForAsync(peer, snapshot => snapshot.RightY > 0.51);
@@ -51,13 +51,13 @@ public sealed class BotSessionTests
             BotTestSupport.Tracker("unusable")
         ], factory);
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, runtime);
-        await peer.StartBotAsync("Original player", "current");
+        await peer.StartBotAsync("Original player", "current", InitialSidePreference.Left);
         var started = peer.Snapshot();
         var selected = peer.BotStatus;
 
         foreach (var rejected in new[] { "unknown", "CURRENT", "disabled", "unusable" })
         {
-            var error = await BotTestSupport.CaptureAsync(() => peer.StartBotAsync("Changed player", rejected));
+            var error = await BotTestSupport.CaptureAsync(() => peer.StartBotAsync("Changed player", rejected, InitialSidePreference.Left));
             await Assert.That(error).IsNotNull();
             var snapshot = peer.Snapshot();
             await Assert.That(snapshot.Connection).IsEqualTo(ConnectionState.Connected);
@@ -75,7 +75,7 @@ public sealed class BotSessionTests
         await peer.LeaveAsync();
         foreach (var rejected in new[] { "unknown", "CURRENT", "disabled", "unusable" })
         {
-            var error = await BotTestSupport.CaptureAsync(() => peer.StartBotAsync("Changed player", rejected));
+            var error = await BotTestSupport.CaptureAsync(() => peer.StartBotAsync("Changed player", rejected, InitialSidePreference.Left));
             await Assert.That(error).IsNotNull();
             var snapshot = peer.Snapshot();
             await Assert.That(snapshot.Connection).IsEqualTo(ConnectionState.Idle);
@@ -98,14 +98,15 @@ public sealed class BotSessionTests
             BotTestSupport.Tracker("first"), BotTestSupport.Tracker("second")
         ], factory);
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, runtime);
-        await peer.StartBotAsync("Player", "first");
+        await peer.StartBotAsync("Player", "first", InitialSidePreference.Left);
         await peer.LeaveAsync();
-        await peer.StartBotAsync("Player", "second");
+        await peer.StartBotAsync("Player", "second", InitialSidePreference.Left);
         var started = peer.Snapshot();
 
         await Assert.That(first.DisposeCount).IsEqualTo(1);
         await Assert.That(second.DisposeCount).IsEqualTo(0);
-        peer.Restart();
+        await PeerTestAccess.FinishAsync(peer);
+        peer.Restart(Guid.ParseExact(peer.Snapshot().MatchId!, "N"), peer.Snapshot().RoundId);
         await Assert.That(peer.Snapshot().RoundId).IsEqualTo(started.RoundId + 1);
         await Assert.That(second.ResetCount).IsEqualTo(2);
         await Assert.That(factory.Definitions.Count).IsEqualTo(2);
@@ -129,13 +130,13 @@ public sealed class BotSessionTests
         });
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
             BotTestSupport.Runtime([BotTestSupport.Tracker()], factory));
-        await peer.StartBotAsync("Player", "tracker");
+        await peer.StartBotAsync("Player", "tracker", InitialSidePreference.Left);
         await peer.LeaveAsync();
         await Assert.That(peer.BotStatus).IsNull();
         await Assert.That(created[0].DisposeCount).IsEqualTo(1);
         await Assert.That(peer.Snapshot().OpponentMode).IsEqualTo(OpponentMode.None);
 
-        await peer.StartBotAsync("Player", "tracker");
+        await peer.StartBotAsync("Player", "tracker", InitialSidePreference.Left);
         await peer.HostAsync(BotTestSupport.ReservePort(), "LAN player");
         await Assert.That(peer.BotStatus).IsNull();
         await Assert.That(created[1].DisposeCount).IsEqualTo(1);
@@ -157,7 +158,7 @@ public sealed class BotSessionTests
             BotTestSupport.Onnx("selected-model", "tuned-rescue")
         ], trackers, OnnxFactory(_ => failed));
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, runtime);
-        await peer.StartBotAsync("Player", "selected-model");
+        await peer.StartBotAsync("Player", "selected-model", InitialSidePreference.Left);
         var started = peer.Snapshot();
 
         await Assert.That(peer.BotStatus!.RequestedBotId).IsEqualTo("selected-model");
@@ -174,7 +175,8 @@ public sealed class BotSessionTests
         await BotTestSupport.WaitForAsync(peer, snapshot => snapshot.RightY > 0.51);
 
         var identity = peer.BotStatus;
-        peer.Restart();
+        await PeerTestAccess.FinishAsync(peer);
+        peer.Restart(Guid.ParseExact(peer.Snapshot().MatchId!, "N"), peer.Snapshot().RoundId);
         await Assert.That(peer.Snapshot().RoundId).IsEqualTo(started.RoundId + 1);
         await Assert.That(peer.BotStatus).IsEqualTo(identity);
         await Assert.That(peer.Snapshot().Message).Contains("Tuned rescue");
@@ -196,7 +198,7 @@ public sealed class BotSessionTests
             BotTestSupport.Onnx("primary", "model-rescue"), BotTestSupport.Onnx("model-rescue")
         ], models);
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, runtime);
-        await peer.StartBotAsync("Player", "primary");
+        await peer.StartBotAsync("Player", "primary", InitialSidePreference.Left);
 
         await Assert.That(models.Definitions.Count).IsEqualTo(2);
         await Assert.That(fallback.ResetCount).IsGreaterThanOrEqualTo(1);
@@ -208,7 +210,8 @@ public sealed class BotSessionTests
         await Assert.That(models.Definitions.Count).IsEqualTo(2);
         await Assert.That(primary.DisposeCount).IsEqualTo(1);
         await Assert.That(fallback.DisposeCount).IsEqualTo(0);
-        peer.Restart();
+        await PeerTestAccess.FinishAsync(peer);
+        peer.Restart(Guid.ParseExact(peer.Snapshot().MatchId!, "N"), peer.Snapshot().RoundId);
         await Assert.That(models.Definitions.Count).IsEqualTo(2);
         await Assert.That(peer.BotStatus.EffectiveBotId).IsEqualTo("model-rescue");
         await peer.LeaveAsync();
@@ -241,7 +244,7 @@ public sealed class BotSessionTests
         Task? preparation = null;
         try
         {
-            preparation = Task.Run(() => peer.StartBotAsync("Selected player", "selected"));
+            preparation = Task.Run(() => peer.StartBotAsync("Selected player", "selected", InitialSidePreference.Left));
             await Task.Run(() => preparingFallback.Wait(TimeSpan.FromSeconds(3)))
                 .WaitAsync(TimeSpan.FromSeconds(4));
             await Assert.That(preparingFallback.IsSet).IsTrue();
@@ -275,7 +278,7 @@ public sealed class BotSessionTests
         var failed = new TrackedBotController { FailAxis = _ => true };
         await using var host = new PongPeer(NullLogger<PongPeer>.Instance,
             BotTestSupport.Runtime([BotTestSupport.Tracker("failing")], TrackerFactory(_ => failed)));
-        await host.StartBotAsync("Player", "failing");
+        await host.StartBotAsync("Player", "failing", InitialSidePreference.Left);
         var stopped = await BotTestSupport.WaitForAsync(host, snapshot => snapshot.Connection == ConnectionState.Idle &&
             failed.DisposeCount == 1);
         await Assert.That(stopped.Role).IsEqualTo(PeerRole.None);
@@ -308,10 +311,11 @@ public sealed class BotSessionTests
             BotTestSupport.Runtime([
                 BotTestSupport.Tracker("primary", fallback: "rescue"), BotTestSupport.Tracker("rescue")
             ], factory));
-        await peer.StartBotAsync("Player", "primary");
+        await peer.StartBotAsync("Player", "primary", InitialSidePreference.Left);
         var started = peer.Snapshot();
 
-        peer.Restart();
+        await PeerTestAccess.FinishAsync(peer);
+        peer.Restart(Guid.ParseExact(peer.Snapshot().MatchId!, "N"), peer.Snapshot().RoundId);
         await Assert.That(peer.Snapshot().RoundId).IsEqualTo(started.RoundId + 1);
         await Assert.That(peer.BotStatus!.RequestedBotId).IsEqualTo("primary");
         await Assert.That(peer.BotStatus.EffectiveBotId).IsEqualTo("rescue");
@@ -327,13 +331,17 @@ public sealed class BotSessionTests
         var primary = new TrackedBotController { FailReset = count => count > 1 };
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
             BotTestSupport.Runtime([BotTestSupport.Tracker()], TrackerFactory(_ => primary)));
-        await peer.StartBotAsync("Player", "tracker");
+        await peer.StartBotAsync("Player", "tracker", InitialSidePreference.Left);
 
-        await Assert.That(() => peer.Restart()).Throws<InvalidOperationException>();
+        var finished = await PeerTestAccess.FinishAsync(peer);
+        await Assert.That(() => peer.Restart(Guid.ParseExact(finished.MatchId!, "N"), finished.RoundId)).Throws<InvalidOperationException>();
         var stopped = peer.Snapshot();
         await Assert.That(stopped.Role).IsEqualTo(PeerRole.None);
         await Assert.That(stopped.Connection).IsEqualTo(ConnectionState.Idle);
         await Assert.That(stopped.Phase).IsEqualTo(GamePhase.Waiting);
+        await Assert.That(stopped.RoundId).IsEqualTo(finished.RoundId);
+        await Assert.That(stopped.LocalSide).IsNull();
+        await Assert.That(stopped.MatchId).IsNull();
         await Assert.That(peer.BotStatus).IsNull();
         await Assert.That(primary.DisposeCount).IsEqualTo(1);
         await peer.HostAsync(BotTestSupport.ReservePort(), "LAN host");
@@ -362,7 +370,7 @@ public sealed class BotSessionTests
             ], TrackerFactory(entry => entry.Id == "primary" ? primary : fallback)));
         try
         {
-            await peer.StartBotAsync("Player", "primary");
+            await peer.StartBotAsync("Player", "primary", InitialSidePreference.Left);
             await Task.Run(() => disposing.Wait(TimeSpan.FromSeconds(3))).WaitAsync(TimeSpan.FromSeconds(4));
             await Assert.That(disposing.IsSet).IsTrue();
             var snapshot = await Task.Run(peer.Snapshot).WaitAsync(TimeSpan.FromSeconds(1));
@@ -396,10 +404,10 @@ public sealed class BotSessionTests
         Task<Exception?>? second = null;
         try
         {
-            first = Task.Run(() => peer.StartBotAsync("First player", "tracker"));
+            first = Task.Run(() => peer.StartBotAsync("First player", "tracker", InitialSidePreference.Left));
             await Task.Run(() => preparing.Wait(TimeSpan.FromSeconds(3))).WaitAsync(TimeSpan.FromSeconds(4));
             await Assert.That(preparing.IsSet).IsTrue();
-            second = BotTestSupport.CaptureAsync(() => peer.StartBotAsync("Second player", "tracker"));
+            second = BotTestSupport.CaptureAsync(() => peer.StartBotAsync("Second player", "tracker", InitialSidePreference.Left));
             await Assert.That(second.IsCompleted).IsFalse();
             release.Set();
 
@@ -440,7 +448,7 @@ public sealed class BotSessionTests
         Task? stop = null;
         try
         {
-            start = Task.Run(() => BotTestSupport.CaptureAsync(() => peer.StartBotAsync("Player", "tracker")));
+            start = Task.Run(() => BotTestSupport.CaptureAsync(() => peer.StartBotAsync("Player", "tracker", InitialSidePreference.Left)));
             await Task.Run(() => preparing.Wait(TimeSpan.FromSeconds(3))).WaitAsync(TimeSpan.FromSeconds(4));
             await Assert.That(preparing.IsSet).IsTrue();
             var snapshot = await Task.Run(peer.Snapshot).WaitAsync(TimeSpan.FromSeconds(1));

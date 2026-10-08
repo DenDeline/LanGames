@@ -17,13 +17,13 @@ public sealed class LocalOpponentSessionTests
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
             BotTestSupport.Runtime([BotTestSupport.Tracker()], factory));
 
-        await peer.StartBotAsync("Игрок", "tracker");
+        await peer.StartBotAsync("Игрок", "tracker", InitialSidePreference.Left);
         var started = peer.Snapshot();
         await Assert.That(started.Role).IsEqualTo(PeerRole.Host);
         await Assert.That(started.OpponentMode).IsEqualTo(OpponentMode.Bot);
         await Assert.That(started.RequestedBotId).IsEqualTo("tracker");
         await Assert.That(started.OpponentFallbackActive).IsFalse();
-        await Assert.That(started.Version).IsEqualTo(8);
+        await Assert.That(started.Version).IsEqualTo(9);
         await Assert.That(started.Connection).IsEqualTo(ConnectionState.Connected);
         await Assert.That(started.Phase).IsEqualTo(GamePhase.Countdown);
         await Assert.That(started.UdpPort).IsEqualTo(0);
@@ -37,13 +37,14 @@ public sealed class LocalOpponentSessionTests
         await Assert.That(started.RecentEvents.Single().Kind).IsEqualTo(GameEventKind.MatchStart);
 
         var browserController = Guid.NewGuid();
-        peer.SetInput(browserController, 1);
+        peer.SetInput(browserController, Guid.ParseExact(started.MatchId!, "N"), started.RoundId, 1);
         var moved = await WaitForAsync(peer, snapshot =>
             snapshot.Tick > started.Tick && snapshot.LeftY > 0.52 && snapshot.RightY < 0.48);
         await Assert.That(moved.LeftY).IsGreaterThan(started.LeftY);
         await Assert.That(moved.RightY).IsLessThan(started.RightY);
 
-        peer.Restart();
+        await PeerTestAccess.FinishAsync(peer);
+        peer.Restart(Guid.ParseExact(peer.Snapshot().MatchId!, "N"), peer.Snapshot().RoundId);
         var restarted = peer.Snapshot();
         await Assert.That(restarted.RoundId).IsEqualTo(started.RoundId + 1);
         await Assert.That(restarted.LeftY).IsEqualTo(GameConstants.ArenaCenter);
@@ -67,7 +68,7 @@ public sealed class LocalOpponentSessionTests
     {
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance,
             BotTestSupport.Runtime([BotTestSupport.Tracker()], TrackerFactory(_ => new TrackedBotController())));
-        await peer.StartBotAsync("Игрок", "tracker");
+        await peer.StartBotAsync("Игрок", "tracker", InitialSidePreference.Left);
         var local = peer.Snapshot();
         var buffer = new ArrayBufferWriter<byte>();
         BrowserWebSocketProtocol.WriteSnapshot(local, buffer);
@@ -75,8 +76,8 @@ public sealed class LocalOpponentSessionTests
             requestedId, effectiveId, fallback, reason, atEnd) =
             ReadBrowserHeader(buffer.WrittenMemory);
 
-        await Assert.That(fieldCount).IsEqualTo(30);
-        await Assert.That(version).IsEqualTo(8);
+        await Assert.That(fieldCount).IsEqualTo(35);
+        await Assert.That(version).IsEqualTo(9);
         await Assert.That(role).IsEqualTo((int)PeerRole.Host);
         await Assert.That(connection).IsEqualTo((int)ConnectionState.Connected);
         await Assert.That(udpPort).IsEqualTo(0);
@@ -118,7 +119,7 @@ public sealed class LocalOpponentSessionTests
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, runtime);
 
         await Assert.That(peer.BotStatus).IsNull();
-        await peer.StartBotAsync("Игрок", "model");
+        await peer.StartBotAsync("Игрок", "model", InitialSidePreference.Left);
         var started = peer.Snapshot();
         var status = peer.BotStatus;
         await Assert.That(status!.RequestedBotId).IsEqualTo("model");
@@ -135,7 +136,8 @@ public sealed class LocalOpponentSessionTests
 
         var playing = await WaitForAsync(peer, snapshot => snapshot.Tick > started.Tick);
         await Assert.That(playing.Tick).IsGreaterThan(started.Tick);
-        peer.Restart();
+        await PeerTestAccess.FinishAsync(peer);
+        peer.Restart(Guid.ParseExact(peer.Snapshot().MatchId!, "N"), peer.Snapshot().RoundId);
         await Assert.That(peer.Snapshot().RoundId).IsEqualTo(started.RoundId + 1);
         await Assert.That(peer.BotStatus!.EffectiveBotId).IsEqualTo("tracker");
         await Assert.That(peer.Snapshot().RequestedBotId).IsEqualTo("model");
@@ -151,7 +153,7 @@ public sealed class LocalOpponentSessionTests
         await Assert.That(peer.Snapshot().EffectiveBotId).IsNull();
         await Assert.That(peer.Snapshot().OpponentFallbackActive).IsFalse();
 
-        await peer.StartBotAsync("Игрок", "tracker");
+        await peer.StartBotAsync("Игрок", "tracker", InitialSidePreference.Left);
         await Assert.That(peer.BotStatus!.RequestedBotId).IsEqualTo("tracker");
         await Assert.That(peer.Snapshot().RequestedBotId).IsEqualTo("tracker");
         await Assert.That(peer.Snapshot().EffectiveBotName).IsEqualTo("Tracker");
@@ -169,7 +171,7 @@ public sealed class LocalOpponentSessionTests
             OnnxFactory(entry => modelController = new OnnxLocalOpponentController(entry.Onnx!)));
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, runtime);
 
-        await peer.StartBotAsync("Игрок", "model");
+        await peer.StartBotAsync("Игрок", "model", InitialSidePreference.Left);
         var started = peer.Snapshot();
         await Assert.That(started.OpponentMode).IsEqualTo(OpponentMode.Bot);
         await Assert.That(started.RequestedBotId).IsEqualTo("model");
@@ -177,7 +179,8 @@ public sealed class LocalOpponentSessionTests
         await Assert.That(modelController!.ModelSha256).IsEqualTo(BotModelV1.ExpectedSha256);
         await WaitForAsync(peer, snapshot => snapshot.Tick > started.Tick);
 
-        peer.Restart();
+        await PeerTestAccess.FinishAsync(peer);
+        peer.Restart(Guid.ParseExact(peer.Snapshot().MatchId!, "N"), peer.Snapshot().RoundId);
         var restarted = peer.Snapshot();
         await Assert.That(restarted.RoundId).IsEqualTo(started.RoundId + 1);
         await Assert.That(restarted.OpponentMode).IsEqualTo(OpponentMode.Bot);
@@ -220,7 +223,7 @@ public sealed class LocalOpponentSessionTests
             OnnxFactory(entry => new OnnxLocalOpponentController(entry.Onnx!, inference)));
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, runtime);
 
-        await peer.StartBotAsync("Игрок", "model");
+        await peer.StartBotAsync("Игрок", "model", InitialSidePreference.Left);
         await Assert.That(peer.BotStatus!.RequestedBotId).IsEqualTo("model");
         await Assert.That(peer.BotStatus.EffectiveBotId).IsEqualTo("model");
         await Assert.That(peer.BotStatus.FallbackReason).IsNull();
@@ -264,6 +267,11 @@ public sealed class LocalOpponentSessionTests
         reader.Skip(); // Effective name.
         var fallback = reader.ReadBoolean();
         var reason = reader.ReadString();
+        reader.Skip(); // Local side.
+        reader.Skip(); // Match context.
+        reader.Skip(); // Process source identity.
+        reader.Skip(); // Snapshot capture sequence.
+        reader.Skip(); // Public rematch eligibility.
         return (fieldCount, version, role, connection, udpPort, noPeerAddress,
             mode, requestedId, effectiveId, fallback, reason, reader.End);
     }

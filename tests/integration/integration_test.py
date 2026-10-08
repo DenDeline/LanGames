@@ -1,4 +1,5 @@
 import base64
+from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor
 import json
 import math
@@ -24,7 +25,8 @@ SNAPSHOT_FIELDS = (
     "leftScore", "rightScore", "phase", "countdown", "tick", "roundId", "pingMs",
     "recentEvents", "localNickname", "peerNickname", "opponentMode",
     "requestedBotId", "requestedBotName", "effectiveBotId", "effectiveBotName",
-    "opponentFallbackActive", "botFallbackReason",
+    "opponentFallbackActive", "botFallbackReason", "localSide", "matchId",
+    "sourceId", "snapshotSequence", "canRematch",
 )
 ROLES = ("none", "host", "guest")
 OPPONENT_MODES = ("none", "lan", "bot")
@@ -52,7 +54,7 @@ def wire_challenge_packet(tag, request_id, nickname=None):
     # NativeGuidResolver writes a 16-byte MessagePack binary value in .NET Guid byte order.
     assert len(request_id) == 32 and all(char in "0123456789abcdef" for char in request_id)
     packet = (b"\x92" + bytes([tag]) + (b"\x93" if nickname is not None else b"\x92")
-              + b"\x08\xc4\x10" + uuid.UUID(hex=request_id).bytes_le)
+              + b"\x09\xc4\x10" + uuid.UUID(hex=request_id).bytes_le)
     if nickname is not None:
         encoded = nickname.encode("utf-8")
         assert 1 <= len(encoded) <= 31
@@ -87,15 +89,19 @@ def msgpack_helper(operation, payload=b""):
 def expect_challenge_reply(sock, tag, request_id):
     sock.settimeout(2)
     packet, _ = sock.recvfrom(1201)
-    payload = [8, list(uuid.UUID(hex=request_id).bytes_le)]
+    payload = [9, list(uuid.UUID(hex=request_id).bytes_le)]
     if tag == 10:
         payload.append(HOST_NICKNAME)
     assert msgpack_helper("decode", packet) == [tag, payload], packet
 
 
-def control_packets():
+def msgpack_helper_bytes(value):
+    return base64.b64decode(msgpack_helper("encode", json.dumps(value).encode()))
+
+
+def control_packets(snapshot):
     return {int(axis): base64.b64decode(encoded) for axis, encoded in
-            msgpack_helper("encode-controls").items()}
+            msgpack_helper("encode-controls", json.dumps({"roundId": snapshot["roundId"], "matchId": snapshot["matchId"]}).encode()).items()}
 
 
 def decode_snapshot(frame):
@@ -103,8 +109,11 @@ def decode_snapshot(frame):
     values = msgpack_helper("decode", frame[1])
     assert isinstance(values, list) and len(values) == len(SNAPSHOT_FIELDS), values
     snapshot = dict(zip(SNAPSHOT_FIELDS, values))
-    assert snapshot["version"] == 8, snapshot
+    assert snapshot["version"] == 9, snapshot
     snapshot["role"] = ROLES[snapshot["role"]]
+    side = snapshot["localSide"]
+    assert side is None or type(side) is int and side in (1, 2), snapshot
+    snapshot["localSide"] = None if side is None else ("left" if side == 1 else "right")
     snapshot["opponentMode"] = OPPONENT_MODES[snapshot["opponentMode"]]
     snapshot["connection"] = CONNECTIONS[snapshot["connection"]]
     snapshot["phase"] = PHASES[snapshot["phase"]]
@@ -130,8 +139,16 @@ def decode_snapshot(frame):
 
 
 def validate_snapshot_identity(snapshot):
-    assert snapshot["version"] == 8 and "requestedOpponentMode" not in snapshot, snapshot
+    assert snapshot["version"] == 9 and "requestedOpponentMode" not in snapshot, snapshot
     assert snapshot["opponentMode"] in OPPONENT_MODES, snapshot
+    assert snapshot["localSide"] in (None, "left", "right"), snapshot
+    assert (snapshot["localSide"] is not None) == (snapshot["connection"] == "connected"), snapshot
+    assert (snapshot["matchId"] is not None) == (snapshot["localSide"] is not None), snapshot
+    assert snapshot["matchId"] is None or re.fullmatch(r"[0-9a-f]{32}", snapshot["matchId"]) and snapshot["matchId"] != "0" * 32, snapshot
+    assert isinstance(snapshot["sourceId"], str) and re.fullmatch(r"[0-9a-f]{32}", snapshot["sourceId"]) and snapshot["sourceId"] != "0" * 32, snapshot
+    assert type(snapshot["snapshotSequence"]) is int and 0 < snapshot["snapshotSequence"] <= 9007199254740991, snapshot
+    assert type(snapshot["canRematch"]) is bool, snapshot
+    assert not snapshot["canRematch"] or snapshot["connection"] == "connected" and snapshot["phase"] == "gameover" and snapshot["localSide"] is not None, snapshot
     assert isinstance(snapshot["localNickname"], str) and 0 < len(snapshot["localNickname"]) <= 24, snapshot
     assert (snapshot["peerNickname"] is None or
             isinstance(snapshot["peerNickname"], str) and 0 < len(snapshot["peerNickname"]) <= 24), snapshot
@@ -173,7 +190,7 @@ def expect_opponent(snapshot, mode, requested_id=None, effective_id=None, fallba
 
 def expect_identity_parity(http_snapshot, ws_snapshot):
     fields = ("opponentMode", "requestedBotId", "requestedBotName", "effectiveBotId",
-              "effectiveBotName", "opponentFallbackActive", "botFallbackReason", "peerNickname")
+              "effectiveBotName", "opponentFallbackActive", "botFallbackReason", "peerNickname", "localSide", "matchId", "sourceId")
     assert {field: http_snapshot[field] for field in fields} == {
         field: ws_snapshot[field] for field in fields}, (http_snapshot, ws_snapshot)
 
@@ -181,7 +198,7 @@ def expect_identity_parity(http_snapshot, ws_snapshot):
 def expect_catalog(port, expected_ids=("lada", "iskra", "vektor"), default_id="lada"):
     catalog = request(port, "/api/bots")
     assert set(catalog) == {"version", "defaultBotId", "bots"}, catalog
-    assert catalog["version"] == 8 and catalog["defaultBotId"] == default_id, catalog
+    assert catalog["version"] == 9 and catalog["defaultBotId"] == default_id, catalog
     bots = catalog["bots"]
     assert isinstance(bots, list) and [bot["id"] for bot in bots] == list(expected_ids), catalog
     assert bots == sorted(bots, key=lambda bot: (bot["order"], bot["id"])), catalog
@@ -198,6 +215,83 @@ def expect_catalog(port, expected_ids=("lada", "iskra", "vektor"), default_id="l
         if bot["availability"] == "disabled":
             assert not bot["enabled"] and not bot["canPlay"], bot
     return {bot["id"]: bot for bot in bots}
+
+
+def finish_match(ports, seconds=45):
+    """Produce a genuine seventh goal through ordinary current-match controls."""
+    initial = {port: request(port, "/api/status") for port in ports}
+    match = next(iter(initial.values()))
+    assert all(state["matchId"] == match["matchId"] and state["roundId"] == match["roundId"]
+               for state in initial.values()), initial
+    assert any(state["localSide"] == "right" for state in initial.values()), initial
+    deadline = time.monotonic() + seconds
+    current = initial
+    with ExitStack() as stack:
+        sockets = {port: stack.enter_context(websocket(port)) for port in ports}
+        frames = {port: control_packets(state) for port, state in initial.items()}
+        while time.monotonic() < deadline:
+            for port, conn in sockets.items():
+                send_binary(conn, frames[port][-1 if initial[port]["localSide"] == "right" else 0])
+            current = {port: request(port, "/api/status") for port in ports}
+            assert all(state["matchId"] == match["matchId"] and state["roundId"] == match["roundId"]
+                       and state["localSide"] == initial[port]["localSide"]
+                       for port, state in current.items()), current
+            if all(state["phase"] == "gameover" and state["canRematch"] for state in current.values()):
+                # Guest simulation may predict the seventh goal before the host packet arrives.
+                # Its HTTP events contain only confirmed host events, so require the winning goal.
+                host = next(state for state in current.values() if state["role"] == "host")
+                winning_goal = next(event["id"] for event in reversed(host["recentEvents"]) if event["kind"] == 4)
+                if not all(any(event["id"] == winning_goal for event in state["recentEvents"])
+                           for state in current.values() if state["role"] == "guest"):
+                    time.sleep(0.04)
+                    continue
+                assert all(max(state["leftScore"], state["rightScore"]) == 7 for state in current.values()), current
+                assert len({(state["leftScore"], state["rightScore"]) for state in current.values()}) == 1, current
+                break
+            time.sleep(0.04)
+        else:
+            raise AssertionError(f"Genuine GameOver timed out in {seconds}s; states={current}")
+    retained = {port: request(port, "/api/status") for port in ports}
+    for port, state in retained.items():
+        assert state["localSide"] == current[port]["localSide"], retained
+        assert (state["leftScore"], state["rightScore"]) == (current[port]["leftScore"], current[port]["rightScore"]), retained
+    print(f"PASS: genuine finished round retains physical score/side orientation: {[(state['role'], state['localSide'], state['leftScore'], state['rightScore']) for state in retained.values()]}")
+    return retained
+
+
+def rematch_finished(ports, requester):
+    finished = finish_match(ports)
+    old = finished[requester]
+    reply = request(requester, "/api/restart", {"matchId": old["matchId"], "expectedRoundId": old["roundId"]})
+    # Guest acceptance can be pending; only host-authoritative advancement confirms the swap.
+    assert reply["roundId"] in (old["roundId"], old["roundId"] + 1), reply
+    wait_until("authoritative finished rematch reaches every player", lambda:
+               all(request(port, "/api/status")["roundId"] == old["roundId"] + 1 for port in ports))
+    restarted = {port: request(port, "/api/status") for port in ports}
+    for port, state in restarted.items():
+        previous = finished[port]
+        assert state["matchId"] == previous["matchId"] and state["roundId"] == previous["roundId"] + 1, state
+        assert state["localSide"] == ("right" if previous["localSide"] == "left" else "left"), state
+        assert state["leftScore"] == state["rightScore"] == 0 and state["phase"] == "countdown", state
+        assert state["canRematch"] is False, state
+        expect_bad_request(port, "/api/restart", {"matchId": previous["matchId"], "expectedRoundId": previous["roundId"]})
+        old_frames = control_packets(previous)
+        with websocket(port) as conn:
+            expect_identity_parity(state, decode_snapshot(recv_frame(conn)))
+            for _ in range(4):
+                send_binary(conn, old_frames[1])
+                time.sleep(0.03)
+            checked = request(port, "/api/status")
+            assert abs(checked[state["localSide"] + "Y"] - 0.5) < 0.001, checked
+            current_frames = control_packets(state)
+            for _ in range(4):
+                send_binary(conn, current_frames[-1])
+                time.sleep(0.03)
+            moved = request(port, "/api/status")
+            assert moved[state["localSide"] + "Y"] < 0.49, moved
+            send_binary(conn, current_frames[0])
+    print("PASS: finished rematch swaps once, preserves match identity, rejects stale expected-round controls/requests and routes the new paddle")
+    return restarted
 
 
 def wait_for_ws_event(conn, kind, event_id=None, seconds=3):
@@ -234,7 +328,9 @@ def expect_bad_request(port, path, payload):
         request(port, path, payload)
     except urllib.error.HTTPError as error:
         assert error.code == 400, (path, payload, error.code)
-        body = json.load(error)
+        raw = error.read()
+        body = json.loads(raw) if raw else {}
+        if not body: return body
         assert set(body) == {"error"} and isinstance(body["error"], str) and body["error"], body
         return body
     else:
@@ -587,7 +683,7 @@ def check_configured_tracker_process(log_dir):
         assert catalog[bot_id] == metadata, catalog[bot_id]
         assert catalog["vektor"]["availability"] == "notChecked", catalog
 
-        baseline = request(port, "/api/local-opponent", {"nickname": "Baseline", "botId": "lada"})
+        baseline = request(port, "/api/local-opponent", {"nickname": "Baseline", "botId": "lada", "side": "left"})
 
         def baseline_moves():
             state = request(port, "/api/status")
@@ -598,12 +694,12 @@ def check_configured_tracker_process(log_dir):
         assert moving["tick"] > baseline["tick"], moving
         expect_opponent(request(port, "/api/leave", {}), "none")
 
-        selected = request(port, "/api/local-opponent", {"nickname": "CatalogPlayer", "botId": bot_id})
+        selected = request(port, "/api/local-opponent", {"nickname": "CatalogPlayer", "botId": bot_id, "side": "left"})
         expect_opponent(selected, "bot", bot_id, bot_id, requested_name=bot_name, effective_name=bot_name)
         assert selected["phase"] == "countdown" and selected["rightY"] == 0.5, selected
         with websocket(port) as selected_ws:
             expect_identity_parity(selected, decode_snapshot(recv_frame(selected_ws)))
-            controls = control_packets()
+            controls = control_packets(selected)
             for _ in range(8):
                 send_binary(selected_ws, controls[-1])
                 time.sleep(0.03)
@@ -624,13 +720,9 @@ def check_configured_tracker_process(log_dir):
             expect_identity_parity(selected, stationary)
             assert live_samples >= 4 and stationary["leftY"] < 0.48, stationary
 
-        rematch = request(port, "/api/restart", {})
-        expect_identity_parity(selected, rematch)
-        assert rematch["roundId"] == selected["roundId"] + 1, rematch
-        assert rematch["phase"] == "countdown" and rematch["leftScore"] == rematch["rightScore"] == 0, rematch
-        assert rematch["leftY"] == rematch["rightY"] == 0.5, rematch
-        with websocket(port) as rematch_ws:
-            expect_identity_parity(rematch, decode_snapshot(recv_frame(rematch_ws)))
+        expect_bad_request(port, "/api/restart", {"matchId": selected["matchId"], "expectedRoundId": selected["roundId"]})
+        unchanged = request(port, "/api/status")
+        assert unchanged["roundId"] == selected["roundId"] and unchanged["localSide"] == selected["localSide"], unchanged
         departed = request(port, "/api/leave", {})
         expect_opponent(departed, "none")
         assert departed["role"] == "none" and departed["connection"] == "idle", departed
@@ -658,16 +750,18 @@ def check_configured_tracker_process(log_dir):
         with websocket(port) as host_ws, websocket(5181) as guest_ws:
             expect_identity_parity(lan_host, decode_snapshot(recv_frame(host_ws)))
             expect_identity_parity(lan_guest, decode_snapshot(recv_frame(guest_ws)))
+            controls = control_packets(lan_guest)
+            guest_field = lan_guest["localSide"] + "Y"
             for _ in range(8):
                 send_binary(guest_ws, controls[1])
                 time.sleep(0.03)
-            wait_until("LAN guest controls configured host's right paddle", lambda:
-                       request(port, "/api/status")["rightY"] > lan_host["rightY"] + 0.02)
+            wait_until("LAN guest controls configured host physical paddle", lambda:
+                       request(port, "/api/status")[guest_field] > lan_host[guest_field] + 0.02)
         expect_opponent(request(5181, "/api/leave", {}), "none")
         wait_until("configured host returns to LAN lobby", lambda:
                    request(port, "/api/status")["connection"] == "waiting")
         expect_opponent(request(port, "/api/leave", {}), "none")
-        print("PASS: configuration-only fourth tracker, exact metadata/default/order, HTTP/MessagePack identity, tuned movement, rematch/leave and configured-process LAN round")
+        print("PASS: configuration-only fourth tracker, exact metadata/default/order, HTTP/MessagePack identity, tuned movement, rematch/leave and configured-process LAN round, finished-only rematch rejection")
     finally:
         try:
             stop_process(configured_process)
@@ -724,21 +818,27 @@ def main():
             expect_bad_request(5180, "/api/quick", {"nickname": nickname})
         expect_bad_request(5180, "/api/quick", {})
         for nickname in (None, "", "   ", "x" * 25, "\x01Name"):
-            expect_bad_request(5180, "/api/local-opponent", {"nickname": nickname, "botId": "lada"})
+            expect_bad_request(5180, "/api/local-opponent", {"nickname": nickname, "botId": "lada", "side": "left"})
         expect_bad_request(5180, "/api/local-opponent", {})
         expect_bad_request(5180, "/api/local-opponent", {"nickname": "Player"})
         for bot_id in (None, "", "   ", "unknown", "Lada"):
-            expect_bad_request(5180, "/api/local-opponent", {"nickname": "Player", "botId": bot_id})
+            expect_bad_request(5180, "/api/local-opponent", {"nickname": "Player", "botId": bot_id, "side": "left"})
         for legacy_mode in ("simple", "hard", "lan", "expert"):
             expect_bad_request(5180, "/api/local-opponent", {"nickname": "Player", "mode": legacy_mode})
 
-        local = request(5180, "/api/local-opponent", {"nickname": "LocalPlayer", "botId": "lada"})
+        missing_side = {"nickname": "MissingSide", "botId": "lada"}
+        expect_bad_request(5180, "/api/local-opponent", missing_side)
+        for invalid_side in (None, 0, 1, 2, 3, True, "0", "1", "unknown", "left,right", "left,left", "left, random", {}, []):
+            expect_bad_request(5180, "/api/local-opponent", missing_side | {"side": invalid_side})
+        assert request(5180, "/api/status")["localSide"] is None
+
+        local = request(5180, "/api/local-opponent", {"nickname": "LocalPlayer", "botId": "lada", "side": "left"})
         assert local["role"] == "host" and local["connection"] == "connected", local
         expect_opponent(local, "bot", "lada", "lada")
         assert local["udpPort"] == 0 and local["peerAddress"] is None, local
         assert local["pingMs"] is None and local["peerNickname"] is None, local
         assert local["phase"] == "countdown", local
-        expect_bad_request(5180, "/api/local-opponent", {"nickname": "Again", "botId": "vektor"})
+        expect_bad_request(5180, "/api/local-opponent", {"nickname": "Again", "botId": "vektor", "side": "left"})
         preserved = request(5180, "/api/status")
         expect_opponent(preserved, "bot", "lada", "lada")
         assert preserved["roundId"] == local["roundId"], (local, preserved)
@@ -749,7 +849,7 @@ def main():
             expect_opponent(local_frame, "bot", "lada", "lada")
             expect_identity_parity(local, local_frame)
             assert local_frame["udpPort"] == 0 and local_frame["peerAddress"] is None, local_frame
-            controls = control_packets()
+            controls = control_packets(local)
             for _ in range(8):
                 send_binary(local_ws, controls[-1])
                 time.sleep(0.03)
@@ -766,16 +866,15 @@ def main():
                 return snapshot if snapshot["phase"] == "playing" and snapshot["rightY"] > 0.52 else None
 
             wait_until("Simple bot tracks the live serve", simple_tracks_serve)
-            restarted = request(5180, "/api/restart", {})
-            expect_opponent(restarted, "bot", "lada", "lada")
-            assert restarted["roundId"] == local["roundId"] + 1, restarted
-            assert restarted["phase"] == "countdown" and restarted["leftScore"] == 0, restarted
+            expect_bad_request(5180, "/api/restart", {"matchId": local["matchId"], "expectedRoundId": local["roundId"]})
+            unchanged = request(5180, "/api/status")
+            assert unchanged["roundId"] == local["roundId"] and unchanged["localSide"] == "left", unchanged
         left_local = request(5180, "/api/leave", {})
         assert left_local["role"] == "none" and left_local["connection"] == "idle", left_local
         expect_opponent(left_local, "none")
         assert left_local["phase"] == "waiting" and left_local["tick"] == 0, left_local
 
-        hard = request(5180, "/api/local-opponent", {"nickname": "ModelPlayer", "botId": "vektor"})
+        hard = request(5180, "/api/local-opponent", {"nickname": "ModelPlayer", "botId": "vektor", "side": "right"})
         assert hard["role"] == "host" and hard["connection"] == "connected", hard
         expect_opponent(hard, "bot", "vektor", "vektor")
         assert hard["phase"] == "countdown" and hard["peerNickname"] is None, hard
@@ -783,6 +882,7 @@ def main():
             hard_frame = decode_snapshot(recv_frame(hard_ws))
             expect_opponent(hard_frame, "bot", "vektor", "vektor")
             expect_identity_parity(hard, hard_frame)
+            controls = control_packets(hard)
             for _ in range(8):
                 send_binary(hard_ws, controls[-1])
                 time.sleep(0.03)
@@ -791,14 +891,13 @@ def main():
                 state = request(5180, "/api/status")
                 return state if (state["phase"] == "playing" and
                                  state["tick"] > hard["tick"] + 60 and
-                                 state["leftY"] < 0.48) else None
+                                 state["rightY"] < 0.48) else None
 
             played_hard = wait_until("Hard match enters play and accepts browser control", hard_playing)
             expect_opponent(played_hard, "bot", "vektor", "vektor")
-            hard_rematch = request(5180, "/api/restart", {})
-            expect_opponent(hard_rematch, "bot", "vektor", "vektor")
-            assert hard_rematch["roundId"] == hard["roundId"] + 1, hard_rematch
-            assert hard_rematch["phase"] == "countdown" and hard_rematch["leftScore"] == 0
+        hard_rematch = rematch_finished([5180], 5180)[5180]
+        expect_opponent(hard_rematch, "bot", "vektor", "vektor")
+        assert hard_rematch["localSide"] == "left", hard_rematch
         hard_left = request(5180, "/api/leave", {})
         expect_opponent(hard_left, "none")
         assert hard_left["role"] == "none" and hard_left["connection"] == "idle", hard_left
@@ -851,8 +950,8 @@ def main():
                 assert catalog["iskra"]["availability"] == "disabled", catalog
                 assert catalog["vektor"]["availability"] == catalog["unusable-model"]["availability"] == "notChecked", catalog
                 assert catalog["lada"]["name"] == LONG_BOT_NAME, catalog
-                expect_bad_request(5182, "/api/local-opponent", {"nickname": "Player", "botId": "iskra"})
-                error = expect_bad_request(5182, "/api/local-opponent", {"nickname": "Player", "botId": "unusable-model"})
+                expect_bad_request(5182, "/api/local-opponent", {"nickname": "Player", "botId": "iskra", "side": "left"})
+                error = expect_bad_request(5182, "/api/local-opponent", {"nickname": "Player", "botId": "unusable-model", "side": "left"})
                 assert str(model_path) not in error["error"] and re.search("[А-Яа-яЁё]", error["error"]), error
                 assert error["error"] == expected_reason, error
                 unavailable = expect_catalog(5182, expected_ids)["unusable-model"]
@@ -862,11 +961,11 @@ def main():
                 assert unavailable["availabilityReason"] == expected_reason, unavailable
                 expect_opponent(request(5182, "/api/status"), "none")
                 boundary_nickname = "Игрок" + "я" * 19
-                long_named = request(5182, "/api/local-opponent", {"nickname": boundary_nickname, "botId": "lada"})
+                long_named = request(5182, "/api/local-opponent", {"nickname": boundary_nickname, "botId": "lada", "side": "left"})
                 assert long_named["localNickname"] == boundary_nickname, long_named
                 expect_opponent(long_named, "bot", "lada", "lada", requested_name=LONG_BOT_NAME, effective_name=LONG_BOT_NAME)
                 for rejected_id in ("unknown", "iskra", "unusable-model", "vektor"):
-                    expect_bad_request(5182, "/api/local-opponent", {"nickname": "Other", "botId": rejected_id})
+                    expect_bad_request(5182, "/api/local-opponent", {"nickname": "Other", "botId": rejected_id, "side": "left"})
                     preserved = request(5182, "/api/status")
                     expect_identity_parity(long_named, preserved)
                     assert preserved["roundId"] == long_named["roundId"], preserved
@@ -874,9 +973,9 @@ def main():
                 with websocket(5182) as long_name_ws:
                     expect_identity_parity(long_named, decode_snapshot(recv_frame(long_name_ws)))
                 request(5182, "/api/leave", {})
-                fallback = request(5182, "/api/local-opponent", {"nickname": "Fallback", "botId": "vektor"})
+                fallback = request(5182, "/api/local-opponent", {"nickname": "Fallback", "botId": "vektor", "side": "right"})
                 expect_opponent(fallback, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
-                assert fallback["role"] == "host" and fallback["connection"] == "connected", fallback
+                assert fallback["role"] == "host" and fallback["connection"] == "connected" and fallback["localSide"] == "right", fallback
                 assert str(model_path) not in fallback["botFallbackReason"], fallback
                 assert fallback["botFallbackReason"] == expected_reason, fallback
                 catalog = expect_catalog(5182, expected_ids)
@@ -893,14 +992,14 @@ def main():
 
                     advanced = wait_until(f"{failure_case} fallback match enters play and keeps advancing", fallback_advanced)
                     expect_opponent(advanced, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
-                    fallback_rematch = request(5182, "/api/restart", {})
-                    expect_opponent(fallback_rematch, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
-                    assert fallback_rematch["roundId"] == fallback["roundId"] + 1, fallback_rematch
-                    assert fallback_rematch["botFallbackReason"] == fallback["botFallbackReason"], fallback_rematch
+                    expect_bad_request(5182, "/api/restart", {"matchId": fallback["matchId"], "expectedRoundId": fallback["roundId"]})
+                    unchanged = request(5182, "/api/status")
+                    expect_identity_parity(fallback, unchanged)
+                    assert unchanged["roundId"] == fallback["roundId"], unchanged
                 fallback_left = request(5182, "/api/leave", {})
                 expect_opponent(fallback_left, "none")
                 assert expect_catalog(5182, expected_ids)["vektor"]["availability"] == "unavailable"
-                retry = request(5182, "/api/local-opponent", {"nickname": "Retry", "botId": "vektor"})
+                retry = request(5182, "/api/local-opponent", {"nickname": "Retry", "botId": "vektor", "side": "left"})
                 expect_opponent(retry, "bot", "vektor", "lada", fallback=True, effective_name=LONG_BOT_NAME)
                 request(5182, "/api/leave", {})
             finally:
@@ -908,7 +1007,7 @@ def main():
                     stop_process(fallback_process)
                 finally:
                     fallback_log.close()
-            print(f"PASS: {failure_case} model availability, explicit fallback play/rematch, HTTP/WS identity and leave cleanup")
+            print(f"PASS: {failure_case} model availability, explicit fallback play/finished-only rejection, HTTP/WS identity and leave cleanup")
 
         require_mdns_loopback = os.environ.get("LANPONG_REQUIRE_MDNS_LOOPBACK") == "1"
         host = request(5180, "/api/host", host_payload())
@@ -1017,6 +1116,8 @@ def main():
                    request(5180, "/api/status").get("pingMs") is not None
                    and request(5181, "/api/status").get("pingMs") is not None)
         before = request(5180, "/api/status")
+        host_field = before["localSide"] + "Y"
+        guest_field = ("right" if before["localSide"] == "left" else "left") + "Y"
         before_guest = request(5181, "/api/status")
         assert 0 <= before["pingMs"] < 2000, before
         assert abs(before["ballVx"]) > 0 and before["roundId"] >= 1, before
@@ -1027,7 +1128,7 @@ def main():
                    and request(5180, "/api/status")["connection"] == "connected"
                    and request(5181, "/api/status")["connection"] == "connected")
         with websocket(5180) as host_ws, websocket(5180) as passive_ws, websocket(5181) as guest_ws:
-            controls = control_packets()
+            controls = control_packets(before)
             snapshot, host_serve = wait_for_ws_event(host_ws, 1)
             assert snapshot["role"] == "host" and snapshot["connection"] == "connected", snapshot
             expect_opponent(snapshot, "lan")
@@ -1039,23 +1140,23 @@ def main():
 
             send_text(host_ws, '{"axis":1}')
             send_binary(host_ws, b"\x90")  # Wrong array shape.
-            send_binary(host_ws, b"\x92\x07\x01")  # Superseded browser protocol version.
-            send_binary(host_ws, b"\x92\x09\x01")  # Unsupported future browser protocol version.
+            send_binary(host_ws, b"\x93\x08\x01\x01")  # Superseded browser protocol version.
+            send_binary(host_ws, b"\x93\x0a\x01\x01")  # Unsupported future browser protocol version.
             send_binary(host_ws, b"\xc1")  # Reserved MessagePack prefix.
             send_binary(host_ws, controls[1] + b"\x00")  # A second packed value.
             send_binary(host_ws, controls[1] + bytes(257 - len(controls[1])))
             time.sleep(0.15)
             after_invalid = request(5180, "/api/status")
-            assert abs(after_invalid["leftY"] - before["leftY"]) < 0.005, (before, after_invalid)
+            assert abs(after_invalid[host_field] - before[host_field]) < 0.005, (before, after_invalid)
 
             # Both frames use the current protocol version, so each reaches axis
             # validation rather than being rejected by the version check.
-            for malformed_axis in (b"\x92\x08\xa2up", b"\x92\x08\x02"):
+            for malformed_axis in (msgpack_helper_bytes([9, before["matchId"], before["roundId"], "up"]), msgpack_helper_bytes([9, before["matchId"], before["roundId"], 2])):
                 send_binary(host_ws, malformed_axis)
                 time.sleep(0.15)
                 after_axis = request(5180, "/api/status")
                 assert after_axis["tick"] > after_invalid["tick"], (after_invalid, after_axis)
-                assert abs(after_axis["leftY"] - before["leftY"]) < 0.005, (
+                assert abs(after_axis[host_field] - before[host_field]) < 0.005, (
                     malformed_axis, before, after_axis)
                 after_invalid = after_axis
 
@@ -1063,13 +1164,13 @@ def main():
                 send_binary(host_ws, controls[-1])
                 time.sleep(0.04)
             after_malformed = request(5180, "/api/status")
-            assert after_malformed["leftY"] < before["leftY"], (before, after_malformed)
+            assert after_malformed[host_field] < before[host_field], (before, after_malformed)
 
             for _ in range(8):
                 send_fragmented_binary(host_ws, controls[1])
                 time.sleep(0.04)
             after_fragmented = request(5180, "/api/status")
-            assert after_fragmented["leftY"] > after_malformed["leftY"], (after_malformed, after_fragmented)
+            assert after_fragmented[host_field] > after_malformed[host_field], (after_malformed, after_fragmented)
 
             for _ in range(25):
                 send_binary(host_ws, controls[-1])
@@ -1077,17 +1178,16 @@ def main():
                 send_binary(guest_ws, controls[1])
                 time.sleep(0.04)
             moved = request(5180, "/api/status")
-            assert moved["leftY"] < before["leftY"], (before, moved)
-            assert moved["rightY"] > before["rightY"], (before, moved)
+            assert moved[host_field] < before[host_field], (before, moved)
+            assert moved[guest_field] > before[guest_field], (before, moved)
             synced = request(5181, "/api/status")
-            assert abs(synced["leftY"] - moved["leftY"]) < 0.1, (moved, synced)
+            assert abs(synced[host_field] - moved[host_field]) < 0.1, (moved, synced)
 
         with websocket(5180) as closing_ws:
             send_frame(closing_ws, 0x8, (1000).to_bytes(2, "big"))
             expect_prompt_close(closing_ws)
 
-        request(5181, "/api/restart", {})
-        wait_until("guest restart request", lambda: request(5180, "/api/status")["phase"] == "countdown")
+        rematch_finished([5180, 5181], 5181)
         left_guest = request(5181, "/api/leave", {})
         assert left_guest["role"] == "none" and left_guest["connection"] == "idle", left_guest
         assert left_guest["phase"] == "waiting", left_guest
@@ -1114,8 +1214,11 @@ def main():
             with websocket(5181) as rollback_ws:
                 assert decode_snapshot(recv_frame(rollback_ws))["connection"] == "connected"
                 before_rollback = request(5180, "/api/status")
-                guest_tick = request(5181, "/api/status")["tick"]
-                axis = 1 if before_rollback["rightY"] < 0.5 else -1
+                guest_state = request(5181, "/api/status")
+                guest_tick = guest_state["tick"]
+                guest_field = guest_state["localSide"] + "Y"
+                controls = control_packets(guest_state)
+                axis = 1 if before_rollback[guest_field] < 0.5 else -1
                 relay.pause_guest_inputs.set()
                 deadline = time.monotonic() + 2
                 target_tick = guest_tick + 6
@@ -1130,7 +1233,7 @@ def main():
                             decoded = msgpack_helper("decode", packet)
                             assert isinstance(decoded, list) and len(decoded) == 2 and decoded[0] == 4, decoded
                             fields = decoded[1]
-                            assert isinstance(fields, list) and len(fields) == 6 and fields[0] == 8, decoded
+                            assert isinstance(fields, list) and len(fields) == 6 and fields[0] == 9, decoded
                             input_tick, input_round, axes = fields[3], fields[4], fields[5]
                             assert isinstance(input_tick, int) and isinstance(axes, list), decoded
                             last_input = (input_tick, input_round, axes)
@@ -1145,7 +1248,7 @@ def main():
                             delayed = sum(value == axis and earliest <= input_tick - index <= before_release["tick"]
                                           for index, value in enumerate(axes))
                             if delayed >= 4:
-                                assert abs(before_release["rightY"] - before_rollback["rightY"]) < 0.01, (
+                                assert abs(before_release[guest_field] - before_rollback[guest_field]) < 0.01, (
                                     before_rollback, before_release)
                                 relay.release_input(packet)
                                 ready_input = packet
@@ -1157,24 +1260,24 @@ def main():
                     current = request(5180, "/api/status")
                     elapsed_ticks = current["tick"] - before_release["tick"]
                     ordinary_movement = elapsed_ticks * 0.85 / 60
-                    movement = (current["rightY"] - before_release["rightY"]) * axis
+                    movement = (current[guest_field] - before_release[guest_field]) * axis
                     return current if movement > ordinary_movement + 0.025 else None
 
                 wait_until("host replays delayed guest paddle input", rollback_visible, seconds=2)
                 relay.pause_guest_inputs.clear()
 
-            restarted = request(5180, "/api/restart", {})
-            wait_until("restarted gameplay before guest prediction", lambda:
+            wait_until("continued gameplay before guest prediction", lambda:
                        request(5180, "/api/status")["phase"] == "playing"
-                       and request(5181, "/api/status")["phase"] == "playing"
-                       and request(5181, "/api/status")["roundId"] == restarted["roundId"])
+                       and request(5181, "/api/status")["phase"] == "playing")
 
             # A predictive guest keeps moving its paddle and advancing simulation
             # ticks while authoritative states are briefly held by the relay.
             with websocket(5181) as predictive_ws:
                 assert decode_snapshot(recv_frame(predictive_ws))["connection"] == "connected"
                 before_pause = request(5181, "/api/status")
-                axis = 1 if before_pause["rightY"] < 0.5 else -1
+                guest_field = before_pause["localSide"] + "Y"
+                controls = control_packets(before_pause)
+                axis = 1 if before_pause[guest_field] < 0.5 else -1
                 relay.pause_host_packets.set()
                 for _ in range(16):
                     send_binary(predictive_ws, controls[axis])
@@ -1182,15 +1285,15 @@ def main():
                 during_pause = request(5181, "/api/status")
                 assert relay.dropped_state_packets >= 3, relay.dropped_state_packets
                 assert during_pause["tick"] >= before_pause["tick"] + 10, (before_pause, during_pause)
-                assert (during_pause["rightY"] - before_pause["rightY"]) * axis > 0.05, (
+                assert (during_pause[guest_field] - before_pause[guest_field]) * axis > 0.05, (
                     before_pause, during_pause)
                 previously_forwarded = relay.forwarded_state_packets
                 relay.pause_host_packets.clear()
 
             wait_until("guest reconciles after paused host states", lambda:
                        relay.forwarded_state_packets >= previously_forwarded + 3
-                       and abs(request(5180, "/api/status")["rightY"]
-                           - request(5181, "/api/status")["rightY"]) < 0.1)
+                       and abs(request(5180, "/api/status")[guest_field]
+                           - request(5181, "/api/status")[guest_field]) < 0.1)
             left_host = request(5180, "/api/leave", {})
             assert left_host["role"] == "none" and left_host["connection"] == "idle", left_host
             assert left_host["phase"] == "waiting", left_host
@@ -1364,7 +1467,7 @@ def main():
         accept_challenge()
         terminate_connected_process(processes[0], 5180, 5181, "idle", "none", "host")
 
-        print("PASS: configuration-only fourth tracker and tuned configured-process LAN round, configured catalog bots start/input/play/rematch/leave, missing/corrupt-checksum explicit fallback with persistent requested/effective identity, catalog metadata/availability/ordering/error cases, version 8 HTTP and MessagePack WebSocket contract, static UI, discovery, pending challenge acceptance/decline/cancel, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, Quick Game port selection/cancellation/auto-accept/matching, and graceful host/guest shutdown")
+        print("PASS: configuration-only fourth tracker and tuned configured-process LAN round, configured catalog bots start/input/play/rematch/leave, missing/corrupt-checksum explicit fallback with persistent requested/effective identity, catalog metadata/availability/ordering/error cases, version 9 HTTP and MessagePack WebSocket contract, static UI, discovery, pending challenge acceptance/decline/cancel, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, Quick Game port selection/cancellation/auto-accept/matching, and graceful host/guest shutdown")
     finally:
         for process in processes:
             if process.poll() is None:

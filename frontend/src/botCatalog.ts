@@ -17,13 +17,13 @@ export interface BotCatalogEntry {
 }
 
 export interface BotCatalogResponse {
-  version: 8;
+  version: 9;
   defaultBotId: string;
   bots: BotCatalogEntry[];
 }
 
 export function parseBotCatalog(data: unknown): BotCatalogResponse {
-  if (!isRecord(data) || data.version !== 8)
+  if (!isRecord(data) || data.version !== 9)
     throw new RangeError("Unsupported bot catalog version");
   if (!validBotId(data.defaultBotId) || !Array.isArray(data.bots))
     throw new TypeError("Invalid bot catalog");
@@ -55,5 +55,5 @@ export function parseBotCatalog(data: unknown): BotCatalogResponse {
     return { ...entry } as unknown as BotCatalogEntry;
   });
   if (bots.length > 0 && !ids.has(data.defaultBotId)) throw new TypeError("Missing default bot");
-  return { version: 8, defaultBotId: data.defaultBotId, bots };
+  return { version: 9, defaultBotId: data.defaultBotId, bots };
 }

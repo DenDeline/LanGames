@@ -40,14 +40,56 @@ const ACTION_STATUS_TIMEOUT_MS = 1000;
 
 let socket: WebSocket | null = null;
 let reconnectTimer: number | undefined;
+let socketHasSnapshot = false;
 let busy = false;
 let actionRefreshesCatalog = false;
 let discovering = false;
-let webSocketSnapshotVersion = 0;
+let snapshotRevision = 0;
 let botCatalogRequestVersion = 0;
 let observedBotStatus: string | null = null;
 let selectedHost: DiscoveredHost | null = null;
 let discoveryButtons: Array<{ host: DiscoveredHost; button: HTMLButtonElement }> = [];
+interface PendingRematch {
+  matchId: string;
+  roundId: number;
+  side: "left" | "right";
+  role: "host" | "guest";
+  mode: "lan" | "bot";
+  botId: string | null;
+  acknowledged: boolean;
+}
+let pendingRematch: PendingRematch | null = null;
+
+function revealArena(): void {
+  ui.arenaPanel.scrollIntoView({ behavior: "instant", block: "start" });
+  ui.arenaPanel.focus({ preventScroll: true });
+}
+
+function reconcilePendingRematch(): void {
+  const intent = pendingRematch;
+  if (intent === null) return;
+  const current = session.snapshot;
+  if (
+    current.matchId !== intent.matchId ||
+    current.role !== intent.role ||
+    current.opponentMode !== intent.mode ||
+    current.requestedBotId !== intent.botId ||
+    (current.roundId === intent.roundId && !current.canRematch) ||
+    current.roundId > intent.roundId + 1
+  ) {
+    pendingRematch = null;
+    return;
+  }
+  if (
+    intent.acknowledged &&
+    current.connection === "connected" &&
+    current.roundId === intent.roundId + 1 &&
+    current.localSide === intent.side
+  ) {
+    pendingRematch = null;
+    revealArena();
+  }
+}
 
 const motion = new MotionModel();
 const sound = new SoundController(ui.soundToggle, ui.volumeRange);
@@ -65,6 +107,11 @@ const session = new GameSession(
   feedback,
   () => arena.resetTrail(),
   () => {
+    snapshotRevision++;
+    if (socket?.readyState === WebSocket.OPEN && !socketHasSnapshot) {
+      socketHasSnapshot = true;
+      sendAxis();
+    }
     const nextBotStatus =
       session.snapshot.opponentMode === "bot"
         ? `${session.snapshot.requestedBotId}|${session.snapshot.effectiveBotId}|${session.snapshot.opponentFallbackActive}`
@@ -72,10 +119,12 @@ const session = new GameSession(
     const botChanged = observedBotStatus !== null && observedBotStatus !== nextBotStatus;
     observedBotStatus = nextBotStatus;
     render(session.snapshot, busy, discovering);
+    reconcilePendingRematch();
     // A POST already refreshes after its resulting snapshot. Unsolicited failure/fallback
     // transitions need one refresh; ordinary simulation ticks never fetch the catalog.
     if (botChanged && !(busy && actionRefreshesCatalog)) void refreshBotCatalog();
   },
+  () => input.clear(true),
 );
 
 async function readJson(response: Response): Promise<Record<string, unknown>> {
@@ -98,11 +147,11 @@ async function readJson(response: Response): Promise<Record<string, unknown>> {
 }
 
 async function refreshStatus(signal?: AbortSignal): Promise<void> {
-  const requestVersion = webSocketSnapshotVersion;
+  const requestVersion = snapshotRevision;
   try {
     const response = await fetch("/api/status", { cache: "no-store", signal });
     const data = await readJson(response);
-    if (requestVersion === webSocketSnapshotVersion) session.apply(data);
+    if (requestVersion === snapshotRevision) session.apply(data);
   } catch {
     // WebSocket переподключится; текущий кадр остаётся на экране.
   }
@@ -124,23 +173,63 @@ async function refreshBotCatalog(): Promise<void> {
 
 async function postAction(
   path: string,
-  body?: { port?: number; address?: string; nickname?: string; botId?: string },
+  body?: {
+    port?: number;
+    address?: string;
+    nickname?: string;
+    botId?: string;
+    side?: "left" | "right" | "random";
+    expectedRoundId?: number;
+    matchId?: string;
+  },
 ): Promise<void> {
   if (busy) return;
   if (["/api/local-opponent", "/api/quick", "/api/join"].includes(path) && isSetupLocked()) return;
+  if (
+    path === "/api/restart" &&
+    (session.snapshot.connection !== "connected" ||
+      session.snapshot.phase !== "gameover" ||
+      !session.snapshot.canRematch ||
+      session.snapshot.roundId <= 0 ||
+      body?.expectedRoundId !== session.snapshot.roundId ||
+      body?.matchId !== session.snapshot.matchId)
+  )
+    return;
   if (path === "/api/quick") noteQuickGameStart();
+  const expectedSide =
+    path === "/api/local-opponent"
+      ? body?.side
+      : path === "/api/restart" && session.snapshot.localSide !== null
+        ? session.snapshot.localSide === "left"
+          ? "right"
+          : "left"
+        : null;
   const expectedBotId =
     path === "/api/local-opponent"
       ? body?.botId
       : path === "/api/restart" && session.snapshot.opponentMode === "bot"
         ? session.snapshot.requestedBotId
         : null;
+  const rematchIntent: PendingRematch | null =
+    path === "/api/restart"
+      ? {
+          matchId: session.snapshot.matchId!,
+          roundId: session.snapshot.roundId,
+          side: expectedSide as "left" | "right",
+          role: session.snapshot.role as "host" | "guest",
+          mode: session.snapshot.opponentMode as "lan" | "bot",
+          botId: session.snapshot.requestedBotId,
+          acknowledged: false,
+        }
+      : null;
+  if (rematchIntent !== null) pendingRematch = rematchIntent;
+  if (path === "/api/leave") pendingRematch = null;
   const refreshBots =
     path === "/api/local-opponent" || path === "/api/leave" || path === "/api/restart";
   actionRefreshesCatalog = refreshBots;
   busy = true;
   render(session.snapshot, busy, discovering);
-  const requestVersion = webSocketSnapshotVersion;
+  const requestVersion = snapshotRevision;
   try {
     const response = await fetch(path, {
       method: "POST",
@@ -164,37 +253,67 @@ async function postAction(
         (path === "/api/join" && actionSnapshot.opponentMode === "lan")
       )
         clearQuickGameIntent();
-      if (requestVersion === webSocketSnapshotVersion) session.apply(actionSnapshot);
-      const successfulBotAction =
-        typeof expectedBotId === "string" &&
-        actionSnapshot.opponentMode === "bot" &&
-        actionSnapshot.requestedBotId === expectedBotId;
+      if (requestVersion === snapshotRevision) session.apply(actionSnapshot);
+      if (rematchIntent !== null && pendingRematch === rematchIntent) {
+        const acknowledgesRematch =
+          actionSnapshot.connection === "connected" &&
+          actionSnapshot.matchId === rematchIntent.matchId &&
+          actionSnapshot.role === rematchIntent.role &&
+          actionSnapshot.opponentMode === rematchIntent.mode &&
+          actionSnapshot.requestedBotId === rematchIntent.botId &&
+          ((actionSnapshot.roundId === rematchIntent.roundId &&
+            actionSnapshot.phase === "gameover" &&
+            actionSnapshot.canRematch &&
+            actionSnapshot.localSide !== rematchIntent.side) ||
+            (actionSnapshot.roundId === rematchIntent.roundId + 1 &&
+              actionSnapshot.localSide === rematchIntent.side));
+        if (acknowledgesRematch) {
+          rematchIntent.acknowledged = true;
+          reconcilePendingRematch();
+        } else {
+          pendingRematch = null;
+        }
+      }
+      const successfulMatchAction =
+        actionSnapshot.connection === "connected" &&
+        actionSnapshot.localSide === expectedSide &&
+        (path === "/api/local-opponent"
+          ? typeof expectedBotId === "string" &&
+            actionSnapshot.opponentMode === "bot" &&
+            actionSnapshot.requestedBotId === expectedBotId
+          : path === "/api/restart" &&
+            actionSnapshot.matchId === body!.matchId &&
+            actionSnapshot.roundId === body!.expectedRoundId! + 1 &&
+            (expectedBotId === null || actionSnapshot.requestedBotId === expectedBotId));
       // A newer pre-action idle/game-over frame may precede the successful HTTP reply.
-      // Reconcile briefly while preserving staleness checks and subsequent session changes.
+      // Reconcile briefly without overwriting newer accepted rounds or other sessions.
       if (
-        successfulBotAction &&
-        requestVersion !== webSocketSnapshotVersion &&
+        successfulMatchAction &&
+        requestVersion !== snapshotRevision &&
         (session.snapshot.opponentMode === "none" ||
-          (session.snapshot.opponentMode === "bot" &&
-            session.snapshot.requestedBotId === expectedBotId &&
-            session.snapshot.roundId !== actionSnapshot.roundId))
+          (session.snapshot.opponentMode === actionSnapshot.opponentMode &&
+            session.snapshot.requestedBotId === actionSnapshot.requestedBotId &&
+            session.snapshot.roundId < actionSnapshot.roundId))
       ) {
         await refreshStatus(AbortSignal.timeout(ACTION_STATUS_TIMEOUT_MS));
       }
       if (
-        successfulBotAction &&
-        session.snapshot.opponentMode === "bot" &&
-        session.snapshot.requestedBotId === expectedBotId &&
-        session.snapshot.roundId === actionSnapshot.roundId
+        path === "/api/local-opponent" &&
+        successfulMatchAction &&
+        session.snapshot.connection === "connected" &&
+        session.snapshot.matchId === actionSnapshot.matchId &&
+        session.snapshot.opponentMode === actionSnapshot.opponentMode &&
+        session.snapshot.requestedBotId === actionSnapshot.requestedBotId &&
+        session.snapshot.roundId === actionSnapshot.roundId &&
+        session.snapshot.localSide === actionSnapshot.localSide
       ) {
-        input.clear();
-        ui.arenaPanel.scrollIntoView({ behavior: "instant", block: "start" });
-        ui.arenaPanel.focus({ preventScroll: true });
+        revealArena();
       }
     } else {
       await refreshStatus();
     }
   } catch (error) {
+    if (pendingRematch === rematchIntent) pendingRematch = null;
     showToast(
       error instanceof TypeError || error instanceof RangeError
         ? "Приложение вернуло некорректный ответ. Обновите страницу."
@@ -203,6 +322,8 @@ async function postAction(
           : "Не удалось выполнить действие.",
     );
   } finally {
+    if (pendingRematch === rematchIntent && rematchIntent !== null && !rematchIntent.acknowledged)
+      pendingRematch = null;
     busy = false;
     actionRefreshesCatalog = false;
     render(session.snapshot, busy, discovering);
@@ -297,7 +418,15 @@ async function discoverHosts(): Promise<void> {
 }
 
 function sendAxis(): void {
-  if (socket?.readyState === WebSocket.OPEN) socket.send(encodeWsAxis(input.axis));
+  if (
+    socket?.readyState === WebSocket.OPEN &&
+    socketHasSnapshot &&
+    session.snapshot.connection === "connected" &&
+    session.snapshot.localSide !== null &&
+    session.snapshot.matchId !== null &&
+    session.snapshot.roundId > 0
+  )
+    socket.send(encodeWsAxis(session.snapshot.matchId, session.snapshot.roundId, input.axis));
 }
 
 function connectSocket(): void {
@@ -310,9 +439,9 @@ function connectSocket(): void {
   const currentSocket = new WebSocket(`${scheme}//${location.host}/ws`);
   currentSocket.binaryType = "arraybuffer";
   socket = currentSocket;
+  socketHasSnapshot = false;
   currentSocket.addEventListener("open", () => {
     clearTimeout(reconnectTimer);
-    sendAxis();
     refreshStatus();
   });
   currentSocket.addEventListener("message", (event) => {
@@ -328,7 +457,6 @@ function connectSocket(): void {
         currentSocket.close();
         return;
       }
-      webSocketSnapshotVersion++;
       session.apply(data, "websocket");
     } catch {
       currentSocket.close();
@@ -336,6 +464,9 @@ function connectSocket(): void {
   });
   currentSocket.addEventListener("close", () => {
     if (socket !== currentSocket) return;
+    socketHasSnapshot = false;
+    snapshotRevision++;
+    input.clear(true);
     feedback.markReconnect();
     clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(connectSocket, SOCKET_RECONNECT_MS);
@@ -387,7 +518,8 @@ export function startGame(): void {
     event.preventDefault();
     const nickname = getNickname();
     const botId = getSelectedBotId();
-    if (nickname !== null && botId !== null) postAction("/api/local-opponent", { nickname, botId });
+    if (nickname !== null && botId !== null)
+      postAction("/api/local-opponent", { nickname, botId, side: "left" });
   });
   ui.botCatalog.addEventListener("change", () => {
     updateBotSelection();
@@ -418,7 +550,12 @@ export function startGame(): void {
   ui.discoverButton.addEventListener("click", discoverHosts);
   ui.acceptButton.addEventListener("click", () => postAction("/api/accept"));
   ui.declineButton.addEventListener("click", () => postAction("/api/decline"));
-  ui.restartButton.addEventListener("click", () => postAction("/api/restart"));
+  ui.restartButton.addEventListener("click", () =>
+    postAction("/api/restart", {
+      matchId: session.snapshot.matchId!,
+      expectedRoundId: session.snapshot.roundId,
+    }),
+  );
   ui.leaveButton.addEventListener("click", () => {
     input.clear();
     postAction("/api/leave");

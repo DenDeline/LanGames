@@ -69,10 +69,7 @@ export class FeedbackController {
       scorer,
     };
     if (scorer) this.flashScore(scorer);
-    const localScored =
-      scorer !== null &&
-      ((scorer === "left" && next.role === "host") ||
-        (scorer === "right" && next.role === "guest"));
+    const localScored = scorer !== null && scorer === next.localSide;
     this.sound.playFeedbackSound(event.kind, localScored, next.phase === "gameover");
   }
 
@@ -93,6 +90,7 @@ export class FeedbackController {
     const enteringSession =
       this.resyncFeedbackOnNextSnapshot ||
       this.seenEventRound === null ||
+      previous.matchId !== next.matchId ||
       previous.role !== next.role ||
       previous.opponentMode !== next.opponentMode ||
       previous.requestedBotId !== next.requestedBotId ||

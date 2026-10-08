@@ -85,7 +85,7 @@ internal sealed partial class PongPeer
         for (var step = 0; step < NetworkConstants.MaximumSimulationCatchUpSteps &&
                            accumulatedTime >= GameConstants.FixedStepSeconds; step++)
         {
-            var botAxis = Math.Clamp(bot.GetAxis(_game.Capture(), PaddleSide.Right), -1, 1);
+            var botAxis = Math.Clamp(bot.GetAxis(_game.Capture(), PaddleSides.Opposite(_hostSide!.Value)), -1, 1);
             UpdateBotIdentityLocked();
             if (!bot.IsPlayable)
             {
@@ -97,7 +97,7 @@ internal sealed partial class PongPeer
                 accumulatedTime = 0;
                 return;
             }
-            _game.AdvanceForSide(GameConstants.FixedStepSeconds, PaddleSide.Left, localAxis, botAxis);
+            _game.AdvanceForSide(GameConstants.FixedStepSeconds, _hostSide!.Value, localAxis, botAxis);
             accumulatedTime -= GameConstants.FixedStepSeconds;
         }
         actions.BotControllersToDispose = bot.TakeRetiredControllers();
@@ -197,7 +197,7 @@ internal sealed partial class PongPeer
             now - _lastRestartSent >= NetworkConstants.RestartRetryInterval)
         {
             _lastRestartSent = now;
-            actions.Packet = new RestartPacket { SessionId = sessionId, RequestId = restartId };
+            actions.Packet = new RestartPacket { SessionId = sessionId, RequestId = restartId, ExpectedRoundId = _restartAfterRound };
         }
         if (!_guestTimeline.Started)
         {
@@ -234,7 +234,7 @@ internal sealed partial class PongPeer
             Phase = state.Phase, Countdown = state.Countdown, RoundId = state.RoundId,
             ServeDirection = state.ServeDirection, Hits = state.Hits, HostAxis = _lastHostAxis,
             RecentEvents = state.RecentEvents.ToArray(),
-            LastEventTick = state.LastEventTick, EventOrdinal = state.EventOrdinal
+            LastEventTick = state.LastEventTick, EventOrdinal = state.EventOrdinal, HostSide = _hostSide!.Value
         };
     }
 }

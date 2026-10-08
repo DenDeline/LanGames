@@ -20,8 +20,8 @@ namespace LanPong;
 [MessagePackObject]
 public abstract record WirePacket
 {
-    // Version 8 includes bounded player nicknames in the handshake.
-    public const int CurrentVersion = 8;
+    // Version 9 carries authoritative sides and finished-round rematch fences.
+    public const int CurrentVersion = 9;
 
     [Key(0)]
     public int Version { get; set; } = CurrentVersion;
@@ -39,6 +39,10 @@ public sealed record HelloPacket : WirePacket
 [MessagePackObject]
 public sealed record WelcomePacket : WirePacket
 {
+    [Key(4)]
+    public PaddleSide HostSide { get; init; }
+    [Key(5)]
+    public int RoundId { get; init; }
     [Key(1)]
     public Guid SessionId { get; init; }
     [Key(2)]
@@ -89,6 +93,8 @@ public sealed record InputPacket : WirePacket
 [MessagePackObject]
 public sealed record StatePacket : WirePacket
 {
+    [Key(20)]
+    public PaddleSide HostSide { get; init; }
     [Key(1)]
     public Guid SessionId { get; init; }
     [Key(2)]
@@ -145,6 +151,8 @@ public sealed record StatePacket : WirePacket
 [MessagePackObject]
 public sealed record RestartPacket : WirePacket
 {
+    [Key(3)]
+    public int ExpectedRoundId { get; init; }
     [Key(1)]
     public Guid SessionId { get; init; }
     [Key(2)]
@@ -180,7 +188,7 @@ internal static class WirePacketCodec
 {
     internal const int MaxPacketBytes = 1200;
 
-    // Generated packet formatters avoid Reflection.Emit under Native AOT; native Guid bytes are part of UDP v8.
+    // Generated packet formatters avoid Reflection.Emit under Native AOT; native Guid bytes are part of UDP v9.
     private static readonly MessagePackSerializerOptions Options = new MessagePackSerializerOptions(
             CompositeResolver.Create(
                 [],
@@ -199,32 +207,34 @@ internal static class WirePacketCodec
 
         try
         {
-            var decoded = MessagePackSerializer.Deserialize<WirePacket>(data, Options);
+            var reader = new MessagePackReader(new ReadOnlySequence<byte>(data));
+            var decoded = MessagePackSerializer.Deserialize<WirePacket>(ref reader, Options);
+            if (!reader.End) return false;
             if (decoded is not { Version: WirePacket.CurrentVersion } ||
                 decoded is HelloPacket hello &&
                 (hello.RequestId == Guid.Empty || !PlayerNickname.IsValid(hello.Nickname)) ||
                 decoded is WelcomePacket welcome &&
                 (welcome.SessionId == Guid.Empty || welcome.RequestId == Guid.Empty ||
-                 !PlayerNickname.IsValid(welcome.Nickname)) ||
+                 !PlayerNickname.IsValid(welcome.Nickname) || !PaddleSides.IsPhysical(welcome.HostSide) || welcome.RoundId <= 0) ||
                 decoded is ChallengePendingPacket pending &&
                 (pending.RequestId == Guid.Empty || !PlayerNickname.IsValid(pending.Nickname)) ||
                 decoded is ChallengeDeclinedPacket declined && declined.RequestId == Guid.Empty ||
                 decoded is CancelChallengePacket cancel && cancel.RequestId == Guid.Empty ||
                 decoded is InputPacket input &&
                 (input.SessionId == Guid.Empty || input.Sequence < 0 || input.Tick <= 0 ||
-                 input.RoundId < 0 ||
+                 input.RoundId <= 0 ||
                  input.Axes is not { Length: >= 1 and <= NetworkConstants.InputRedundancyTicks } ||
                  input.Axes.Any(axis => axis is < -1 or > 1)) ||
                 decoded is StatePacket state &&
                 (state.SessionId == Guid.Empty || !Enum.IsDefined(state.Phase) ||
-                 state.Sequence < 0 || state.RoundId < 0 ||
+                 state.Sequence < 0 || state.RoundId <= 0 || !PaddleSides.IsPhysical(state.HostSide) ||
                  state.ServeDirection is not (-1 or 1) || state.Hits < 0 ||
                  state.HostAxis is < -1 or > 1 || state.LastEventTick < -1 ||
                  state.LastEventTick > state.Sequence || state.EventOrdinal < 0 ||
                  state.RecentEvents is not { Length: <= GameEventHistory.Capacity } ||
                  !ValidEvents(state.RecentEvents!, state.Sequence)) ||
                 decoded is RestartPacket restart &&
-                (restart.SessionId == Guid.Empty || restart.RequestId == Guid.Empty) ||
+                (restart.SessionId == Guid.Empty || restart.RequestId == Guid.Empty || restart.ExpectedRoundId <= 0) ||
                 decoded is PingPacket ping && ping.SessionId == Guid.Empty ||
                 decoded is PongPacket pong && pong.SessionId == Guid.Empty ||
                 decoded is ByePacket bye && bye.SessionId == Guid.Empty)
@@ -233,7 +243,8 @@ internal static class WirePacketCodec
             packet = decoded;
             return true;
         }
-        catch (MessagePackSerializationException)
+        catch (Exception error) when (error is MessagePackSerializationException or InvalidOperationException
+                                        or EndOfStreamException or OverflowException)
         {
             return false;
         }
@@ -297,7 +308,12 @@ public sealed record PongSnapshot(
     string? EffectiveBotId = null,
     string? EffectiveBotName = null,
     bool OpponentFallbackActive = false,
-    string? BotFallbackReason = null)
+    string? BotFallbackReason = null,
+    PaddleSide? LocalSide = null,
+    string? MatchId = null,
+    string SourceId = "",
+    long SnapshotSequence = 0,
+    bool CanRematch = false)
 {
     // HTTP snapshots and browser WebSocket snapshots share the same contract version.
     public int Version => BrowserWebSocketProtocol.Version;

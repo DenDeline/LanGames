@@ -151,7 +151,7 @@ export class MotionModel {
       : 0;
     const previousDisplay = last ? this.displayedMotion(now, next) : null;
     const hadMotionCorrection = this.motionCorrection !== null;
-    const localSide = next.role === "host" ? "left" : next.role === "guest" ? "right" : null;
+    const localSide = next.localSide;
     const previousLocalY = this.localPaddle?.y;
     if (tickGap < 0 || tickGap > MAX_CONTIGUOUS_TICK_GAP) this.motionSamples.length = 0;
     if (last && tickGap === 0 && this.motionSamples.length > 0) this.motionSamples.pop();
@@ -291,13 +291,13 @@ export class MotionModel {
     const isActive =
       snapshot.connection === "connected" &&
       (snapshot.phase === "countdown" || snapshot.phase === "playing") &&
-      (snapshot.role === "host" || snapshot.role === "guest");
+      snapshot.localSide !== null;
     if (!isActive) {
       this.localPaddle = null;
       return null;
     }
 
-    const side = snapshot.role === "host" ? "left" : "right";
+    const side = snapshot.localSide!;
     const authoritativeY = clamp(
       (side === "left" ? snapshot.leftY : snapshot.rightY) + this.paddleOffset(side, now),
       MIN_PADDLE_Y,

@@ -32,7 +32,7 @@ public sealed class BotCatalogContractTests
 
         var catalog = runtime.DescribeCatalog();
         runtime.DescribeCatalog();
-        await Assert.That(catalog.Version).IsEqualTo(8);
+        await Assert.That(catalog.Version).IsEqualTo(9);
         await Assert.That(catalog.DefaultBotId).IsEqualTo("default-bot");
         await Assert.That(string.Join(',', catalog.Bots.Select(bot => bot.Id))).IsEqualTo("model,alpha,default-bot,disabled");
         await Assert.That(models.Definitions.Count).IsEqualTo(0);
@@ -58,7 +58,7 @@ public sealed class BotCatalogContractTests
 
         var serialized = JsonSerializer.Serialize(catalog, AppJsonSerializerContext.Default.BotCatalogResponse);
         using var json = JsonDocument.Parse(serialized);
-        await Assert.That(json.RootElement.GetProperty("version").GetInt32()).IsEqualTo(8);
+        await Assert.That(json.RootElement.GetProperty("version").GetInt32()).IsEqualTo(9);
         await Assert.That(json.RootElement.GetProperty("defaultBotId").GetString()).IsEqualTo("default-bot");
         var publicBots = json.RootElement.GetProperty("bots");
         await Assert.That(publicBots[0].GetProperty("availability").GetString()).IsEqualTo("notChecked");
@@ -131,7 +131,7 @@ public sealed class BotCatalogContractTests
         ], Factory(BotSettingsKind.Onnx, _ => new TrackedBotController { FailReset = _ => true }),
             new TrackerBotStrategyFactory());
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, runtime);
-        await peer.StartBotAsync(humanNickname, "requested");
+        await peer.StartBotAsync(humanNickname, "requested", InitialSidePreference.Left);
         var snapshot = peer.Snapshot();
 
         await Assert.That(snapshot.RequestedBotId).IsEqualTo("requested");
@@ -153,8 +153,8 @@ public sealed class BotCatalogContractTests
         var buffer = new ArrayBufferWriter<byte>();
         BrowserWebSocketProtocol.WriteSnapshot(snapshot, buffer);
         var (fields, version, decoded, atEnd) = BrowserWebSocketProtocolTests.ReadSnapshot(buffer.WrittenMemory);
-        await Assert.That(fields).IsEqualTo(30);
-        await Assert.That(version).IsEqualTo(8);
+        await Assert.That(fields).IsEqualTo(35);
+        await Assert.That(version).IsEqualTo(9);
         await Assert.That(atEnd).IsTrue();
         await Assert.That(decoded with
         {
@@ -170,7 +170,7 @@ public sealed class BotCatalogContractTests
             BotTestSupport.Runtime([
                 BotTestSupport.Tracker("available"), BotTestSupport.Tracker("disabled", enabled: false)
             ], factory));
-        var missing = JsonSerializer.Deserialize("{\"nickname\":\"Игрок\"}",
+        var missing = JsonSerializer.Deserialize("{\"nickname\":\"Игрок\",\"side\":\"left\"}",
             AppJsonSerializerContext.Default.LocalOpponentRequest)!;
         await Assert.That(missing.BotId).IsNull();
         foreach (var (id, reason) in new (string? Id, string Reason)[]
@@ -180,19 +180,19 @@ public sealed class BotCatalogContractTests
             (" available", "Неизвестный бот."), ("disabled", "Этот бот отключён.")
         })
         {
-            var error = await BotTestSupport.CaptureAsync(() => peer.StartBotAsync(missing.Nickname, id));
+            var error = await BotTestSupport.CaptureAsync(() => peer.StartBotAsync(missing.Nickname, id, InitialSidePreference.Left));
             await Assert.That(error).IsNotNull();
             await Assert.That(error!.Message).IsEqualTo(reason);
             await Assert.That(peer.BotStatus).IsNull();
             await Assert.That(peer.Snapshot().Connection).IsEqualTo(ConnectionState.Idle);
         }
         await Assert.That(factory.Definitions.Count).IsEqualTo(0);
-        var tooLong = await BotTestSupport.CaptureAsync(() => peer.StartBotAsync(new string('И', 25), "available"));
+        var tooLong = await BotTestSupport.CaptureAsync(() => peer.StartBotAsync(new string('И', 25), "available", InitialSidePreference.Left));
         await Assert.That(tooLong is ArgumentException).IsTrue();
         await Assert.That(factory.Definitions.Count).IsEqualTo(0);
-        var selected = JsonSerializer.Deserialize("{\"nickname\":\"Игрок\",\"botId\":\"available\"}",
+        var selected = JsonSerializer.Deserialize("{\"nickname\":\"Игрок\",\"botId\":\"available\",\"side\":\"left\"}",
             AppJsonSerializerContext.Default.LocalOpponentRequest)!;
-        await peer.StartBotAsync(selected.Nickname, selected.BotId);
+        await peer.StartBotAsync(selected.Nickname, selected.BotId, InitialSidePreference.Left);
         await Assert.That(peer.Snapshot().RequestedBotId).IsEqualTo("available");
     }
 

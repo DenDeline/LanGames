@@ -28,6 +28,7 @@ async function main() {
   let reducedMotion = false;
   const scrollCalls = [];
   const scoreFlashes = { left: 0, right: 0 };
+  const localScoreMarks = { left: false, right: false };
 
   Object.defineProperty(globalThis, "performance", {
     configurable: true,
@@ -282,7 +283,9 @@ async function main() {
   ]) {
     score.parentElement = {
       classList: {
-        toggle() {},
+        toggle(name, enabled) {
+          if (name === "is-local") localScoreMarks[side] = enabled;
+        },
         remove() {},
         add(name) {
           if (name === "is-scored") scoreFlashes[side]++;
@@ -330,6 +333,7 @@ async function main() {
   const botIdentity = (id, name, effectiveId = id, effectiveName = name) => ({
     ...noBotIdentity,
     opponentMode: "bot",
+    localSide: "left",
     requestedBotId: id,
     requestedBotName: name,
     effectiveBotId: effectiveId,
@@ -339,19 +343,44 @@ async function main() {
     pingMs: null,
     udpPort: 0,
   });
-  const httpSnapshot = (changes = {}) => ({
-    ...defaultSnapshot,
-    localNickname: "Лиса",
-    ...changes,
+  let fixtureMatchCounter = 0;
+  const nextMatchId = () => (++fixtureMatchCounter).toString(16).padStart(32, "0");
+  const fixtureSourceId = "abcdefabcdefabcdefabcdefabcdefab";
+  let fixtureCaptureSequence = 0;
+  const captureSnapshot = (value) => ({
+    ...value,
+    sourceId: value.sourceId ?? fixtureSourceId,
+    snapshotSequence: ++fixtureCaptureSequence,
   });
+  const httpSnapshot = (changes = {}) =>
+    captureSnapshot({
+      ...defaultSnapshot,
+      localNickname: "Лиса",
+      ...changes,
+    });
   const apply = (changes, source = "websocket") => {
+    const role = changes.role ?? "host";
+    const mode = changes.opponentMode ?? "lan";
+    const assigned = (changes.connection ?? "connected") === "connected";
+    const matchId = assigned
+      ? (changes.matchId ??
+        (session.snapshot.matchId !== null &&
+        session.snapshot.role === role &&
+        session.snapshot.opponentMode === mode &&
+        session.snapshot.roundId === (changes.roundId ?? 1) &&
+        session.snapshot.requestedBotId === (changes.requestedBotId ?? null)
+          ? session.snapshot.matchId
+          : nextMatchId()))
+      : null;
     session.apply(
       {
         ...httpSnapshot(),
         opponentMode: "lan",
         role: "host",
+        localSide: changes.localSide ?? (changes.role === "guest" ? "right" : "left"),
         connection: "connected",
         phase: "playing",
+        canRematch: false,
         roundId: 1,
         tick: 100,
         ballX: 0.2,
@@ -361,6 +390,8 @@ async function main() {
         leftY: 0.5,
         rightY: 0.4,
         ...changes,
+        matchId,
+        ...(changes.connection && changes.connection !== "connected" ? { localSide: null } : {}),
       },
       source,
     );
@@ -425,7 +456,7 @@ async function main() {
   assert.equal(motion.correction, null);
   assert.ok(trailResets > 0);
   now += 1000 / 60;
-  apply({ tick: 151, phase: "countdown", ballX: 0.5, ballVx: 0, leftScore: 1 });
+  apply({ tick: 151, phase: "countdown", canRematch: false, ballX: 0.5, ballVx: 0, leftScore: 1 });
   assert.equal(motion.sampleCount, 1);
   assert.equal(motion.correction, null);
 
@@ -546,6 +577,49 @@ async function main() {
   assert.equal(feedback.pulse.scorer, "right");
   assert.equal(scoreFlashes.right, 1);
 
+  // Goal sounds follow physical ownership for either network role.
+  const ownedSounds = [];
+  const ownershipFeedback = new FeedbackController(leftScore, rightScore, {
+    playChallengeSound() {},
+    playFeedbackSound(...args) {
+      ownedSounds.push(args);
+    },
+  });
+  for (const role of ["host", "guest"]) {
+    for (const localSide of ["left", "right"]) {
+      const base = httpSnapshot({
+        role,
+        localSide,
+        matchId: nextMatchId(),
+        connection: "connected",
+        opponentMode: "lan",
+        phase: "playing",
+        canRematch: false,
+        roundId: 1,
+      });
+      ownershipFeedback.process(base, defaultSnapshot);
+      const ownGoal = {
+        id: `${role}-${localSide}-own`,
+        kind: "goal",
+        tick: 1,
+        x: localSide === "left" ? 1 : 0,
+        y: 0.5,
+      };
+      ownershipFeedback.process({ ...base, events: [ownGoal] }, base);
+      assert.deepEqual(ownedSounds.at(-1), ["goal", true, false]);
+      const peerGoal = {
+        ...ownGoal,
+        id: `${role}-${localSide}-peer`,
+        x: localSide === "left" ? 0 : 1,
+      };
+      ownershipFeedback.process(
+        { ...base, phase: "gameover", canRematch: true, events: [ownGoal, peerGoal] },
+        base,
+      );
+      assert.deepEqual(ownedSounds.at(-1), ["goal", false, true]);
+    }
+  }
+
   // Web Audio is optional. Muting prevents tones without hiding visual feedback.
   class AudioContextStub {
     state = "running";
@@ -603,7 +677,10 @@ async function main() {
 
   // The host hears one alert per incoming challenge, not on every snapshot.
   const applyChallenge = (connection, role = "host", source = "websocket") =>
-    apply({ role, connection, phase: "waiting", roundId: 22, tick: 0, events: [] }, source);
+    apply(
+      { role, connection, phase: "waiting", canRematch: false, roundId: 22, tick: 0, events: [] },
+      source,
+    );
   applyChallenge("waiting");
   applyChallenge("incomingChallenge");
   assert.equal(playedTones, 7);
@@ -759,7 +836,7 @@ async function main() {
     ...extra,
   });
   const browserCatalog = {
-    version: 8,
+    version: 9,
     defaultBotId: "calm",
     bots: [
       catalogEntry("calm", "Тихий"),
@@ -774,6 +851,7 @@ async function main() {
     role: "none",
     connection: "idle",
     phase: "waiting",
+    canRematch: false,
   });
   renderView(selectionIdle, false, false);
   assert.equal(checkedId(), "calm");
@@ -855,7 +933,7 @@ async function main() {
   assert.equal(ui.joinButton.disabled, false);
 
   const fallbackCatalog = {
-    version: 8,
+    version: 9,
     defaultBotId: "primary",
     bots: [
       catalogEntry("primary", "Основной", {
@@ -904,7 +982,7 @@ async function main() {
 
   const htmlName = `<b>${"Х".repeat(57)}</b>`;
   const groupedCatalog = {
-    version: 8,
+    version: 9,
     defaultBotId: "alfa",
     bots: [
       catalogEntry("alfa", "Альфа", { order: 5, category: "Практика", glyph: "✦" }),
@@ -1005,6 +1083,7 @@ async function main() {
       role: "host",
       connection: "connected",
       phase: "playing",
+      canRematch: false,
     },
     false,
     false,
@@ -1046,6 +1125,8 @@ async function main() {
       ...lanSnapshot,
       role: "host",
       connection: "waiting",
+      localSide: null,
+      matchId: null,
       udpPort: 59123,
       localNickname: "Лиса",
       peerNickname: "Кот",
@@ -1053,8 +1134,8 @@ async function main() {
     false,
     false,
   );
-  assert.equal(ui.leftPlayer.textContent, "Лиса");
-  assert.equal(ui.rightPlayer.textContent, "Кот");
+  assert.equal(ui.leftPlayer.textContent, "Игрок 1");
+  assert.equal(ui.rightPlayer.textContent, "Игрок 2");
   assert.equal(ui.shareNickname.textContent, "Лиса");
   assert.equal(ui.sharePort.textContent, "59123");
   assert.equal(ui.shareBox.hidden, false);
@@ -1063,7 +1144,13 @@ async function main() {
   assert.equal(ui.playerNickname.value, "Лиса");
   assert.equal(ui.playerNickname.disabled, true);
   renderView(
-    { ...lanSnapshot, role: "guest", localNickname: "Кот", peerNickname: "Лиса" },
+    {
+      ...lanSnapshot,
+      role: "guest",
+      localSide: "right",
+      localNickname: "Кот",
+      peerNickname: "Лиса",
+    },
     false,
     false,
   );
@@ -1075,10 +1162,13 @@ async function main() {
       ...lanSnapshot,
       role: "host",
       connection: "incomingChallenge",
+      localSide: null,
+      matchId: null,
       peerAddress: "192.168.1.43:47777",
       localNickname: "Лиса",
       peerNickname: "Кот",
       phase: "waiting",
+      canRematch: false,
     },
     false,
     false,
@@ -1095,6 +1185,7 @@ async function main() {
       role: "host",
       connection: "connected",
       phase: "gameover",
+      canRematch: true,
       leftScore: 5,
       rightScore: 3,
       localNickname: "Лиса",
@@ -1114,6 +1205,7 @@ async function main() {
       role: "host",
       connection: "connected",
       phase: "playing",
+      canRematch: false,
       localNickname: "Лиса",
       peerNickname: "",
       peerAddress: null,
@@ -1148,6 +1240,7 @@ async function main() {
       role: "host",
       connection: "connected",
       phase: "gameover",
+      canRematch: true,
       leftScore: 5,
       rightScore: 3,
       localNickname: "Лиса",
@@ -1169,6 +1262,7 @@ async function main() {
       role: "host",
       connection: "connected",
       phase: "playing",
+      canRematch: false,
       localNickname: "Лиса",
       message: "Игра против Hard.",
     },
@@ -1192,6 +1286,7 @@ async function main() {
       role: "host",
       connection: "connected",
       phase: "playing",
+      canRematch: false,
       localNickname: "Лиса",
       message: "Сообщение игрового цикла",
     },
@@ -1214,6 +1309,7 @@ async function main() {
       role: "host",
       connection: "connected",
       phase: "gameover",
+      canRematch: true,
       localNickname: "Лиса",
       message: "Матч завершён",
     },
@@ -1223,7 +1319,15 @@ async function main() {
   assert.equal(ui.opponentFallback.hidden, false);
   assert.equal(ui.restartButton.textContent, "Реванш с «Тихий»");
   renderView(
-    { ...lanSnapshot, role: "guest", connection: "awaitingAcceptance", phase: "waiting" },
+    {
+      ...lanSnapshot,
+      role: "guest",
+      localSide: null,
+      matchId: null,
+      connection: "awaitingAcceptance",
+      phase: "waiting",
+      canRematch: false,
+    },
     false,
     false,
   );
@@ -1294,13 +1398,26 @@ async function main() {
   );
   const visualApply = (changes, at, source = "websocket") => {
     now = at;
+    const role = changes.role ?? "host";
+    const mode = changes.opponentMode ?? "lan";
+    const matchId =
+      changes.matchId ??
+      (visualSession.snapshot.matchId !== null &&
+      visualSession.snapshot.role === role &&
+      visualSession.snapshot.opponentMode === mode &&
+      visualSession.snapshot.roundId === (changes.roundId ?? 44) &&
+      visualSession.snapshot.requestedBotId === (changes.requestedBotId ?? null)
+        ? visualSession.snapshot.matchId
+        : nextMatchId());
     visualSession.apply(
       {
         ...httpSnapshot(),
         opponentMode: "lan",
         role: "host",
+        localSide: changes.localSide ?? (changes.role === "guest" ? "right" : "left"),
         connection: "connected",
         phase: "playing",
+        canRematch: false,
         roundId: 44,
         tick: 10,
         ballX: 0.3,
@@ -1310,6 +1427,8 @@ async function main() {
         leftY: 0.5,
         rightY: 0.4,
         ...changes,
+        matchId,
+        ...(changes.connection && changes.connection !== "connected" ? { localSide: null } : {}),
       },
       source,
     );
@@ -1396,6 +1515,46 @@ async function main() {
   assert.ok(visualLocal(3132, -1) < beforeOppositeCorrection + 0.05);
   assert.ok(visualLocal(3196, -1) > 0.7);
 
+  // Canvas local prediction overlays the selected physical paddle, independently of role.
+  for (const role of ["host", "guest"]) {
+    for (const localSide of ["left", "right"]) {
+      const drawn = [];
+      const ctx = drawingContext();
+      ctx.roundRect = (...args) => drawn.push(args);
+      const ownerCanvas = element("canvas");
+      ownerCanvas.getContext = () => ctx;
+      const ownerSnapshot = {
+        ...httpSnapshot(),
+        role,
+        localSide,
+        matchId: nextMatchId(),
+        connection: "connected",
+        opponentMode: "lan",
+        phase: "playing",
+        canRematch: false,
+        roundId: 1,
+      };
+      const renderer = new ArenaRenderer(
+        ownerCanvas,
+        {
+          displayedMotion() {
+            return { ballX: 0.5, ballY: 0.5, leftY: 0.2, rightY: 0.8 };
+          },
+          displayedLocalPaddle() {
+            return 0.6;
+          },
+        },
+        () => ownerSnapshot,
+        () => 1,
+        () => null,
+      );
+      renderer.resize(1000, 500, window.devicePixelRatio);
+      renderer.draw(now);
+      close(drawn[0][1], (localSide === "left" ? 0.6 : 0.2) * 500 - 45);
+      close(drawn[1][1], (localSide === "right" ? 0.6 : 0.8) * 500 - 45);
+    }
+  }
+
   // A mode switch resets prediction even when the round and tick are unchanged.
   visualApply({ ...noBotIdentity, opponentMode: "lan", roundId: 50, tick: 10 }, 3200);
   visualApply({ ...noBotIdentity, opponentMode: "lan", roundId: 50, tick: 11 }, 3216);
@@ -1434,6 +1593,58 @@ async function main() {
   );
   assert.equal(visualResets, resetsBeforeFallback);
   assert.equal(visualMotion.sampleCount, 2);
+
+  // Names, completed winner and local score marks follow side, while sharing stays role-based.
+  for (const role of ["host", "guest"]) {
+    for (const localSide of ["left", "right"]) {
+      const own = {
+        ...httpSnapshot(),
+        opponentMode: "lan",
+        role,
+        localSide,
+        matchId: nextMatchId(),
+        roundId: 1,
+        connection: "connected",
+        phase: "gameover",
+        canRematch: true,
+        localNickname: "Свой",
+        peerNickname: "Друг",
+        leftScore: 7,
+        rightScore: 2,
+      };
+      renderView(own, false, false);
+      assert.equal(ui.leftPlayer.textContent, localSide === "left" ? "Свой" : "Друг");
+      assert.equal(ui.rightPlayer.textContent, localSide === "right" ? "Свой" : "Друг");
+      assert.equal(localScoreMarks.left, localSide === "left");
+      assert.equal(localScoreMarks.right, localSide === "right");
+      assert.equal(
+        ui.overlayTitle.textContent,
+        `Победа: ${localSide === "left" ? "Свой" : "Друг"}`,
+      );
+      assert.equal(ui.roleBadge.dataset.role, role);
+      assert.equal(ui.roleBadge.dataset.side, localSide);
+      assert.equal(ui.roleDetail.textContent, localSide === "left" ? "Вы — слева" : "Вы — справа");
+    }
+  }
+  renderView(
+    {
+      ...httpSnapshot(),
+      ...botIdentity("calm", "Тихий"),
+      role: "host",
+      localSide: "right",
+      matchId: nextMatchId(),
+      roundId: 1,
+      connection: "connected",
+      phase: "countdown",
+      canRematch: false,
+    },
+    false,
+    false,
+  );
+  assert.equal(ui.leftPlayer.textContent, "Бот Тихий");
+  assert.equal(ui.rightPlayer.textContent, "Лиса");
+  assert.match(ui.overlayDescription.textContent, /Вы справа/);
+  assert.match(ui.sessionMessage.textContent, /правой.*Слева.*Тихий/);
 
   // A compact selection form launches the chosen profile; the body-level
   // native dialog retains full profiles without nested forms or launch controls.
@@ -1508,6 +1719,7 @@ async function main() {
     opponentMode: "none",
     connection: "idle",
     phase: "waiting",
+    canRematch: false,
     roundId: 60,
     tick: 0,
   });
@@ -1516,6 +1728,12 @@ async function main() {
   let discoveredHosts = [];
   let holdNextDiscovery = false;
   let releaseDiscovery = null;
+  let holdNextStatus = false;
+  let releaseStatus = null;
+  let guestRestartPending = false;
+  let rejectRestartWithoutStopping = false;
+  let pushLaterRoundDuringRestart = false;
+  let supersedeRestartWithNewMatch = false;
   let holdNextAction = false;
   let releaseAction = null;
   let quickMatchesGuest = false;
@@ -1535,6 +1753,14 @@ async function main() {
   let serverSnapshot = idleSnapshot;
   globalThis.fetch = async (path, options) => {
     requests.push({ path, options });
+    if (path === "/api/status" && holdNextStatus) {
+      holdNextStatus = false;
+      const captured = captureSnapshot(serverSnapshot);
+      await new Promise((resolve) => {
+        releaseStatus = resolve;
+      });
+      return { ok: true, text: async () => JSON.stringify(captured) };
+    }
     if (path === "/api/discover") {
       if (holdNextDiscovery) {
         holdNextDiscovery = false;
@@ -1566,6 +1792,13 @@ async function main() {
         ok: false,
         status: 400,
         text: async () => JSON.stringify({ error: "Выбранный бот недоступен." }),
+      };
+    }
+    if (path === "/api/restart" && rejectRestartWithoutStopping) {
+      return {
+        ok: false,
+        status: 400,
+        text: async () => JSON.stringify({ error: "Этот матч уже завершён иначе." }),
       };
     }
     if (path === "/api/restart" && rejectRestart) {
@@ -1610,24 +1843,34 @@ async function main() {
           role: "host",
           connection: "connected",
           phase: "countdown",
+          canRematch: false,
           localNickname: "Browser Tester",
           roundId: 61,
+          localSide: "left",
+          matchId: nextMatchId(),
         }
       : path === "/api/restart"
-        ? {
-            ...serverSnapshot,
-            phase: "countdown",
-            roundId: serverSnapshot.roundId + 1,
-            tick: 0,
-            leftScore: 0,
-            rightScore: 0,
-          }
+        ? guestRestartPending
+          ? { ...serverSnapshot }
+          : {
+              ...serverSnapshot,
+              phase: "countdown",
+              canRematch: false,
+              roundId: serverSnapshot.roundId + 1,
+              localSide: serverSnapshot.localSide === "left" ? "right" : "left",
+              tick: 0,
+              leftScore: 0,
+              rightScore: 0,
+            }
         : path === "/api/quick"
           ? {
               ...idleSnapshot,
               opponentMode: "lan",
               role: quickMatchesGuest ? "guest" : "host",
               connection: quickMatchesGuest ? "connected" : "waiting",
+              localSide: quickMatchesGuest ? "left" : null,
+              matchId: quickMatchesGuest ? nextMatchId() : null,
+              roundId: quickMatchesGuest ? 61 : 60,
               phase: quickMatchesGuest ? "countdown" : "waiting",
               localNickname: JSON.parse(options.body).nickname,
               udpPort: 49123,
@@ -1658,40 +1901,73 @@ async function main() {
       pushSnapshot({
         ...data,
         phase: "gameover",
+        canRematch: true,
         roundId: data.roundId - 1,
+        localSide: data.localSide === "left" ? "right" : "left",
         tick: 100,
         leftScore: 5,
         rightScore: 3,
       });
     }
+    if (path === "/api/restart" && pushLaterRoundDuringRestart) {
+      pushLaterRoundDuringRestart = false;
+      serverSnapshot = {
+        ...data,
+        roundId: data.roundId + 1,
+        localSide: data.localSide === "left" ? "right" : "left",
+        phase: "playing",
+        canRematch: false,
+      };
+      pushSnapshot(serverSnapshot);
+    }
+    if (path === "/api/restart" && supersedeRestartWithNewMatch) {
+      supersedeRestartWithNewMatch = false;
+      serverSnapshot = { ...data, matchId: nextMatchId(), phase: "playing", canRematch: false };
+      pushSnapshot(serverSnapshot);
+    }
     if (selected && pushNewerBotDuringStart) {
       pushNewerBotDuringStart = false;
-      serverSnapshot = { ...data, phase: "playing", tick: 5 };
+      serverSnapshot = { ...data, phase: "playing", canRematch: false, tick: 5 };
       pushSnapshot(serverSnapshot);
     }
     if (selected && pushIdleBeforeMatchingBotResponse) {
       pushIdleBeforeMatchingBotResponse = false;
       if (statusAfterIdleFrame === "left") serverSnapshot = idleSnapshot;
       if (statusAfterIdleFrame === "later-round")
-        serverSnapshot = { ...data, phase: "playing", roundId: data.roundId + 1, tick: 5 };
+        serverSnapshot = {
+          ...data,
+          phase: "playing",
+          canRematch: false,
+          roundId: data.roundId + 1,
+          localSide: data.localSide === "left" ? "right" : "left",
+          tick: 5,
+        };
       statusAfterIdleFrame = null;
       pushSnapshot(idleSnapshot);
     }
     if (selected && supersedingBotDuringStart !== null) {
       const newer = browserCatalog.bots.find((bot) => bot.id === supersedingBotDuringStart);
       supersedingBotDuringStart = null;
-      serverSnapshot = { ...data, ...botIdentity(newer.id, newer.name), phase: "playing", tick: 5 };
+      serverSnapshot = {
+        ...data,
+        ...botIdentity(newer.id, newer.name),
+        phase: "playing",
+        canRematch: false,
+        tick: 5,
+      };
       pushSnapshot(serverSnapshot);
     }
     return {
       ok: true,
-      text: async () => JSON.stringify(path === "/api/status" ? serverSnapshot : data),
+      text: async () =>
+        JSON.stringify(captureSnapshot(path === "/api/status" ? serverSnapshot : data)),
     };
   };
   const { encode, decode } = await import("@msgpack/msgpack");
-  const pushSnapshot = (next) => {
+  const pushSnapshot = (next, captured = false) => {
+    if (!captured) next = captureSnapshot(next);
     const payload = [
-      8,
+      9,
       ["none", "host", "guest"].indexOf(next.role),
       [
         "idle",
@@ -1729,6 +2005,11 @@ async function main() {
       next.effectiveBotName,
       next.opponentFallbackActive,
       next.botFallbackReason,
+      next.localSide === null ? null : next.localSide === "left" ? 1 : 2,
+      next.matchId,
+      next.sourceId,
+      next.snapshotSequence,
+      next.canRematch,
     ];
     WebSocket.instances
       .at(-1)
@@ -1745,7 +2026,9 @@ async function main() {
   await flush();
   const browserSocket = WebSocket.instances.at(-1);
   browserSocket.readyState = WebSocket.OPEN;
-  const lastSentAxis = () => decode(new Uint8Array(browserSocket.sent.at(-1)))[1];
+  const lastSentControl = () =>
+    browserSocket.sent.length ? decode(new Uint8Array(browserSocket.sent.at(-1))) : [9, null, 0, 0];
+  const lastSentAxis = () => lastSentControl()[3];
   assert.equal(checkedId(), "calm");
   assert.equal(radios().length, 3);
   assert.equal(ui.botButton.disabled, false);
@@ -1784,7 +2067,7 @@ async function main() {
   // path keeps the native selection and synchronously returns to its opener.
   const beforePickerPosts = postRequests();
   window.dispatch("keydown", { key: "ArrowDown", target: ui.arenaPanel });
-  assert.equal(lastSentAxis(), 1);
+  assert.equal(browserSocket.sent.length, 0, "Idle input has no assigned round to control");
   ui.botPickerOpen.focus();
   ui.botPickerOpen.dispatch("click");
   assert.equal(ui.botPicker.open, true);
@@ -1884,7 +2167,14 @@ async function main() {
     { ...sharingHost, connection: "incomingChallenge", peerNickname: "Друг" },
     { ...sharingHost, role: "guest", connection: "awaitingAcceptance" },
     { ...sharingHost, connection: "disconnected" },
-    { ...sharingHost, connection: "connected", phase: "gameover" },
+    {
+      ...sharingHost,
+      connection: "connected",
+      localSide: "left",
+      matchId: nextMatchId(),
+      phase: "gameover",
+      canRematch: true,
+    },
     { ...sharingHost, role: "none", connection: "searching" },
   ]) {
     if (snapshot.connection === "disconnected") renderView(snapshot, false, false);
@@ -2070,7 +2360,8 @@ async function main() {
   const beforeFirstPlayFocus = ui.arenaPanel.focusCalls.length;
   const beforeFirstPlayStatus = statusRequests();
   window.dispatch("keydown", { key: "ArrowDown" });
-  assert.equal(lastSentAxis(), 1);
+  const controlsBeforeStart = browserSocket.sent.length;
+  assert.equal(lastSentAxis(), 0, "Idle held keys cannot send a roundless control");
   pushIdleBeforeMatchingBotResponse = true;
   submitBot();
   await flush();
@@ -2115,6 +2406,7 @@ async function main() {
   assert.deepEqual(JSON.parse(botRequest.options.body), {
     nickname: "Browser Tester",
     botId: "calm",
+    side: "left",
   });
   assert.equal(ui.arenaModeLabel.textContent, "Против бота · Тихий");
   assert.equal(ui.rightPlayer.textContent, "Бот Тихий");
@@ -2191,6 +2483,9 @@ async function main() {
     role: "host",
     connection: "connected",
     phase: "playing",
+    canRematch: false,
+    localSide: "left",
+    matchId: nextMatchId(),
     udpPort: 47777,
     peerAddress: "192.168.1.42:47777",
     localNickname: "Browser Tester",
@@ -2221,6 +2516,7 @@ async function main() {
   assert.deepEqual(JSON.parse(extraRequest.options.body), {
     nickname: "Browser Tester",
     botId: "config-only-opponent",
+    side: "left",
   });
   assert.equal(ui.rightPlayer.textContent, "Бот Дополнительный бот из конфигурации");
   assert.equal(checkedId(), "config-only-opponent");
@@ -2348,6 +2644,7 @@ async function main() {
     opponentFallbackActive: true,
     botFallbackReason: "Выбранный бот перестал отвечать.",
     phase: "playing",
+    canRematch: false,
     tick: 10,
   };
   pushSnapshot(serverSnapshot);
@@ -2359,13 +2656,21 @@ async function main() {
   pushSnapshot({ ...serverSnapshot, tick: 11 });
   await flush();
   assert.equal(catalogRequests(), beforeFallback + 1);
-  serverSnapshot = { ...serverSnapshot, phase: "gameover", tick: 100, leftScore: 5, rightScore: 3 };
+  serverSnapshot = {
+    ...serverSnapshot,
+    phase: "gameover",
+    canRematch: true,
+    tick: 100,
+    leftScore: 5,
+    rightScore: 3,
+  };
   pushSnapshot(serverSnapshot);
   assert.equal(ui.restartButton.textContent, "Реванш с «Тихий»");
   const fallbackRound = serverSnapshot.roundId;
   const beforeRematchScrolls = scrollCalls.length;
   const beforeRematchFocus = ui.arenaPanel.focusCalls.length;
   const beforeRematchStatus = statusRequests();
+  window.dispatch("keyup", { key: "ArrowDown", target: ui.arenaPanel });
   window.dispatch("keydown", { key: "ArrowDown", target: ui.arenaPanel });
   assert.equal(lastSentAxis(), 1);
   pushOldGameOverDuringRestart = true;
@@ -2392,7 +2697,7 @@ async function main() {
   assert.equal(serverSnapshot.effectiveBotId, "calm");
   assert.equal(ui.opponentFallback.hidden, false);
   assert.match(ui.opponentFallback.textContent, /Прогноз.*Тихий.*перестал отвечать/);
-  assert.equal(ui.rightPlayer.textContent, "Бот Тихий");
+  assert.equal(ui.leftPlayer.textContent, "Бот Тихий");
   assert.equal(checkedId(), "predictive");
   assert.equal(scrollCalls.length, beforeRematchScrolls + 1);
   assert.equal(ui.arenaPanel.focusCalls.length, beforeRematchFocus + 1);
@@ -2417,7 +2722,7 @@ async function main() {
   selectBot("calm");
   submitBot();
   await flush();
-  serverSnapshot = { ...serverSnapshot, phase: "gameover", tick: 100 };
+  serverSnapshot = { ...serverSnapshot, phase: "gameover", canRematch: true, tick: 100 };
   pushSnapshot(serverSnapshot);
   const beforeRematchFailure = catalogRequests();
   catalogPayload = {
@@ -2490,7 +2795,7 @@ async function main() {
       assert.equal(ui.arenaModeLabel.textContent, "Выберите режим");
       assert.equal(serverSnapshot.opponentMode, "none");
     } else {
-      assert.equal(ui.rightPlayer.textContent, "Бот Тихий");
+      assert.equal(ui.leftPlayer.textContent, "Бот Тихий");
       assert.equal(serverSnapshot.roundId, 62);
       ui.leaveButton.dispatch("click");
       await flush();
@@ -2627,7 +2932,7 @@ async function main() {
   renderView({ ...idleSnapshot, tick: 2 }, false, false);
   assert.equal(ui.botCatalogGroups.replacementCount, replacements);
   assert.equal(checkedId(), "calm");
-  setBotCatalog({ version: 8, defaultBotId: "calm", bots: [] });
+  setBotCatalog({ version: 9, defaultBotId: "calm", bots: [] });
   renderView(idleSnapshot, false, false);
   assert.equal(ui.botButton.disabled, true);
   assert.equal(ui.botPickerOpen.disabled, false);
@@ -2641,6 +2946,431 @@ async function main() {
   assert.equal(ui.botPicker.open, true, "An empty catalog can still be inspected or retried");
   assert.equal(document.activeElement, ui.botCatalogRetry);
   ui.botPickerDone.dispatch("click");
+  // A pre-rematch GET cannot overwrite an accepted HTTP transition without a WS revision.
+  catalogPayload = browserCatalog;
+  catalogError = false;
+  rejectRestart = false;
+  setBotCatalog(browserCatalog);
+  renderView(idleSnapshot, false, false);
+  selectMode("bot");
+  selectBot("calm");
+  submitBot();
+  await flush();
+  serverSnapshot = {
+    ...serverSnapshot,
+    phase: "gameover",
+    canRematch: true,
+    tick: 100,
+    leftScore: 7,
+    rightScore: 2,
+  };
+  pushSnapshot(serverSnapshot);
+  const getFenceMatch = serverSnapshot.matchId;
+  const getFenceRound = serverSnapshot.roundId;
+  holdNextStatus = true;
+  browserSocket.dispatch("open", {});
+  await flush();
+  assert.equal(typeof releaseStatus, "function");
+  ui.restartButton.dispatch("click");
+  await flush();
+  assert.equal(ui.overlay.dataset.phase, "countdown");
+  assert.equal(ui.rightPlayer.textContent, "Browser Tester");
+  assert.deepEqual(
+    JSON.parse(requests.filter((r) => r.path === "/api/restart").at(-1).options.body),
+    { matchId: getFenceMatch, expectedRoundId: getFenceRound },
+  );
+  assert.deepEqual(lastSentControl(), [9, getFenceMatch, getFenceRound + 1, 0]);
+  const afterAcceptedFocus = ui.arenaPanel.focusCalls.length;
+  releaseStatus();
+  await flush();
+  assert.equal(ui.overlay.dataset.phase, "countdown", "Old GET cannot restore the finished round");
+  assert.equal(ui.rightPlayer.textContent, "Browser Tester", "Old GET cannot restore old side");
+  assert.equal(ui.arenaPanel.focusCalls.length, afterAcceptedFocus);
+  ui.leaveButton.dispatch("click");
+  await flush();
+
+  // Guest acknowledgement remains finished; only authoritative new State owns the swap.
+  serverSnapshot = {
+    ...idleSnapshot,
+    opponentMode: "lan",
+    role: "guest",
+    matchId: nextMatchId(),
+    localSide: "left",
+    connection: "connected",
+    roundId: 1,
+    phase: "gameover",
+    canRematch: true,
+    localNickname: "Browser Tester",
+    peerNickname: "LAN Peer",
+    leftScore: 7,
+    rightScore: 2,
+  };
+  pushSnapshot(serverSnapshot);
+  window.dispatch("keyup", { key: "ArrowDown" });
+  window.dispatch("keydown", { key: "ArrowDown", target: ui.arenaPanel });
+  assert.equal(lastSentAxis(), 1);
+  const beforeGuestFocus = ui.arenaPanel.focusCalls.length;
+  const beforeGuestScroll = scrollCalls.length;
+  guestRestartPending = true;
+  const pendingGuestRound = serverSnapshot.roundId;
+  ui.restartButton.dispatch("click");
+  await flush();
+  assert.equal(ui.overlay.dataset.phase, "gameover");
+  assert.equal(ui.leftPlayer.textContent, "Browser Tester");
+  assert.equal(ui.leftScore.textContent, "7");
+  assert.equal(lastSentAxis(), 1, "Pending acknowledgement has not changed ownership yet");
+  assert.equal(ui.arenaPanel.focusCalls.length, beforeGuestFocus);
+  guestRestartPending = false;
+  serverSnapshot = {
+    ...serverSnapshot,
+    roundId: pendingGuestRound + 1,
+    localSide: "right",
+    phase: "countdown",
+    canRematch: false,
+    tick: 0,
+    leftScore: 0,
+    rightScore: 0,
+  };
+  pushSnapshot(serverSnapshot);
+  assert.equal(lastSentAxis(), 0);
+  assert.deepEqual(lastSentControl(), [9, serverSnapshot.matchId, serverSnapshot.roundId, 0]);
+  assert.equal(ui.rightPlayer.textContent, "Browser Tester");
+  assert.equal(
+    ui.arenaPanel.focusCalls.length,
+    beforeGuestFocus + 1,
+    "An acknowledged local guest rematch reveals its accepted exact ownership",
+  );
+  assert.equal(scrollCalls.length, beforeGuestScroll + 1);
+  ui.leaveButton.dispatch("click");
+  await flush();
+
+  // A corrected predicted finish cancels local intent before any later unrelated remote rematch.
+  serverSnapshot = {
+    ...idleSnapshot,
+    opponentMode: "lan",
+    role: "guest",
+    matchId: nextMatchId(),
+    localSide: "left",
+    connection: "connected",
+    roundId: 1,
+    phase: "gameover",
+    canRematch: true,
+    tick: 200,
+    localNickname: "Browser Tester",
+    peerNickname: "LAN Peer",
+    leftScore: 7,
+    rightScore: 2,
+  };
+  pushSnapshot(serverSnapshot);
+  const correctedFinishFocus = ui.arenaPanel.focusCalls.length;
+  const correctedFinishScroll = scrollCalls.length;
+  guestRestartPending = true;
+  ui.restartButton.dispatch("click");
+  await flush();
+  assert.equal(ui.overlay.dataset.phase, "gameover");
+  assert.equal(ui.arenaPanel.focusCalls.length, correctedFinishFocus);
+  guestRestartPending = false;
+  serverSnapshot = {
+    ...serverSnapshot,
+    phase: "playing",
+    canRematch: false,
+    tick: 201,
+    leftScore: 6,
+  };
+  pushSnapshot(serverSnapshot);
+  assert.equal(ui.overlay.hidden, true, "Accepted same-round correction resumes play");
+  serverSnapshot = {
+    ...serverSnapshot,
+    phase: "gameover",
+    canRematch: true,
+    tick: 400,
+    leftScore: 7,
+  };
+  pushSnapshot(serverSnapshot);
+  assert.equal(ui.overlay.dataset.phase, "gameover");
+  serverSnapshot = {
+    ...serverSnapshot,
+    roundId: 2,
+    localSide: "right",
+    phase: "countdown",
+    canRematch: false,
+    tick: 0,
+    leftScore: 0,
+    rightScore: 0,
+  };
+  pushSnapshot(serverSnapshot);
+  assert.equal(ui.rightPlayer.textContent, "Browser Tester");
+  assert.equal(
+    ui.arenaPanel.focusCalls.length,
+    correctedFinishFocus,
+    "A later remote rematch cannot consume intent from the corrected predicted finish",
+  );
+  assert.equal(scrollCalls.length, correctedFinishScroll);
+  ui.leaveButton.dispatch("click");
+  await flush();
+
+  // Authoritative eligibility can change while replay still displays the same finished score.
+  serverSnapshot = {
+    ...idleSnapshot,
+    opponentMode: "lan",
+    role: "guest",
+    matchId: nextMatchId(),
+    localSide: "left",
+    connection: "connected",
+    roundId: 1,
+    phase: "gameover",
+    canRematch: false,
+    tick: 200,
+    localNickname: "Browser Tester",
+    peerNickname: "LAN Peer",
+    leftScore: 7,
+    rightScore: 2,
+  };
+  pushSnapshot(serverSnapshot);
+  assert.equal(ui.overlay.dataset.phase, "gameover");
+  assert.equal(ui.restartButton.disabled, true, "Predicted GameOver cannot request a rematch");
+  const beforeUnconfirmedPosts = postRequests();
+  ui.restartButton.dispatch("click");
+  await flush();
+  assert.equal(
+    postRequests(),
+    beforeUnconfirmedPosts,
+    "The action guard rejects even a synthetic click on predicted GameOver",
+  );
+  serverSnapshot = { ...serverSnapshot, canRematch: true };
+  pushSnapshot(serverSnapshot);
+  assert.equal(
+    ui.restartButton.disabled,
+    false,
+    "Eligibility alone changes the UI signature and enables a confirmed finish",
+  );
+  const eligibilityFocus = ui.arenaPanel.focusCalls.length;
+  const eligibilityScroll = scrollCalls.length;
+  guestRestartPending = true;
+  ui.restartButton.dispatch("click");
+  await flush();
+  assert.equal(postRequests(), beforeUnconfirmedPosts + 1);
+  assert.equal(ui.arenaPanel.focusCalls.length, eligibilityFocus);
+  guestRestartPending = false;
+  window.dispatch("keyup", { key: "ArrowDown" });
+  window.dispatch("keydown", { key: "ArrowDown", target: ui.arenaPanel });
+  assert.equal(lastSentAxis(), 1);
+  serverSnapshot = { ...serverSnapshot, canRematch: false };
+  pushSnapshot(serverSnapshot);
+  assert.equal(
+    ui.overlay.dataset.phase,
+    "gameover",
+    "Replay may still display the predicted finish",
+  );
+  assert.equal(ui.leftScore.textContent, "7");
+  assert.equal(
+    ui.restartButton.disabled,
+    true,
+    "Authoritative correction alone disables rematch without changing finished orientation",
+  );
+  assert.equal(lastSentAxis(), 1, "Eligibility correction does not clear same-round held input");
+  serverSnapshot = { ...serverSnapshot, canRematch: true, tick: 400 };
+  pushSnapshot(serverSnapshot);
+  assert.equal(ui.restartButton.disabled, false);
+  serverSnapshot = {
+    ...serverSnapshot,
+    roundId: 2,
+    localSide: "right",
+    phase: "countdown",
+    canRematch: false,
+    tick: 0,
+    leftScore: 0,
+    rightScore: 0,
+  };
+  pushSnapshot(serverSnapshot);
+  assert.equal(lastSentAxis(), 0);
+  assert.equal(ui.rightPlayer.textContent, "Browser Tester");
+  assert.equal(
+    ui.arenaPanel.focusCalls.length,
+    eligibilityFocus,
+    "A later remote rematch cannot reuse intent invalidated by CanRematch=false",
+  );
+  assert.equal(scrollCalls.length, eligibilityScroll);
+  ui.leaveButton.dispatch("click");
+  await flush();
+
+  // A remote rematch without local intent never scrolls or steals focus.
+  serverSnapshot = {
+    ...idleSnapshot,
+    opponentMode: "lan",
+    role: "guest",
+    matchId: nextMatchId(),
+    localSide: "right",
+    connection: "connected",
+    roundId: 1,
+    phase: "gameover",
+    canRematch: true,
+    localNickname: "Browser Tester",
+    peerNickname: "LAN Peer",
+    leftScore: 2,
+    rightScore: 7,
+  };
+  pushSnapshot(serverSnapshot);
+  const remoteFocus = ui.arenaPanel.focusCalls.length;
+  const remoteScroll = scrollCalls.length;
+  serverSnapshot = {
+    ...serverSnapshot,
+    roundId: 2,
+    localSide: "left",
+    phase: "countdown",
+    canRematch: false,
+    leftScore: 0,
+    rightScore: 0,
+  };
+  pushSnapshot(serverSnapshot);
+  assert.equal(ui.arenaPanel.focusCalls.length, remoteFocus);
+  assert.equal(scrollCalls.length, remoteScroll);
+  ui.leaveButton.dispatch("click");
+  await flush();
+
+  // A WS transition before the HTTP reply requires a successful matching acknowledgement to reveal.
+  for (const acknowledgement of ["accepted", "rejected"]) {
+    serverSnapshot = {
+      ...idleSnapshot,
+      opponentMode: "lan",
+      role: "guest",
+      matchId: nextMatchId(),
+      localSide: "left",
+      connection: "connected",
+      roundId: 1,
+      phase: "gameover",
+      canRematch: true,
+      localNickname: "Browser Tester",
+      peerNickname: "LAN Peer",
+      leftScore: 7,
+      rightScore: 2,
+    };
+    pushSnapshot(serverSnapshot);
+    const beforeAckFocus = ui.arenaPanel.focusCalls.length;
+    const beforeAckScroll = scrollCalls.length;
+    holdNextAction = true;
+    guestRestartPending = true;
+    ui.restartButton.dispatch("click");
+    await flush();
+    serverSnapshot = {
+      ...serverSnapshot,
+      roundId: 2,
+      localSide: "right",
+      phase: "countdown",
+      canRematch: false,
+      leftScore: 0,
+      rightScore: 0,
+    };
+    pushSnapshot(serverSnapshot);
+    assert.equal(
+      ui.arenaPanel.focusCalls.length,
+      beforeAckFocus,
+      "Unacknowledged rematch intent never reveals a remote snapshot",
+    );
+    rejectRestartWithoutStopping = acknowledgement === "rejected";
+    releaseAction();
+    await flush();
+    assert.equal(
+      ui.arenaPanel.focusCalls.length,
+      beforeAckFocus + (acknowledgement === "accepted" ? 1 : 0),
+    );
+    assert.equal(scrollCalls.length, beforeAckScroll + (acknowledgement === "accepted" ? 1 : 0));
+    rejectRestartWithoutStopping = false;
+    guestRestartPending = false;
+    ui.leaveButton.dispatch("click");
+    await flush();
+  }
+
+  // Stale successful rematch responses cannot reveal a later round or different match with colliding round IDs.
+  for (const superseding of ["later-round", "new-match"]) {
+    selectMode("bot");
+    selectBot("calm");
+    submitBot();
+    await flush();
+    serverSnapshot = {
+      ...serverSnapshot,
+      phase: "gameover",
+      canRematch: true,
+      leftScore: 7,
+      rightScore: 2,
+    };
+    pushSnapshot(serverSnapshot);
+    const before = ui.arenaPanel.focusCalls.length;
+    const beforeScroll = scrollCalls.length;
+    pushLaterRoundDuringRestart = superseding === "later-round";
+    supersedeRestartWithNewMatch = superseding === "new-match";
+    ui.restartButton.dispatch("click");
+    await flush();
+    assert.equal(
+      ui.arenaPanel.focusCalls.length,
+      before,
+      `Stale rematch cannot focus ${superseding}`,
+    );
+    assert.equal(scrollCalls.length, beforeScroll);
+    assert.equal(ui.overlay.hidden, true);
+    ui.leaveButton.dispatch("click");
+    await flush();
+  }
+
+  // Capture ordering fences even queued null or previously unseen contexts after HTTP admission.
+  selectMode("bot");
+  selectBot("calm");
+  const queuedLobby = captureSnapshot(idleSnapshot);
+  pushSnapshot(queuedLobby, true);
+  submitBot();
+  await flush();
+  const admittedContext = serverSnapshot.matchId;
+  const admittedFocus = ui.arenaPanel.focusCalls.length;
+  pushSnapshot(queuedLobby, true);
+  assert.equal(ui.rightPlayer.textContent, "Бот Тихий");
+  pushSnapshot(
+    {
+      ...queuedLobby,
+      ...serverSnapshot,
+      matchId: nextMatchId(),
+      sourceId: queuedLobby.sourceId,
+      snapshotSequence: queuedLobby.snapshotSequence,
+    },
+    true,
+  );
+  assert.equal(ui.rightPlayer.textContent, "Бот Тихий");
+  pushSnapshot(serverSnapshot);
+  assert.equal(
+    ui.rightPlayer.textContent,
+    "Бот Тихий",
+    "Rejected old null capture never retires the newly admitted match",
+  );
+  assert.equal(serverSnapshot.matchId, admittedContext);
+  assert.equal(ui.arenaPanel.focusCalls.length, admittedFocus);
+
+  // Reconnection clears held input and sends nothing until a fresh accepted ownership baseline.
+  window.dispatch("keyup", { key: "ArrowDown" });
+  window.dispatch("keydown", { key: "ArrowDown", target: ui.arenaPanel });
+  assert.equal(lastSentAxis(), 1);
+  browserSocket.readyState = 3;
+  browserSocket.dispatch("close", {});
+  const controlsBeforeReconnect = browserSocket.sent.length;
+  holdNextStatus = true;
+  browserSocket.readyState = WebSocket.OPEN;
+  browserSocket.dispatch("open", {});
+  await flush();
+  assert.equal(
+    window.dispatch("keydown", { key: "ArrowDown", repeat: true, target: ui.arenaPanel })
+      .defaultPrevented,
+    true,
+  );
+  assert.equal(
+    browserSocket.sent.length,
+    controlsBeforeReconnect,
+    "Reconnect cannot send old held axis before the ownership snapshot arrives",
+  );
+  pushSnapshot(serverSnapshot);
+  assert.deepEqual(lastSentControl(), [9, serverSnapshot.matchId, serverSnapshot.roundId, 0]);
+  releaseStatus();
+  await flush();
+  ui.leaveButton.dispatch("click");
+  await flush();
+
   console.log(
     "Frontend behavior checks passed: motion, events, native modes/dialog, input ownership, catalog/action races, and real LAN handlers.",
   );

@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Text;
 using MessagePack;
 
 namespace LanPong;
@@ -6,14 +7,14 @@ namespace LanPong;
 /// <summary>The local browser WebSocket protocol, independent of the UDP wire protocol.</summary>
 internal static class BrowserWebSocketProtocol
 {
-    internal const int Version = 8;
-    internal const int SnapshotFieldCount = 30;
+    internal const int Version = 9;
+    internal const int SnapshotFieldCount = 35;
 
     // [version, role, connection, message, udpPort, localAddresses, peerAddress,
     //  leftY, rightY, ballX, ballY, ballVx, ballVy, leftScore, rightScore,
     //  phase, countdown, tick, roundId, pingMs, recentEvents, localNickname, peerNickname,
     //  opponentMode, requestedBotId, requestedBotName, effectiveBotId, effectiveBotName,
-    //  opponentFallbackActive, botFallbackReason]
+    //  opponentFallbackActive, botFallbackReason, localSide, matchId, sourceId, snapshotSequence, canRematch]
     // recentEvents: [[id, kind, tick, x, y], ...]
     internal static void WriteSnapshot(PongSnapshot snapshot, IBufferWriter<byte> buffer)
     {
@@ -62,6 +63,12 @@ internal static class BrowserWebSocketProtocol
         WriteNullableString(ref writer, snapshot.EffectiveBotName);
         writer.Write(snapshot.OpponentFallbackActive);
         WriteNullableString(ref writer, snapshot.BotFallbackReason);
+        if (snapshot.LocalSide is { } localSide) writer.Write((int)localSide);
+        else writer.WriteNil();
+        WriteNullableString(ref writer, snapshot.MatchId);
+        writer.Write(snapshot.SourceId);
+        writer.Write(snapshot.SnapshotSequence);
+        writer.Write(snapshot.CanRematch);
         writer.Flush();
     }
 
@@ -71,23 +78,36 @@ internal static class BrowserWebSocketProtocol
         else writer.Write(value);
     }
 
-    // [version, axis], where axis is -1, 0, or 1. Each frame contains one value.
-    internal static bool TryReadAxis(ReadOnlyMemory<byte> data, out int axis)
+    // [version, matchId, roundId, axis], where axis is -1, 0, or 1. Each frame contains one value.
+    internal static bool TryReadAxis(ReadOnlyMemory<byte> data, out Guid matchId, out int roundId, out int axis)
     {
+        matchId = Guid.Empty;
+        roundId = 0;
         axis = 0;
         if (data.IsEmpty) return false;
 
         try
         {
             var reader = new MessagePackReader(new ReadOnlySequence<byte>(data));
-            if (reader.ReadArrayHeader() != 2 ||
+            if (reader.ReadArrayHeader() != 4 ||
                 reader.NextMessagePackType != MessagePackType.Integer ||
                 reader.ReadInt32() != Version ||
-                reader.NextMessagePackType != MessagePackType.Integer)
+                reader.NextMessagePackType != MessagePackType.String)
                 return false;
 
+            // The caller supplies one contiguous frame. Read UTF-8 in place instead of allocating
+            // a match-id string on every keyboard/touch update.
+            if (!reader.TryReadStringSpan(out var match) || match.Length != 32 ||
+                match.IndexOfAnyExcept("0123456789abcdef"u8) >= 0 ||
+                !Utf8Parser.TryParse(match, out Guid id, out var consumed, 'N') || consumed != match.Length ||
+                id == Guid.Empty || reader.NextMessagePackType != MessagePackType.Integer)
+                return false;
+            var round = reader.ReadInt32();
+            if (round <= 0 || reader.NextMessagePackType != MessagePackType.Integer) return false;
             var value = reader.ReadInt32();
             if (value is < -1 or > 1 || !reader.End) return false;
+            matchId = id;
+            roundId = round;
             axis = value;
             return true;
         }

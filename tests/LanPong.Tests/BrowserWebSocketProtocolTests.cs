@@ -14,14 +14,15 @@ public sealed class BrowserWebSocketProtocolTests
             0.425, 0.563, 0.712375, 0.2218, 0.4321, -0.348,
             3, 4, GamePhase.Playing, 0.25, 123456, 7, 8.42,
             [new GameEvent("123456:0:2", GameEventKind.Paddle, 123456, 0.712375, 0.2218)],
-            "Хозяин", "Гость", OpponentMode.Lan);
+            "Хозяин", "Гость", OpponentMode.Lan, LocalSide: PaddleSide.Right, MatchId: "ffeeddccbbaa99887766554433221100",
+            SourceId: "0123456789abcdef0123456789abcdef", SnapshotSequence: 17);
         var buffer = new ArrayBufferWriter<byte>();
 
         BrowserWebSocketProtocol.WriteSnapshot(original, buffer);
         var (fieldCount, version, decoded, atEnd) = ReadSnapshot(buffer.WrittenMemory);
 
-        await Assert.That(fieldCount).IsEqualTo(30);
-        await Assert.That(version).IsEqualTo(8);
+        await Assert.That(fieldCount).IsEqualTo(35);
+        await Assert.That(version).IsEqualTo(9);
         await Assert.That(atEnd).IsTrue();
         await Assert.That(decoded with
         {
@@ -37,13 +38,13 @@ public sealed class BrowserWebSocketProtocolTests
             RequestedBotName = new string('М', 64), EffectiveBotId = "tuned-tracker",
             EffectiveBotName = new string('Т', 64), OpponentFallbackActive = true,
             BotFallbackReason = "Модель бота не найдена.", UdpPort = 0,
-            PeerAddress = null, PingMs = null, PeerNickname = null
+            PeerAddress = null, PingMs = null, PeerNickname = null, Phase = GamePhase.GameOver, CanRematch = true
         };
         buffer = new ArrayBufferWriter<byte>();
         BrowserWebSocketProtocol.WriteSnapshot(local, buffer);
         var (localFields, localVersion, localDecoded, localAtEnd) = ReadSnapshot(buffer.WrittenMemory);
-        await Assert.That(localFields).IsEqualTo(30);
-        await Assert.That(localVersion).IsEqualTo(8);
+        await Assert.That(localFields).IsEqualTo(35);
+        await Assert.That(localVersion).IsEqualTo(9);
         await Assert.That(localDecoded.OpponentMode).IsEqualTo(OpponentMode.Bot);
         await Assert.That(localDecoded.RequestedBotId).IsEqualTo("trained-model");
         await Assert.That(localDecoded.RequestedBotName).IsEqualTo(new string('М', 64));
@@ -52,6 +53,7 @@ public sealed class BrowserWebSocketProtocolTests
         await Assert.That(localDecoded.OpponentFallbackActive).IsTrue();
         await Assert.That(localDecoded.BotFallbackReason).IsEqualTo("Модель бота не найдена.");
         await Assert.That(localDecoded.PeerNickname).IsNull();
+        await Assert.That(localDecoded.CanRematch).IsTrue();
         await Assert.That(localAtEnd).IsTrue();
     }
 
@@ -60,9 +62,10 @@ public sealed class BrowserWebSocketProtocolTests
     {
         foreach (var axis in new[] { -1, 0, 1 })
         {
-            var bytes = new byte[] { 0x92, 0x08, unchecked((byte)axis) };
-            await Assert.That(BrowserWebSocketProtocol.TryReadAxis(bytes, out var parsed)).IsTrue();
+            var bytes = SerializeControl(axis);
+            await Assert.That(BrowserWebSocketProtocol.TryReadAxis(bytes, out var matchId, out var roundId, out var parsed)).IsTrue();
             await Assert.That(parsed).IsEqualTo(axis);
+            await Assert.That(roundId).IsEqualTo(7);
         }
 
         byte[][] invalid =
@@ -73,7 +76,7 @@ public sealed class BrowserWebSocketProtocolTests
             [0x92, 0x08, 0x01, 0x00], [0xc1], "{\"axis\":1}"u8.ToArray()
         ];
         foreach (var bytes in invalid)
-            await Assert.That(BrowserWebSocketProtocol.TryReadAxis(bytes, out _)).IsFalse();
+            await Assert.That(BrowserWebSocketProtocol.TryReadAxis(bytes, out _, out _, out _)).IsFalse();
 
         // Invalid local browser frames must not escape the WebSocket receive loop.
         var random = new Random(13579);
@@ -81,8 +84,40 @@ public sealed class BrowserWebSocketProtocolTests
         {
             var noise = new byte[length];
             random.NextBytes(noise);
-            BrowserWebSocketProtocol.TryReadAxis(noise, out _);
+            BrowserWebSocketProtocol.TryReadAxis(noise, out _, out _, out _);
         }
+    }
+
+    [Test]
+    public async Task TryReadAxis_RejectsInvalidContextRoundAndAxisWithinCurrentLayout()
+    {
+        const string match = "ffeeddccbbaa99887766554433221100";
+        var valid = MessagePackSerializer.Serialize(new object?[] { 9, match, 7, 1 });
+        await Assert.That(BrowserWebSocketProtocol.TryReadAxis(valid, out _, out _, out _)).IsTrue();
+        foreach (var values in new object?[][]
+        {
+            [9, match, 0, 1], [9, match, -1, 1], [9, match, 1.0, 1], [9, match, "1", 1],
+            [9, match, long.MaxValue, 1], [9, match, 7, 2], [9, match, 7, -2],
+            [9, match, 7, 1.0], [9, match, 7, "1"], [9, match, 7, null],
+            [9, null, 7, 1], [9, 1, 7, 1], [9, "", 7, 1], [9, match.ToUpperInvariant(), 7, 1],
+            [9, new string('0', 32), 7, 1], [9, "ffeeddcc-bbaa-9988-7766-554433221100", 7, 1],
+            [9, match, 7, 1, 0], [8, match, 7, 1]
+        })
+            await Assert.That(BrowserWebSocketProtocol.TryReadAxis(MessagePackSerializer.Serialize(values), out _, out _, out _)).IsFalse();
+        await Assert.That(BrowserWebSocketProtocol.TryReadAxis(valid.Concat(new byte[] { 0 }).ToArray(), out _, out _, out _)).IsFalse();
+    }
+
+    private static byte[] SerializeControl(int axis)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new MessagePackWriter(buffer);
+        writer.WriteArrayHeader(4);
+        writer.Write(9);
+        writer.Write("ffeeddccbbaa99887766554433221100");
+        writer.Write(7);
+        writer.Write(axis);
+        writer.Flush();
+        return buffer.WrittenSpan.ToArray();
     }
 
     internal static (int FieldCount, int Version, PongSnapshot Snapshot, bool AtEnd) ReadSnapshot(
@@ -127,11 +162,16 @@ public sealed class BrowserWebSocketProtocolTests
         var effectiveBotName = reader.ReadString();
         var opponentFallbackActive = reader.ReadBoolean();
         var botFallbackReason = reader.ReadString();
+        var localSide = reader.TryReadNil() ? (PaddleSide?)null : (PaddleSide)reader.ReadInt32();
+        var matchId = reader.ReadString();
+        var sourceId = reader.ReadString()!;
+        var snapshotSequence = reader.ReadInt64();
+        var canRematch = reader.ReadBoolean();
         var snapshot = new PongSnapshot(role, connection, message, udpPort, addresses, peerAddress,
             leftY, rightY, ballX, ballY, ballVx, ballVy, leftScore, rightScore, phase,
             countdown, tick, roundId, pingMs, events, localNickname, peerNickname,
             opponentMode, requestedBotId, requestedBotName, effectiveBotId, effectiveBotName,
-            opponentFallbackActive, botFallbackReason);
+            opponentFallbackActive, botFallbackReason, localSide, matchId, sourceId, snapshotSequence, canRematch);
         return (fieldCount, version, snapshot, reader.End);
     }
 }

@@ -2,6 +2,7 @@ type TouchDirection = "up" | "down";
 
 export class InputController {
   private readonly pressedKeys = new Set<string>();
+  private readonly blockedKeys = new Set<string>();
   private readonly pressedTouch = new Set<TouchDirection>();
   private bound = false;
 
@@ -21,7 +22,10 @@ export class InputController {
     return Number(down) - Number(up);
   }
 
-  clear(): void {
+  clear(blockHeldUntilRelease = false): void {
+    if (blockHeldUntilRelease) {
+      for (const key of this.pressedKeys) this.blockedKeys.add(key);
+    }
     this.pressedKeys.clear();
     this.pressedTouch.clear();
     this.onChange();
@@ -40,18 +44,30 @@ export class InputController {
       )
         return;
       event.preventDefault();
+      if (event.repeat && !this.pressedKeys.has(key)) return;
+      if (this.blockedKeys.has(key)) {
+        if (event.repeat) return;
+        this.blockedKeys.delete(key);
+      }
       this.pressedKeys.add(key);
       this.onChange();
     });
     window.addEventListener("keyup", (event) => {
       const key = event.key.toLowerCase();
+      this.blockedKeys.delete(key);
       if (!this.pressedKeys.has(key)) return;
       this.pressedKeys.delete(key);
       this.onChange();
     });
-    window.addEventListener("blur", () => this.clear());
+    window.addEventListener("blur", () => {
+      this.blockedKeys.clear();
+      this.clear();
+    });
     document.addEventListener("visibilitychange", () => {
-      if (document.hidden) this.clear();
+      if (document.hidden) {
+        this.blockedKeys.clear();
+        this.clear();
+      }
     });
     document.addEventListener("focusin", (event) => {
       if (

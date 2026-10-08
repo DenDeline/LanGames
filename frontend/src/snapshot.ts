@@ -1,3 +1,4 @@
+export type PaddleSide = "left" | "right";
 export type PeerRole = "none" | "host" | "guest";
 export type OpponentMode = "none" | "lan" | "bot";
 export type ConnectionState =
@@ -21,8 +22,13 @@ export interface GameEvent {
 }
 
 export interface PongSnapshot {
-  version: 8;
+  version: 9;
   role: PeerRole;
+  localSide: PaddleSide | null;
+  matchId: string | null;
+  sourceId: string | null;
+  snapshotSequence: number;
+  canRematch: boolean;
   requestedBotId: string | null;
   requestedBotName: string | null;
   effectiveBotId: string | null;
@@ -54,8 +60,13 @@ export interface PongSnapshot {
 }
 
 export const defaultSnapshot: PongSnapshot = {
-  version: 8,
+  version: 9,
   role: "none",
+  localSide: null,
+  matchId: null,
+  sourceId: null,
+  snapshotSequence: 0,
+  canRematch: false,
   requestedBotId: null,
   requestedBotName: null,
   effectiveBotId: null,
@@ -126,6 +137,13 @@ export function parseGameEvent(value: unknown): GameEvent | null {
   return { id: value.id, kind, tick, x, y };
 }
 
+const MATCH_ID_PATTERN = /^[a-f0-9]{32}$/;
+const EMPTY_MATCH_ID = "0".repeat(32);
+
+export function validMatchId(value: unknown): value is string {
+  return typeof value === "string" && MATCH_ID_PATTERN.test(value) && value !== EMPTY_MATCH_ID;
+}
+
 export function validBotId(value: unknown): value is string {
   return (
     typeof value === "string" &&
@@ -152,10 +170,15 @@ function nonnegativeInteger(value: unknown): value is number {
 }
 
 export function parseSnapshot(data: Record<string, unknown>): PongSnapshot {
-  if (data.version !== 8) throw new RangeError("Unsupported snapshot version");
+  if (data.version !== 9) throw new RangeError("Unsupported snapshot version");
   const rawEvents = data.recentEvents ?? data.events;
   const events = Array.isArray(rawEvents) ? rawEvents.map(parseGameEvent) : null;
   if (
+    typeof data.canRematch !== "boolean" ||
+    (data.canRematch && (data.connection !== "connected" || data.phase !== "gameover")) ||
+    !validMatchId(data.sourceId) ||
+    !nonnegativeInteger(data.snapshotSequence) ||
+    data.snapshotSequence === 0 ||
     !isOneOf(data.role, ["none", "host", "guest"]) ||
     !isOneOf(data.opponentMode, OPPONENT_MODES) ||
     !isOneOf(data.connection, [
@@ -197,6 +220,19 @@ export function parseSnapshot(data: Record<string, unknown>): PongSnapshot {
   )
     throw new TypeError("Invalid snapshot");
 
+  const validMatch = validMatchId(data.matchId);
+  const assigned = data.localSide === "left" || data.localSide === "right";
+  if (
+    (data.localSide !== null && !assigned) ||
+    (assigned ? !validMatch : data.matchId !== null) ||
+    (data.connection === "connected"
+      ? !assigned || data.role === "none" || data.roundId === 0
+      : data.connection === "disconnected"
+        ? assigned && (data.role === "none" || data.roundId === 0)
+        : data.localSide !== null)
+  )
+    throw new TypeError("Invalid snapshot paddle ownership");
+
   const identity = [
     data.requestedBotId,
     data.requestedBotName,
@@ -231,8 +267,13 @@ export function parseSnapshot(data: Record<string, unknown>): PongSnapshot {
   }
 
   return {
-    version: 8,
+    version: 9,
     role: data.role,
+    localSide: data.localSide as PaddleSide | null,
+    matchId: data.matchId as string | null,
+    sourceId: data.sourceId,
+    snapshotSequence: data.snapshotSequence,
+    canRematch: data.canRematch,
     opponentMode: data.opponentMode,
     requestedBotId: data.requestedBotId as string | null,
     requestedBotName: data.requestedBotName as string | null,

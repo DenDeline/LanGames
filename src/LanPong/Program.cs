@@ -42,7 +42,7 @@ app.MapPost("/api/local-opponent", async (LocalOpponentRequest request) =>
 {
     try
     {
-        await peer.StartBotAsync(request.Nickname, request.BotId);
+        await peer.StartBotAsync(request.Nickname, request.BotId, request.Side);
         return Results.Ok(peer.Snapshot());
     }
     catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
@@ -115,11 +115,14 @@ app.MapPost("/api/decline", async () =>
     }
 });
 
-app.MapPost("/api/restart", () =>
+app.MapPost("/api/restart", (RestartRequest request) =>
 {
     try
     {
-        peer.Restart();
+        if (!Guid.TryParseExact(request.MatchId, "N", out var matchId) ||
+            request.MatchId != matchId.ToString("N"))
+            return Results.BadRequest(new ErrorResponse("Нужен идентификатор текущей игры."));
+        peer.Restart(matchId, request.ExpectedRoundId);
         return Results.Ok(peer.Snapshot());
     }
     catch (InvalidOperationException ex)
@@ -149,7 +152,10 @@ app.Run();
 
 internal sealed record HostRequest(int Port, string Nickname);
 internal sealed record QuickGameRequest(string Nickname);
-internal sealed record LocalOpponentRequest(string Nickname, string? BotId);
+internal sealed record LocalOpponentRequest(string Nickname, string? BotId,
+    [property: JsonRequired] InitialSidePreference Side);
+internal sealed record RestartRequest([property: JsonRequired] string MatchId,
+    [property: JsonRequired] int ExpectedRoundId);
 internal sealed record JoinRequest(string Address, int Port, string Nickname);
 internal sealed record ErrorResponse(string Error);
 internal sealed record DiscoverResponse(DiscoveredHost[] Hosts);
@@ -161,6 +167,7 @@ internal sealed record DiscoverResponse(DiscoveredHost[] Hosts);
 [JsonSerializable(typeof(QuickGameRequest))]
 [JsonSerializable(typeof(LocalOpponentRequest))]
 [JsonSerializable(typeof(JoinRequest))]
+[JsonSerializable(typeof(RestartRequest))]
 [JsonSerializable(typeof(ErrorResponse))]
 [JsonSerializable(typeof(DiscoverResponse))]
 internal partial class AppJsonSerializerContext : JsonSerializerContext;

@@ -13,6 +13,8 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
 {
     private readonly ILogger<PongPeer> _logger;
     private readonly Lock _gate = new();
+    private readonly string _sourceId = Guid.NewGuid().ToString("N");
+    private long _snapshotSequence;
     private readonly Lock _shutdownGate = new();
     private readonly SemaphoreSlim _transition = new(1, 1);
     private readonly CancellationTokenSource _lifetime = new();
@@ -49,9 +51,14 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
     private Guid? _outgoingChallengeId;
     private Guid? _incomingChallengeId;
     private Guid? _acceptedChallengeId;
-    private Guid? _lastRestartRequestId;
     private Guid? _pendingRestartRequestId;
     private int _restartAfterRound;
+    private int _confirmedGuestFinishedRound;
+    private PaddleSide? _hostSide;
+    private Guid? _browserMatchId;
+    private string? _browserMatchKey;
+    private int _sideRoundId;
+    private readonly Func<PaddleSide> _randomSide;
     private PeerRole _role = PeerRole.None;
     private ConnectionState _connection = ConnectionState.Idle;
     private string _message = "Выберите бота или сыграйте с другом по локальной сети.";
@@ -69,10 +76,11 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
     private DateTime _lastHelloSent = DateTime.MinValue;
     private DateTime _lastRestartSent = DateTime.MinValue;
 
-    public PongPeer(ILogger<PongPeer> logger, BotRuntime bots)
+    public PongPeer(ILogger<PongPeer> logger, BotRuntime bots, Func<PaddleSide>? randomSide = null)
     {
         _logger = logger;
         _bots = bots;
+        _randomSide = randomSide ?? (() => Random.Shared.Next(2) == 0 ? PaddleSide.Left : PaddleSide.Right);
         _mdns = new MdnsDiscovery(logger);
         _hostTimeline = new HostRollbackTimeline(_game);
         _guestTimeline = new GuestPredictionTimeline(_game);
@@ -106,14 +114,18 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
                 _localNickname, _peerNickname, opponentMode,
                 _botIdentity?.RequestedBotId, _botIdentity?.RequestedName,
                 _botIdentity?.EffectiveBotId, _botIdentity?.EffectiveName,
-                opponentFallbackActive, _botIdentity?.FallbackReason);
+                opponentFallbackActive, _botIdentity?.FallbackReason,
+                _hostSide is { } hostSide ? _role == PeerRole.Host ? hostSide : PaddleSides.Opposite(hostSide) : null,
+                _browserMatchKey, _sourceId, ++_snapshotSequence, CanRematchLocked());
         }
     }
 
-    public void SetInput(Guid controllerId, int axis)
+    public void SetInput(Guid controllerId, Guid matchId, int roundId, int axis)
     {
         lock (_gate)
-            if (!_stopping) _controllers.Set(controllerId, axis, DateTime.UtcNow);
+            if (!_stopping && _connection == ConnectionState.Connected && _hostSide is not null &&
+                matchId == _browserMatchId && roundId > 0 && roundId == _game.RoundId)
+                _controllers.Set(controllerId, axis, DateTime.UtcNow);
     }
 
     public void RemoveController(Guid controllerId)
@@ -161,8 +173,9 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
               $"Игра продолжается против «{bot.Effective.Name}».";
     }
 
-    public async Task StartBotAsync(string nickname, string? botId)
+    public async Task StartBotAsync(string nickname, string? botId, InitialSidePreference side)
     {
+        if (!Enum.IsDefined(side)) throw new ArgumentOutOfRangeException(nameof(side));
         var selectedNickname = PlayerNickname.Normalize(nickname);
         await _transition.WaitAsync();
         PreparedBotSession? candidate = null;
@@ -187,6 +200,7 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
             lock (_gate)
             {
                 if (_stopping) throw new InvalidOperationException("Приложение завершает работу.");
+                var resolvedSide = ResolveInitialSide(side);
                 _botSession = candidate;
                 UpdateBotIdentityLocked();
                 candidate = null; // Peer now owns the fully prepared session.
@@ -195,7 +209,11 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
                 _role = PeerRole.Host;
                 _connection = ConnectionState.Connected;
                 _message = "Локальная игра началась!";
+                _controllers.Clear();
                 _game.StartMatch();
+                _hostSide = resolvedSide;
+                SetBrowserMatchIdLocked(Guid.NewGuid());
+                _sideRoundId = _game.RoundId;
             }
         }
         finally
@@ -310,14 +328,14 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
         }
     }
 
-    public void Restart()
+    public void Restart(Guid expectedMatchId, int expectedRoundId)
     {
         PreparedBotSession? failedBot = null;
         List<IDisposable>? retired = null;
         lock (_gate)
         {
             if (_stopping) throw new InvalidOperationException("Приложение завершает работу.");
-            if (_connection != ConnectionState.Connected) throw new InvalidOperationException("Сначала подключитесь к игре.");
+            ValidateFinishedRoundLocked(expectedMatchId, expectedRoundId);
             if (_role == PeerRole.Host)
             {
                 if (_botSession is { } bot)
@@ -336,21 +354,73 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
                 }
                 if (failedBot is null)
                 {
-                    _game.StartMatch();
-                    if (!_localOpponentActive) _hostTimeline.Reset(PaddleSide.Left);
+                    StartRematchLocked();
                 }
             }
             else if (_role == PeerRole.Guest)
             {
-                _pendingRestartRequestId = Guid.NewGuid();
-                _restartAfterRound = _game.RoundId;
-                _lastRestartSent = DateTime.MinValue;
+                if (_pendingRestartRequestId is null)
+                {
+                    _pendingRestartRequestId = Guid.NewGuid();
+                    _restartAfterRound = expectedRoundId;
+                    _lastRestartSent = DateTime.MinValue;
+                }
             }
         }
         BotRuntime.DisposeRetired(retired);
         failedBot?.Dispose();
         if (failedBot is not null)
             throw new InvalidOperationException("Бот не смог продолжить игру. Выберите другого соперника.");
+    }
+
+
+    private void SetBrowserMatchIdLocked(Guid? id)
+    {
+        _browserMatchId = id;
+        _browserMatchKey = id?.ToString("N");
+    }
+
+    private PaddleSide ResolveInitialSide(InitialSidePreference preference)
+    {
+        var side = preference switch
+        {
+            InitialSidePreference.Left => PaddleSide.Left,
+            InitialSidePreference.Right => PaddleSide.Right,
+            InitialSidePreference.Random => _randomSide(),
+            _ => throw new ArgumentOutOfRangeException(nameof(preference))
+        };
+        PaddleSides.Validate(side);
+        return side;
+    }
+
+    private bool CanRematchLocked() =>
+        !_stopping && _connection == ConnectionState.Connected && _hostSide is { } hostSide &&
+        PaddleSides.IsPhysical(hostSide) && _browserMatchId is not null && _game.RoundId > 0 &&
+        _game.Phase == GamePhase.GameOver &&
+        (_role == PeerRole.Host || _role == PeerRole.Guest && _confirmedGuestFinishedRound == _game.RoundId);
+
+    private void ValidateFinishedRoundLocked(Guid expectedMatchId, int expectedRoundId)
+    {
+        if (_connection != ConnectionState.Connected || _hostSide is null)
+            throw new InvalidOperationException("Сначала подключитесь к игре.");
+        if (expectedMatchId == Guid.Empty || expectedMatchId != _browserMatchId || expectedRoundId <= 0 ||
+            expectedRoundId != _game.RoundId || !CanRematchLocked())
+            throw new InvalidOperationException("Реванш доступен только для текущей завершённой игры.");
+    }
+
+    // Only authoritative successful rematches change ownership. Bot reset has already succeeded.
+    private void StartRematchLocked()
+    {
+        var nextSide = PaddleSides.Opposite(_hostSide!.Value);
+        _controllers.Clear();
+        _lastHostAxis = 0;
+        _lastInputSentTick = 0;
+        _game.StartMatch();
+        _hostSide = nextSide;
+        _sideRoundId = _game.RoundId;
+        _hostTimeline.Reset(nextSide);
+        _guestTimeline.Reset(nextSide);
+        _lastStateSentTick = _game.TickNumber - NetworkConstants.StateSendIntervalTicks;
     }
 
     public async Task AcceptChallengeAsync()
@@ -369,6 +439,7 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
             _incomingChallengeSocketAddress is null || _incomingChallengeId is null)
             throw new InvalidOperationException("Нет вызова для принятия.");
 
+        var resolvedSide = ResolveInitialSide(InitialSidePreference.Random);
         var socket = _socket;
         var destination = _incomingChallengeEndpoint;
         _peerEndpoint = destination;
@@ -378,20 +449,23 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
         _incomingChallengeSocketAddress = null;
         _incomingChallengeId = null;
         _sessionId = Guid.NewGuid();
+        SetBrowserMatchIdLocked(_sessionId);
         _connection = ConnectionState.Connected;
         _message = "Вызов принят. Игра началась!";
         _lastPeerSeen = DateTime.UtcNow;
         _lastStateSentTick = 0;
-        _lastRestartRequestId = null;
         _ping.Reset();
+        _hostSide = resolvedSide;
+        _controllers.Clear();
         _game.StartMatch();
-        _hostTimeline.Reset(PaddleSide.Left);
+        _sideRoundId = _game.RoundId;
+        _hostTimeline.Reset(_hostSide.Value);
         _mdns.SetHostPort(null);
         CancelQuickMatchmakingLocked();
         var welcome = new WelcomePacket
         {
             SessionId = _sessionId.Value, RequestId = _acceptedChallengeId.Value,
-            Nickname = _localNickname
+            Nickname = _localNickname, HostSide = _hostSide.Value, RoundId = _game.RoundId
         };
         return (socket, destination, welcome);
     }

@@ -6,12 +6,15 @@ export type SnapshotSource = "websocket" | "http";
 
 export class GameSession {
   snapshot: PongSnapshot = { ...defaultSnapshot };
+  private readonly retiredSources = new Set<string>();
+  private readonly retiredMatches = new Set<string>();
 
   constructor(
     readonly motion: MotionModel,
     readonly feedback: FeedbackController,
     private readonly onMotionReset: () => void,
     private readonly onSnapshot: () => void,
+    private readonly onOwnershipChange: () => void = () => {},
   ) {}
 
   apply(data: unknown, source: SnapshotSource = "http"): void {
@@ -19,10 +22,34 @@ export class GameSession {
     const next = parseSnapshot(data);
     const previous = this.snapshot;
 
-    const changedRound =
+    if (this.retiredSources.has(next.sourceId!)) return;
+    if (next.sourceId === previous.sourceId && next.snapshotSequence <= previous.snapshotSequence)
+      return;
+    if (next.matchId !== null && this.retiredMatches.has(next.matchId)) return;
+    const sameEstablishedSession = previous.matchId !== null && previous.matchId === next.matchId;
+    // Tick rebases are valid within a guest round; accepted ownership never rewinds.
+    if (
+      sameEstablishedSession &&
+      (next.role !== previous.role ||
+        next.opponentMode !== previous.opponentMode ||
+        next.requestedBotId !== previous.requestedBotId ||
+        next.roundId < previous.roundId ||
+        ((next.roundId - previous.roundId) % 2 === 0
+          ? next.localSide !== previous.localSide
+          : next.localSide === previous.localSide))
+    )
+      return;
+
+    const ownershipChanged =
+      next.sourceId !== previous.sourceId ||
+      next.matchId !== previous.matchId ||
+      next.roundId !== previous.roundId ||
+      next.localSide !== previous.localSide ||
       next.role !== previous.role ||
       next.opponentMode !== previous.opponentMode ||
-      next.requestedBotId !== previous.requestedBotId ||
+      next.requestedBotId !== previous.requestedBotId;
+    const changedRound =
+      ownershipChanged ||
       next.connection !== previous.connection ||
       next.phase !== previous.phase ||
       next.roundId !== previous.roundId ||
@@ -44,7 +71,15 @@ export class GameSession {
       this.feedback.clearPulse();
       this.onMotionReset();
     }
+    if (previous.sourceId !== null && previous.sourceId !== next.sourceId) {
+      this.retiredSources.add(previous.sourceId);
+    }
+    if (previous.matchId !== null && previous.matchId !== next.matchId) {
+      this.retiredMatches.add(previous.matchId);
+    }
     this.snapshot = next;
+    // Clear held input only after publishing the new round, so its zero is fenced correctly.
+    if (ownershipChanged) this.onOwnershipChange();
     this.feedback.process(next, previous);
     this.motion.record(next, performance.now());
     this.onSnapshot();

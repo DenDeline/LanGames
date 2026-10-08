@@ -30,12 +30,12 @@
   text-transform: uppercase;
   white-space: nowrap;
 }
-.role-badge[data-role="none"] {
+.role-badge[data-side=""] {
   color: var(--muted);
   border-color: var(--line);
   background: #1a2535;
 }
-.role-badge[data-role="guest"] {
+.role-badge[data-side="right"] {
   color: var(--coral);
   border-color: #65444d;
   background: #4a273250;

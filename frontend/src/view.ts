@@ -291,7 +291,8 @@ function connectionText(snapshot: PongSnapshot): string {
 }
 
 function roleText(snapshot: PongSnapshot): string {
-  if (isLocalBot(snapshot)) return "Вы — слева";
+  if (snapshot.localSide !== null)
+    return snapshot.localSide === "left" ? "Вы — слева" : "Вы — справа";
   if (snapshot.connection === "searching") return "Поиск соперника";
   switch (snapshot.role) {
     case "host":
@@ -315,9 +316,9 @@ function overlayContent(snapshot: PongSnapshot): [string, string, string] | null
   }
   if (snapshot.phase === "gameover") {
     const leftName =
-      snapshot.role === "host" ? localDisplayName(snapshot) : peerDisplayName(snapshot);
+      snapshot.localSide === "left" ? localDisplayName(snapshot) : peerDisplayName(snapshot);
     const rightName =
-      snapshot.role === "guest" ? localDisplayName(snapshot) : peerDisplayName(snapshot);
+      snapshot.localSide === "right" ? localDisplayName(snapshot) : peerDisplayName(snapshot);
     const winner =
       snapshot.leftScore === snapshot.rightScore
         ? "Ничья"
@@ -337,7 +338,7 @@ function overlayContent(snapshot: PongSnapshot): [string, string, string] | null
       isLocalBot(snapshot) ? `Против бота · ${botModeLabel(snapshot)}` : "Приготовьтесь",
       String(Math.max(1, Math.ceil(Number(snapshot.countdown) || 0))),
       isLocalBot(snapshot)
-        ? "Вы слева. Двигайтесь клавишами W / S или ↑ / ↓."
+        ? `Вы ${snapshot.localSide === "left" ? "слева" : "справа"}. Двигайтесь клавишами W / S или ↑ / ↓.`
         : "Ракетка движется клавишами W / S или ↑ / ↓.",
     ];
   }
@@ -412,6 +413,8 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   // Network snapshots arrive much more often than score, ping text, or controls change.
   const uiSignature = JSON.stringify([
     snapshot.role,
+    snapshot.localSide,
+    snapshot.canRematch,
     snapshot.requestedBotId,
     snapshot.requestedBotName,
     snapshot.effectiveBotId,
@@ -455,6 +458,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   ui.liveIndicator.dataset.state = snapshot.connection;
   writeText(ui.liveLabel, status);
   ui.roleBadge.dataset.role = snapshot.role;
+  ui.roleBadge.dataset.side = snapshot.localSide ?? "";
   writeText(ui.roleBadge, roleText(snapshot));
   writeText(ui.roleDetail, roleText(snapshot));
   writeText(
@@ -470,22 +474,22 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   ui.networkHint.hidden = snapshot.opponentMode !== "lan";
   writeText(
     ui.leftPlayer,
-    snapshot.role === "host"
+    snapshot.localSide === "left"
       ? localDisplayName(snapshot)
-      : snapshot.role === "guest"
+      : snapshot.localSide === "right"
         ? peerDisplayName(snapshot)
         : "Игрок 1",
   );
   writeText(
     ui.rightPlayer,
-    snapshot.role === "guest"
+    snapshot.localSide === "right"
       ? localDisplayName(snapshot)
-      : snapshot.role === "host"
+      : snapshot.localSide === "left"
         ? peerDisplayName(snapshot)
         : "Игрок 2",
   );
-  ui.leftScore.parentElement?.classList.toggle("is-local", snapshot.role === "host");
-  ui.rightScore.parentElement?.classList.toggle("is-local", snapshot.role === "guest");
+  ui.leftScore.parentElement?.classList.toggle("is-local", snapshot.localSide === "left");
+  ui.rightScore.parentElement?.classList.toggle("is-local", snapshot.localSide === "right");
   writeText(
     ui.peerDetail,
     localBot
@@ -512,7 +516,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
     localBot
       ? snapshot.phase === "gameover"
         ? `Матч с «${botModeLabel(snapshot)}» завершён. Возьмите реванш или выберите другого соперника.`
-        : `Вы управляете левой ракеткой. Справа играет бот ${botModeLabel(snapshot)}.`
+        : `Вы управляете ${snapshot.localSide === "left" ? "левой" : "правой"} ракеткой. ${snapshot.localSide === "left" ? "Справа" : "Слева"} играет бот ${botModeLabel(snapshot)}.`
       : snapshot.opponentMode === "none"
         ? snapshot.message || "Выберите игру с ботом или другом."
         : snapshot.message || status + ".",
@@ -577,7 +581,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   ui.joinPort.disabled = busy || active;
   ui.playerNickname.disabled = busy || active;
   ui.peerAddress.disabled = busy || active;
-  ui.restartButton.disabled = busy || !connected || snapshot.phase !== "gameover";
+  ui.restartButton.disabled = busy || !connected || !snapshot.canRematch;
   writeText(ui.restartButton, localBot ? `Реванш с «${botModeLabel(snapshot)}»` : "Новый матч");
   ui.leaveButton.disabled = busy || !active;
   writeText(
