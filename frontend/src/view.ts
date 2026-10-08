@@ -1,5 +1,6 @@
 import type { PongSnapshot } from "./snapshot.js";
 import type { BotCatalogResponse } from "./botCatalog.js";
+import { BotCatalogView } from "./botCatalogView.js";
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -8,6 +9,7 @@ function element<T extends HTMLElement>(id: string): T {
 }
 
 export const ui = {
+  arenaPanel: element("game-arena"),
   canvas: element<HTMLCanvasElement>("game-canvas"),
   overlay: element("game-overlay"),
   overlayKicker: element("overlay-kicker"),
@@ -41,7 +43,15 @@ export const ui = {
   joinPanel: element("join-panel"),
   quickForm: element<HTMLFormElement>("quick-form"),
   botForm: element<HTMLFormElement>("bot-form"),
-  botSelect: element<HTMLSelectElement>("bot-select"),
+  botCatalog: element<HTMLFieldSetElement>("bot-catalog"),
+  botCatalogGroups: element("bot-catalog-groups"),
+  botProfile: element("bot-profile"),
+  botProfileAvatar: element("bot-profile-avatar"),
+  botProfileName: element("bot-profile-name"),
+  botProfileDescription: element("bot-profile-description"),
+  botProfileDifficulty: element("bot-profile-difficulty"),
+  botProfileStyle: element("bot-profile-style"),
+  botProfileAvailability: element("bot-profile-availability"),
   botCatalogStatus: element("bot-catalog-status"),
   botCatalogRetry: element<HTMLButtonElement>("bot-catalog-retry"),
   joinForm: element<HTMLFormElement>("join-form"),
@@ -79,9 +89,21 @@ let toastTimer: number | undefined;
 let nicknameWasEdited = false;
 let preferredNickname: string | null = null;
 let wasActive = false;
-let botCatalog: BotCatalogResponse | null = null;
 let botCatalogRevision = 0;
-let rememberedBotId = "";
+const catalogView = new BotCatalogView({
+  fieldset: ui.botCatalog,
+  groups: ui.botCatalogGroups,
+  status: ui.botCatalogStatus,
+  retry: ui.botCatalogRetry,
+  profile: ui.botProfile,
+  avatar: ui.botProfileAvatar,
+  name: ui.botProfileName,
+  description: ui.botProfileDescription,
+  difficulty: ui.botProfileDifficulty,
+  style: ui.botProfileStyle,
+  availability: ui.botProfileAvailability,
+  play: ui.botButton,
+});
 
 function validNickname(value: string): boolean {
   return (
@@ -166,49 +188,17 @@ export function setBotCatalog(
   catalog: BotCatalogResponse | null,
   error: string | null = null,
 ): void {
-  rememberedBotId = ui.botSelect.value || rememberedBotId;
-  botCatalog = catalog;
+  catalogView.setCatalog(catalog, error);
   botCatalogRevision++;
-  ui.botSelect.replaceChildren();
-  ui.botCatalogRetry.hidden = error === null;
-  if (catalog === null) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = error === null ? "Загружаем ботов…" : "Боты недоступны";
-    ui.botSelect.append(option);
-    ui.botSelect.value = "";
-    writeText(ui.botCatalogStatus, error ?? "Загружаем список соперников…");
-    return;
-  }
-  for (const bot of catalog.bots) {
-    const option = document.createElement("option");
-    option.value = bot.id;
-    option.textContent = `${bot.name} · ${bot.difficulty}${bot.canPlay ? "" : " · недоступен"}`;
-    option.disabled = !bot.canPlay;
-    ui.botSelect.append(option);
-  }
-  const previous = catalog.bots.find((bot) => bot.id === rememberedBotId);
-  const preferred = catalog.bots.find((bot) => bot.id === catalog.defaultBotId);
-  ui.botSelect.value = (previous ?? preferred ?? catalog.bots.find((bot) => bot.canPlay))?.id ?? "";
-  updateBotSelection();
 }
 
 export function getSelectedBotId(): string | null {
-  return botCatalog?.bots.find((bot) => bot.id === ui.botSelect.value && bot.canPlay)?.id ?? null;
+  return catalogView.getSelectedBotId();
 }
 
 export function updateBotSelection(): void {
-  rememberedBotId = ui.botSelect.value;
+  catalogView.updateSelection();
   botCatalogRevision++;
-  const selected = botCatalog?.bots.find((bot) => bot.id === rememberedBotId);
-  writeText(
-    ui.botCatalogStatus,
-    selected
-      ? `${selected.description}${selected.availabilityReason ? ` ${selected.availabilityReason}` : ""}`
-      : botCatalog?.bots.length === 0
-        ? "В списке пока нет ботов."
-        : "Нет доступных ботов. Вы можете сыграть с другом по сети.",
-  );
 }
 
 function isLocalBot(snapshot: PongSnapshot): boolean {
@@ -279,7 +269,7 @@ function overlayContent(snapshot: PongSnapshot): [string, string, string] | null
       "Матч завершён",
       winner,
       isLocalBot(snapshot)
-        ? "Нажмите «Реванш с ботом», чтобы сыграть ещё раз."
+        ? `Возьмите реванш с «${botModeLabel(snapshot)}» или выберите другого соперника.`
         : "Нажмите «Новый матч», чтобы сыграть ещё раз.",
     ];
   }
@@ -446,10 +436,10 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
     ui.sessionMessage,
     localBot
       ? snapshot.phase === "gameover"
-        ? "Матч с ботом завершён. Возьмите реванш или вернитесь к выбору игры."
+        ? `Матч с «${botModeLabel(snapshot)}» завершён. Возьмите реванш или выберите другого соперника.`
         : `Вы управляете левой ракеткой. Справа играет бот ${botModeLabel(snapshot)}.`
       : snapshot.opponentMode === "none"
-        ? "Выберите игру с ботом или другом."
+        ? snapshot.message || "Выберите игру с ботом или другом."
         : snapshot.message || status + ".",
   );
   ui.opponentFallback.hidden = !botFallback;
@@ -484,6 +474,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   );
 
   const overlay = overlayContent(snapshot);
+  ui.overlay.dataset.phase = snapshot.phase;
   ui.overlay.hidden = overlay === null;
   if (overlay !== null) {
     writeText(ui.overlayKicker, overlay[0]);
@@ -493,8 +484,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
 
   ui.quickButton.disabled = busy || active;
   ui.botButton.disabled = busy || active || getSelectedBotId() === null;
-  ui.botSelect.disabled =
-    busy || active || botCatalog === null || !botCatalog.bots.some((bot) => bot.canPlay);
+  catalogView.setDisabled(busy || active || getSelectedBotId() === null);
   ui.botCatalogRetry.disabled = busy || active;
   writeText(
     ui.quickButton,
@@ -510,7 +500,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
   ui.playerNickname.disabled = busy || active;
   ui.peerAddress.disabled = busy || active;
   ui.restartButton.disabled = busy || !connected || snapshot.phase !== "gameover";
-  writeText(ui.restartButton, localBot ? "Реванш с ботом" : "Новый матч");
+  writeText(ui.restartButton, localBot ? `Реванш с «${botModeLabel(snapshot)}»` : "Новый матч");
   ui.leaveButton.disabled = busy || !active;
   writeText(
     ui.leaveButton,

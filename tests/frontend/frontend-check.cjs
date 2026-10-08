@@ -25,6 +25,8 @@ async function main() {
   let renderCount = 0;
   let trailResets = 0;
   let axis = 0;
+  let reducedMotion = false;
+  const scrollCalls = [];
   const scoreFlashes = { left: 0, right: 0 };
 
   Object.defineProperty(globalThis, "performance", {
@@ -35,7 +37,7 @@ async function main() {
   globalThis.clearTimeout = () => {};
   globalThis.window = {
     devicePixelRatio: 2,
-    matchMedia: () => ({ matches: false }),
+    matchMedia: () => ({ matches: reducedMotion }),
     localStorage: { getItem: () => null, setItem: () => {} },
   };
 
@@ -68,11 +70,63 @@ async function main() {
     };
   }
 
-  function element() {
+  const matchesSelector = (node, selector) => {
+    const tag = selector.match(/^[a-z][a-z0-9]*/i)?.[0];
+    if (tag && node.tagName !== tag.toUpperCase()) return false;
+    const id = selector.match(/#([\w-]+)/)?.[1];
+    if (id && node.id !== id) return false;
+    for (const [, name] of selector.matchAll(/\.([\w-]+)/g))
+      if (!node.classList.contains(name)) return false;
+    for (const [, name, value] of selector.matchAll(/\[([\w-]+)(?:=['"]?([^'"\]]+)['"]?)?\]/g)) {
+      const actual = name.startsWith("data-")
+        ? (node.dataset[
+            name.slice(5).replace(/-([a-z])/g, (_, character) => character.toUpperCase())
+          ] ?? node.getAttribute(name))
+        : (node[name] ?? node.getAttribute(name));
+      if (value === undefined ? actual === null || actual === undefined : String(actual) !== value)
+        return false;
+    }
+    return !selector.includes(":checked") || node.checked;
+  };
+
+  class DomElement {
+    constructor(tag = "div") {
+      Object.assign(this, makeElement(tag));
+    }
+    set className(value) {
+      this._className = value;
+      this.classList.add(...value.split(/\s+/).filter(Boolean));
+    }
+    get className() {
+      return this._className ?? "";
+    }
+  }
+  class InputElement extends DomElement {}
+  globalThis.Element = DomElement;
+  globalThis.HTMLElement = DomElement;
+  globalThis.HTMLInputElement = InputElement;
+
+  function makeElement(tag = "div") {
     const listeners = new Map();
+    const attributes = new Map();
+    const classes = new Set();
     return {
+      tagName: tag.toUpperCase(),
+      id: "",
+      type: "",
+      name: "",
+      checked: false,
       dataset: {},
-      classList: { toggle() {}, remove() {}, add() {} },
+      classList: {
+        contains: (name) => classes.has(name),
+        toggle(name, force = !classes.has(name)) {
+          if (force) classes.add(name);
+          else classes.delete(name);
+          return force;
+        },
+        remove: (...names) => names.forEach((name) => classes.delete(name)),
+        add: (...names) => names.forEach((name) => classes.add(name)),
+      },
       textContent: "",
       hidden: false,
       value: "47777",
@@ -81,23 +135,79 @@ async function main() {
       width: 960,
       height: 540,
       disabled: false,
-      setAttribute() {},
+      setAttribute(name, value) {
+        attributes.set(name, String(value));
+      },
+      getAttribute(name) {
+        return attributes.get(name) ?? null;
+      },
+      removeAttribute(name) {
+        attributes.delete(name);
+      },
       children: [],
+      parentElement: null,
       replacementCount: 0,
+      contains(node) {
+        return this === node || this.children.some((child) => child.contains(node));
+      },
       replaceChildren(...children) {
+        for (const child of this.children) {
+          if (child.contains(document.activeElement)) document.activeElement = null;
+          child.parentElement = null;
+        }
         this.children = [...children];
+        for (const child of children) child.parentElement = this;
         this.replacementCount++;
       },
       append(...children) {
+        for (const child of children) child.parentElement = this;
         this.children.push(...children);
+      },
+      querySelectorAll(selector) {
+        const found = [];
+        for (const child of this.children) {
+          if (matchesSelector(child, selector)) found.push(child);
+          found.push(...child.querySelectorAll(selector));
+        }
+        return found;
+      },
+      querySelector(selector) {
+        return this.querySelectorAll(selector)[0] ?? null;
+      },
+      closest(selector) {
+        if (selector.split(",").some((part) => matchesSelector(this, part.trim()))) return this;
+        return this.parentElement?.closest(selector) ?? null;
+      },
+      focusCalls: [],
+      scrollIntoView(options) {
+        scrollCalls.push({ element: this, options });
+      },
+      focus(options) {
+        for (let node = this; node; node = node.parentElement)
+          if (node.disabled && (node === this || node.tagName === "FIELDSET")) return;
+        this.focusCalls.push(options);
+        document.activeElement = this;
+        document.dispatch?.("focusin", { target: this });
       },
       addEventListener(type, handler) {
         const handlers = listeners.get(type) ?? [];
         handlers.push(handler);
         listeners.set(type, handlers);
       },
-      dispatch(type) {
-        for (const handler of listeners.get(type) ?? []) handler({ preventDefault() {} });
+      dispatch(type, values = {}) {
+        const event = {
+          target: this,
+          preventDefault() {
+            this.defaultPrevented = true;
+          },
+          ...values,
+        };
+        this.dispatchEventToListeners(type, event);
+        return event;
+      },
+      dispatchEventToListeners(type, event) {
+        for (const handler of listeners.get(type) ?? []) handler(event);
+        this.parentElement?.dispatchEventToListeners(type, event);
       },
       getContext() {
         return drawingContext();
@@ -105,11 +215,24 @@ async function main() {
     };
   }
 
+  function element(tag = "div") {
+    return tag === "input" ? new InputElement(tag) : new DomElement(tag);
+  }
+
   const elements = new Map();
   globalThis.document = {
-    createElement: () => element(),
+    activeElement: null,
+    createElement: (tag) => element(tag),
     getElementById(id) {
-      if (!elements.has(id)) elements.set(id, element());
+      for (const root of elements.values()) {
+        const found = root.querySelector(`#${id}`);
+        if (found) return found;
+      }
+      if (!elements.has(id)) {
+        const node = element();
+        node.id = id;
+        elements.set(id, node);
+      }
       return elements.get(id);
     },
   };
@@ -504,9 +627,33 @@ async function main() {
     saveNickname,
     setTab,
     setBotCatalog,
+    getSelectedBotId,
     updateBotSelection,
     ui,
   } = await import("../../.artifacts/frontend-test/view.js");
+  // The static HTML fieldset owns its groups; dynamic children use native parent traversal.
+  ui.botCatalog.tagName = "FIELDSET";
+  ui.botCatalog.append(ui.botCatalogGroups);
+  const radios = () => ui.botCatalog.querySelectorAll('input[name="botId"]');
+  const radio = (id) => radios().find((choice) => choice.value === id);
+  const checkedId = () => radios().find((choice) => choice.checked)?.value ?? null;
+  const card = (id) => radio(id)?.closest(".bot-card");
+  const cardText = (id, selector) => card(id)?.querySelector(selector)?.textContent;
+  const checkBot = (id) => {
+    const choice = radio(id);
+    assert.ok(choice, `Missing configured radio: ${id}`);
+    assert.equal(choice.disabled, false, `Unavailable radio must not be selected: ${id}`);
+    for (const other of radios()) other.checked = other === choice;
+    return choice;
+  };
+  const selectBot = (id) => {
+    assert.equal(
+      ui.botCatalog.disabled,
+      false,
+      "Native selection requires an enabled catalog fieldset",
+    );
+    return checkBot(id).dispatch("change");
+  };
   const catalogEntry = (id, name, extra = {}) => ({
     id,
     name,
@@ -533,6 +680,254 @@ async function main() {
     ],
   };
   setBotCatalog(browserCatalog);
+  const selectionIdle = httpSnapshot({
+    ...noBotIdentity,
+    opponentMode: "none",
+    role: "none",
+    connection: "idle",
+    phase: "waiting",
+  });
+  renderView(selectionIdle, false, false);
+  assert.equal(checkedId(), "calm");
+  assert.equal(getSelectedBotId(), "calm");
+  checkBot("predictive");
+  updateBotSelection();
+  setBotCatalog(browserCatalog);
+  assert.equal(
+    checkedId(),
+    "predictive",
+    "An eligible remembered bot takes precedence over default",
+  );
+  setBotCatalog({
+    ...browserCatalog,
+    bots: browserCatalog.bots.map((bot) =>
+      bot.id === "predictive"
+        ? {
+            ...bot,
+            availability: "unavailable",
+            availabilityReason: "Бот временно недоступен.",
+            canPlay: false,
+          }
+        : bot,
+    ),
+  });
+  assert.equal(checkedId(), "calm", "An ineligible remembered bot yields to eligible default");
+  checkBot("config-only-opponent");
+  updateBotSelection();
+  setBotCatalog({
+    ...browserCatalog,
+    bots: browserCatalog.bots.map((bot) =>
+      bot.id !== "predictive"
+        ? {
+            ...bot,
+            availability: "unavailable",
+            availabilityReason: "Бот временно недоступен.",
+            canPlay: false,
+          }
+        : bot,
+    ),
+  });
+  assert.equal(
+    checkedId(),
+    "predictive",
+    "An ineligible remembered/default bot yields to first eligible entry",
+  );
+
+  const noPlayableCatalog = {
+    ...browserCatalog,
+    bots: browserCatalog.bots.map((bot) => ({
+      ...bot,
+      availability: "unavailable",
+      availabilityReason: "Бот временно недоступен.",
+      canPlay: false,
+    })),
+  };
+  setBotCatalog(noPlayableCatalog);
+  renderView(selectionIdle, false, false);
+  assert.equal(checkedId(), null);
+  assert.equal(getSelectedBotId(), null);
+  assert.equal(ui.botProfile.hidden, true);
+  assert.equal(ui.botButton.disabled, true);
+  assert.equal(radios().length, 3, "Unavailable entries remain visible with their safe status");
+  assert.ok(radios().every((choice) => choice.disabled));
+  assert.match(ui.botCatalogStatus.textContent, /нет доступных|недоступн/i);
+  assert.equal(ui.quickButton.disabled, false);
+  assert.equal(ui.joinButton.disabled, false);
+  setBotCatalog(null);
+  renderView(selectionIdle, false, false);
+  assert.equal(ui.botCatalog.disabled, true);
+  assert.equal(ui.botProfile.hidden, true);
+  assert.match(ui.botCatalogStatus.textContent, /Загружаем/i);
+  assert.equal(ui.quickButton.disabled, false);
+  assert.equal(ui.joinButton.disabled, false);
+
+  const fallbackCatalog = {
+    version: 8,
+    defaultBotId: "primary",
+    bots: [
+      catalogEntry("primary", "Основной", {
+        fallbackBotId: "middle",
+        availability: "unavailable",
+        availabilityReason: "Основной бот недоступен.",
+      }),
+      catalogEntry("middle", "Промежуточный", {
+        order: 20,
+        fallbackBotId: "rescue",
+        availability: "unavailable",
+        availabilityReason: "Резерв также недоступен.",
+      }),
+      catalogEntry("rescue", "Резервный", { order: 30 }),
+    ],
+  };
+  setBotCatalog(fallbackCatalog);
+  renderView(selectionIdle, false, false);
+  assert.equal(checkedId(), "primary");
+  assert.equal(ui.botProfileName.textContent, "Основной");
+  assert.match(ui.botProfileAvailability.textContent, /Резервный/);
+  assert.match(ui.botProfileAvailability.textContent, /недоступен/);
+  assert.equal(
+    ui.botButton.disabled,
+    false,
+    "An explicit playable fallback permits the selected primary ID",
+  );
+  assert.equal(radio("primary").disabled, false);
+  setBotCatalog({
+    ...fallbackCatalog,
+    bots: fallbackCatalog.bots.map((bot) =>
+      bot.id === "rescue" ? { ...bot, availability: "notChecked" } : bot,
+    ),
+  });
+  assert.equal(checkedId(), "primary");
+  assert.match(ui.botProfileAvailability.textContent, /попробуем.*Резервный.*не проверена/);
+  assert.doesNotMatch(ui.botProfileAvailability.textContent, /будет играть/);
+
+  setBotCatalog(browserCatalog);
+  checkBot("predictive");
+  updateBotSelection();
+  assert.match(ui.botProfileAvailability.textContent, /провер|выбор/i);
+  assert.doesNotMatch(ui.botProfileAvailability.textContent, /проверена|проверен успешно/i);
+
+  const htmlName = `<b>${"Х".repeat(57)}</b>`;
+  const groupedCatalog = {
+    version: 8,
+    defaultBotId: "alfa",
+    bots: [
+      catalogEntry("alfa", "Альфа", { order: 5, category: "Практика", glyph: "✦" }),
+      catalogEntry("charlie", "Илья Осторожный", { order: 10, category: "Испытание" }),
+      catalogEntry("beta", htmlName, {
+        order: 20,
+        category: "Практика",
+        difficulty: "Продвинутый",
+        description: '<img src="x" onerror="alert(1)">',
+        style: "<script>Настроенный стиль</script>",
+      }),
+    ],
+  };
+  setBotCatalog(groupedCatalog);
+  renderView(selectionIdle, false, false);
+  assert.deepEqual(
+    ui.botCatalogGroups.children.map((group) => group.querySelector("h3").textContent),
+    ["Практика", "Испытание"],
+  );
+  assert.deepEqual(
+    radios().map((choice) => choice.value),
+    ["alfa", "beta", "charlie"],
+  );
+  assert.equal(cardText("alfa", ".bot-avatar"), "✦");
+  assert.equal(cardText("charlie", ".bot-avatar"), "ИО");
+  assert.equal(cardText("beta", ".bot-card-name"), htmlName);
+  assert.equal(cardText("beta", ".bot-card-difficulty"), "Продвинутый");
+  assert.equal(cardText("beta", ".bot-card-style"), "<script>Настроенный стиль</script>");
+  assert.equal(
+    radio("alfa").getAttribute("aria-labelledby"),
+    card("alfa").querySelector(".bot-card-name").id,
+  );
+  assert.deepEqual(
+    radio("alfa").getAttribute("aria-describedby").split(" "),
+    [".bot-card-difficulty", ".bot-card-style", ".bot-card-availability"].map(
+      (selector) => card("alfa").querySelector(selector).id,
+    ),
+  );
+  assert.equal(card("alfa").htmlFor, radio("alfa").id);
+  checkBot("beta");
+  updateBotSelection();
+  assert.equal(ui.botProfileName.textContent, htmlName);
+  assert.equal(ui.botProfileName.children.length, 0);
+  assert.equal(ui.botProfileDescription.textContent, '<img src="x" onerror="alert(1)">');
+  assert.equal(ui.botProfileStyle.textContent, "<script>Настроенный стиль</script>");
+  assert.equal(ui.botProfileDifficulty.textContent, "Продвинутый");
+  assert.match(ui.botButton.textContent, /<b>Х+<\/b>/);
+
+  checkBot("alfa").focus();
+  updateBotSelection();
+  const focusedRadio = radio("alfa");
+  const stableCards = radios();
+  const stableGroups = [...ui.botCatalogGroups.children];
+  const groupReplacements = ui.botCatalogGroups.replacementCount;
+  setBotCatalog({
+    ...groupedCatalog,
+    bots: groupedCatalog.bots.map((bot) => ({
+      ...bot,
+      description: `${bot.description} Обновлено.`,
+    })),
+  });
+  assert.deepEqual(radios(), stableCards, "Metadata refresh reuses native radio nodes");
+  assert.deepEqual(ui.botCatalogGroups.children, stableGroups);
+  assert.equal(ui.botCatalogGroups.replacementCount, groupReplacements);
+  assert.equal(document.activeElement, focusedRadio);
+  renderView({ ...selectionIdle, tick: 1 }, false, false);
+  renderView({ ...selectionIdle, tick: 2 }, false, false);
+  assert.equal(ui.botCatalogGroups.replacementCount, groupReplacements);
+  assert.equal(document.activeElement, focusedRadio, "Ordinary snapshots preserve catalog focus");
+  setBotCatalog({
+    ...groupedCatalog,
+    defaultBotId: "charlie",
+    bots: groupedCatalog.bots.filter((bot) => bot.id !== "alfa"),
+  });
+  assert.equal(checkedId(), "charlie");
+  assert.equal(
+    document.activeElement,
+    radio("charlie"),
+    "Removing a focused entry moves focus to eligible selection",
+  );
+
+  setBotCatalog(browserCatalog);
+  checkBot("calm");
+  updateBotSelection();
+  setBotCatalog(null, "Не удалось загрузить ботов. Попробуйте ещё раз.");
+  renderView(selectionIdle, false, false);
+  ui.botCatalogRetry.focus();
+  setBotCatalog(browserCatalog);
+  renderView(
+    {
+      ...selectionIdle,
+      ...botIdentity("calm", "Тихий"),
+      role: "host",
+      connection: "connected",
+      phase: "playing",
+    },
+    false,
+    false,
+  );
+  assert.equal(ui.botCatalog.disabled, true);
+  assert.equal(
+    document.activeElement,
+    ui.botCatalogRetry,
+    "Pending catalog focus does not move into disabled game controls",
+  );
+  radio("calm").focus();
+  assert.equal(
+    document.activeElement,
+    ui.botCatalogRetry,
+    "Native focus ignores a disabled fieldset descendant",
+  );
+  renderView(selectionIdle, false, false);
+  assert.equal(
+    document.activeElement,
+    radio("calm"),
+    "Deferred catalog focus restores when selection becomes available",
+  );
+
   const lanSnapshot = {
     ...session.snapshot,
     ...noBotIdentity,
@@ -657,7 +1052,8 @@ async function main() {
     false,
   );
   assert.equal(ui.overlayTitle.textContent, "Победа: Лиса");
-  assert.equal(ui.restartButton.textContent, "Реванш с ботом");
+  assert.equal(ui.restartButton.textContent, "Реванш с «Тихий»");
+  assert.equal(ui.overlay.dataset.phase, "gameover");
   assert.equal(ui.restartButton.disabled, false);
   assert.equal(ui.shareBox.hidden, true);
   renderView(
@@ -720,7 +1116,7 @@ async function main() {
     false,
   );
   assert.equal(ui.opponentFallback.hidden, false);
-  assert.equal(ui.restartButton.textContent, "Реванш с ботом");
+  assert.equal(ui.restartButton.textContent, "Реванш с «Тихий»");
   renderView(
     { ...lanSnapshot, role: "guest", connection: "awaitingAcceptance", phase: "waiting" },
     false,
@@ -772,6 +1168,11 @@ async function main() {
   assert.equal(ui.opponentFallback.hidden, true);
   assert.equal(ui.networkHint.hidden, true);
   assert.equal(ui.arenaModeLabel.textContent, "Выберите режим");
+  assert.equal(ui.sessionMessage.textContent, "Нажмите «Быстрая игра» или подключитесь к другу.");
+  const terminalFailureMessage = "Бот не смог продолжить игру. Выберите другого соперника.";
+  renderView({ ...selectionIdle, message: terminalFailureMessage }, false, false);
+  assert.equal(ui.sessionMessage.textContent, terminalFailureMessage);
+  renderView({ ...selectionIdle, message: "" }, false, false);
   assert.equal(ui.sessionMessage.textContent, "Выберите игру с ботом или другом.");
   setTab("join");
   assert.equal(ui.quickPanel.hidden, true);
@@ -933,14 +1334,36 @@ async function main() {
   const html = readFileSync(`${__dirname}/../../frontend/index.html`, "utf8");
   assert.match(
     html,
-    /<form[^>]+id="bot-form"[\s\S]*?<select[^>]+id="bot-select"[\s\S]*?<button[^>]+id="bot-button"/,
+    /<form[^>]+id="bot-form"[\s\S]*?<fieldset[^>]+id="bot-catalog"[\s\S]*?id="bot-catalog-groups"[\s\S]*?<button[^>]+id="bot-button"/,
   );
-  assert.doesNotMatch(html, /hard-form|hard-button|Simple|Hard/);
+  assert.doesNotMatch(html, /bot-select|hard-form|hard-button|Simple|Hard/);
+  assert.match(html, /id="bot-profile"/);
+  assert.match(html, /id="bot-profile-description"/);
   assert.match(html, /id="opponent-fallback"/);
   assert.match(html, /id="tab-host"/);
   assert.match(html, /id="tab-join"/);
-  window.addEventListener = () => {};
-  document.addEventListener = () => {};
+  assert.match(html, /<section[^>]+id="game-arena"[^>]+tabindex="-1"/);
+  const bindEvents = (target) => {
+    const listeners = new Map();
+    target.addEventListener = (type, handler) => {
+      const handlers = listeners.get(type) ?? [];
+      handlers.push(handler);
+      listeners.set(type, handlers);
+    };
+    target.dispatch = (type, values = {}) => {
+      const event = {
+        target: null,
+        preventDefault() {
+          this.defaultPrevented = true;
+        },
+        ...values,
+      };
+      for (const handler of listeners.get(type) ?? []) handler(event);
+      return event;
+    };
+  };
+  bindEvents(window);
+  bindEvents(document);
   globalThis.setInterval = () => 0;
   globalThis.requestAnimationFrame = () => 0;
   globalThis.location = { protocol: "http:", host: "127.0.0.1:47777" };
@@ -950,6 +1373,7 @@ async function main() {
     static instances = [];
     readyState = 0;
     listeners = new Map();
+    sent = [];
     constructor() {
       WebSocket.instances.push(this);
     }
@@ -961,6 +1385,9 @@ async function main() {
     }
     close() {
       this.readyState = 3;
+    }
+    send(payload) {
+      this.sent.push(payload);
     }
   };
   const requests = [];
@@ -978,6 +1405,11 @@ async function main() {
   let rejectRestart = false;
   let invalidActionResponse = false;
   let holdNextCatalog = false;
+  let pushNewerBotDuringStart = false;
+  let pushIdleBeforeMatchingBotResponse = false;
+  let statusAfterIdleFrame = null;
+  let pushOldGameOverDuringRestart = false;
+  let supersedingBotDuringStart = null;
   let releaseOldCatalog = null;
   let serverSnapshot = idleSnapshot;
   globalThis.fetch = async (path, options) => {
@@ -1026,14 +1458,53 @@ async function main() {
           localNickname: "Browser Tester",
           roundId: 61,
         }
-      : idleSnapshot;
-    if (path === "/api/local-opponent" || path === "/api/leave") serverSnapshot = data;
+      : path === "/api/restart"
+        ? {
+            ...serverSnapshot,
+            phase: "countdown",
+            roundId: serverSnapshot.roundId + 1,
+            tick: 0,
+            leftScore: 0,
+            rightScore: 0,
+          }
+        : idleSnapshot;
+    if (["/api/local-opponent", "/api/leave", "/api/restart"].includes(path)) serverSnapshot = data;
+    if (path === "/api/restart" && pushOldGameOverDuringRestart) {
+      pushOldGameOverDuringRestart = false;
+      pushSnapshot({
+        ...data,
+        phase: "gameover",
+        roundId: data.roundId - 1,
+        tick: 100,
+        leftScore: 5,
+        rightScore: 3,
+      });
+    }
+    if (selected && pushNewerBotDuringStart) {
+      pushNewerBotDuringStart = false;
+      serverSnapshot = { ...data, phase: "playing", tick: 5 };
+      pushSnapshot(serverSnapshot);
+    }
+    if (selected && pushIdleBeforeMatchingBotResponse) {
+      pushIdleBeforeMatchingBotResponse = false;
+      if (statusAfterIdleFrame === "left") serverSnapshot = idleSnapshot;
+      if (statusAfterIdleFrame === "later-round")
+        serverSnapshot = { ...data, phase: "playing", roundId: data.roundId + 1, tick: 5 };
+      statusAfterIdleFrame = null;
+      pushSnapshot(idleSnapshot);
+    }
+    if (selected && supersedingBotDuringStart !== null) {
+      const newer = browserCatalog.bots.find((bot) => bot.id === supersedingBotDuringStart);
+      supersedingBotDuringStart = null;
+      serverSnapshot = { ...data, ...botIdentity(newer.id, newer.name), phase: "playing", tick: 5 };
+      pushSnapshot(serverSnapshot);
+    }
     return {
       ok: true,
       text: async () => JSON.stringify(path === "/api/status" ? serverSnapshot : data),
     };
   };
-  const { encode } = await import("@msgpack/msgpack");
+  const { encode, decode } = await import("@msgpack/msgpack");
   const pushSnapshot = (next) => {
     const payload = [
       8,
@@ -1080,16 +1551,61 @@ async function main() {
       .dispatch("message", { data: Uint8Array.from(encode(payload)).buffer });
   };
   const catalogRequests = () => requests.filter((request) => request.path === "/api/bots").length;
+  const statusRequests = () => requests.filter((request) => request.path === "/api/status").length;
   const flush = () => new Promise((resolve) => setImmediate(resolve));
   const { startGame } = await import("../../.artifacts/frontend-test/game.js");
   ui.playerNickname.value = "Browser Tester";
   startGame();
   await flush();
-  assert.equal(ui.botSelect.value, "calm");
-  assert.equal(ui.botSelect.children.length, 3);
+  const browserSocket = WebSocket.instances.at(-1);
+  browserSocket.readyState = WebSocket.OPEN;
+  const lastSentAxis = () => decode(new Uint8Array(browserSocket.sent.at(-1)))[1];
+  assert.equal(checkedId(), "calm");
+  assert.equal(radios().length, 3);
   assert.equal(ui.botButton.disabled, false);
+  const beforeFirstPlayScroll = scrollCalls.length;
+  const beforeFirstPlayFocus = ui.arenaPanel.focusCalls.length;
+  const beforeFirstPlayStatus = statusRequests();
+  window.dispatch("keydown", { key: "ArrowDown" });
+  assert.equal(lastSentAxis(), 1);
+  pushIdleBeforeMatchingBotResponse = true;
   ui.botForm.dispatch("submit");
   await flush();
+  assert.equal(
+    statusRequests(),
+    beforeFirstPlayStatus + 1,
+    "A superseded successful Play response reconciles current status once before revealing",
+  );
+  assert.ok(
+    requests.filter((request) => request.path === "/api/status").at(-1).options.signal instanceof
+      AbortSignal,
+    "The reconciliation status request carries a bounded abort signal",
+  );
+  assert.equal(
+    ui.rightPlayer.textContent,
+    "Бот Тихий",
+    "Current status confirms the requested bot and same action round",
+  );
+  assert.equal(
+    scrollCalls.length,
+    beforeFirstPlayScroll + 1,
+    "A newer pre-start idle WebSocket frame does not suppress reveal for matching successful Play",
+  );
+  assert.equal(ui.arenaPanel.focusCalls.length, beforeFirstPlayFocus + 1);
+  assert.equal(document.activeElement, ui.arenaPanel);
+  assert.equal(
+    lastSentAxis(),
+    0,
+    "Current status confirmation clears held input before the arena is revealed",
+  );
+  pushSnapshot(serverSnapshot);
+  await flush();
+  assert.equal(
+    scrollCalls.length,
+    beforeFirstPlayScroll + 1,
+    "The subsequent active bot WebSocket frame does not reveal the arena a second time",
+  );
+  assert.equal(ui.arenaPanel.focusCalls.length, beforeFirstPlayFocus + 1);
   const botRequest = requests.find((request) => request.path === "/api/local-opponent");
   assert.ok(botRequest);
   assert.equal(botRequest.options.method, "POST");
@@ -1099,13 +1615,92 @@ async function main() {
   });
   assert.equal(ui.arenaModeLabel.textContent, "Против бота · Тихий");
   assert.equal(ui.rightPlayer.textContent, "Бот Тихий");
-  assert.equal(ui.botSelect.disabled, true);
+  assert.equal(ui.botCatalog.disabled, true);
+  assert.equal(scrollCalls.length, beforeFirstPlayScroll + 1);
+  assert.deepEqual(scrollCalls.at(-1), {
+    element: ui.arenaPanel,
+    options: { behavior: "instant", block: "start" },
+  });
+  assert.equal(ui.arenaPanel.focusCalls.length, beforeFirstPlayFocus + 1);
+  assert.deepEqual(ui.arenaPanel.focusCalls.at(-1), { preventScroll: true });
+  assert.equal(document.activeElement, ui.arenaPanel);
+  assert.equal(lastSentAxis(), 0, "A successful bot launch clears held paddle input");
+  window.dispatch("keydown", { key: "ArrowUp", target: ui.arenaPanel });
+  assert.equal(lastSentAxis(), -1, "Keyboard controls work after focus leaves the catalog");
+  window.dispatch("keyup", { key: "ArrowUp", target: ui.arenaPanel });
+  assert.equal(lastSentAxis(), 0);
+  const normalSnapshotScrolls = scrollCalls.length;
+  const normalSnapshotArenaFocus = ui.arenaPanel.focusCalls.length;
+  pushSnapshot({ ...serverSnapshot, tick: 1 });
+  pushSnapshot({ ...serverSnapshot, tick: 2 });
+  await flush();
+  assert.equal(
+    scrollCalls.length,
+    normalSnapshotScrolls,
+    "Ordinary bot snapshots never move the page",
+  );
+  assert.equal(ui.arenaPanel.focusCalls.length, normalSnapshotArenaFocus);
+  renderView(
+    {
+      ...lanSnapshot,
+      ...noBotIdentity,
+      opponentMode: "lan",
+      role: "host",
+      connection: "connected",
+    },
+    false,
+    false,
+  );
+  renderView(
+    {
+      ...lanSnapshot,
+      ...noBotIdentity,
+      opponentMode: "lan",
+      role: "host",
+      connection: "connected",
+      tick: 2,
+    },
+    false,
+    false,
+  );
+  assert.equal(
+    scrollCalls.length,
+    normalSnapshotScrolls,
+    "LAN snapshots never trigger deliberate bot launch navigation",
+  );
+  assert.equal(ui.arenaPanel.focusCalls.length, normalSnapshotArenaFocus);
   assert.ok(requests.filter((request) => request.path === "/api/bots").length >= 2);
 
   ui.leaveButton.dispatch("click");
   await flush();
-  ui.botSelect.value = "config-only-opponent";
-  ui.botSelect.dispatch("change");
+  const beforeLanSnapshots = scrollCalls.length;
+  const beforeLanSnapshotFocus = ui.arenaPanel.focusCalls.length;
+  const liveLanSnapshot = {
+    ...serverSnapshot,
+    ...noBotIdentity,
+    opponentMode: "lan",
+    role: "host",
+    connection: "connected",
+    phase: "playing",
+    udpPort: 47777,
+    peerAddress: "192.168.1.42:47777",
+    localNickname: "Browser Tester",
+    peerNickname: "LAN Peer",
+  };
+  pushSnapshot(liveLanSnapshot);
+  pushSnapshot({ ...liveLanSnapshot, tick: 2 });
+  await flush();
+  assert.equal(scrollCalls.length, beforeLanSnapshots);
+  assert.equal(ui.arenaPanel.focusCalls.length, beforeLanSnapshotFocus);
+  pushSnapshot(serverSnapshot);
+  await flush();
+  const beforeRadioBrowse = scrollCalls.length;
+  radio("config-only-opponent").focus();
+  selectBot("config-only-opponent");
+  assert.equal(document.activeElement, radio("config-only-opponent"));
+  assert.equal(scrollCalls.length, beforeRadioBrowse, "Radio browsing does not scroll the page");
+  reducedMotion = true;
+  pushNewerBotDuringStart = true;
   ui.botForm.dispatch("submit");
   await flush();
   const extraRequest = requests.find(
@@ -1119,14 +1714,26 @@ async function main() {
     botId: "config-only-opponent",
   });
   assert.equal(ui.rightPlayer.textContent, "Бот Дополнительный бот из конфигурации");
-  assert.equal(ui.botSelect.value, "config-only-opponent");
+  assert.equal(checkedId(), "config-only-opponent");
+  assert.equal(scrollCalls.length, beforeRadioBrowse + 1);
+  assert.equal(
+    scrollCalls.at(-1).options.behavior,
+    "instant",
+    "Reduced-motion bot launch never animates scrolling",
+  );
+  assert.equal(document.activeElement, ui.arenaPanel);
+  assert.equal(
+    serverSnapshot.phase,
+    "playing",
+    "A newer accepted WebSocket snapshot can precede the matching Play response",
+  );
+  reducedMotion = false;
   ui.leaveButton.dispatch("click");
   await flush();
-  assert.equal(ui.botSelect.value, "config-only-opponent");
+  assert.equal(checkedId(), "config-only-opponent");
 
-  // A failed start refreshes truthful availability and keeps the requested selection visible.
-  ui.botSelect.value = "predictive";
-  ui.botSelect.dispatch("change");
+  // A failed start keeps its card/reason visible and selects an eligible default for the next attempt.
+  selectBot("predictive");
   catalogPayload = {
     ...browserCatalog,
     bots: browserCatalog.bots.map((bot) =>
@@ -1141,23 +1748,30 @@ async function main() {
     ),
   };
   rejectSelection = true;
+  radio("predictive").focus();
+  const rejectedPlayScrolls = scrollCalls.length;
+  const rejectedPlayArenaFocus = ui.arenaPanel.focusCalls.length;
   ui.botForm.dispatch("submit");
   await flush();
-  assert.equal(ui.botSelect.value, "predictive");
-  assert.equal(ui.botButton.disabled, true);
-  assert.match(ui.botCatalogStatus.textContent, /Выбранный бот недоступен/);
+  assert.equal(checkedId(), "calm");
+  assert.equal(ui.botButton.disabled, false);
+  assert.match(cardText("predictive", ".bot-card-availability"), /Выбранный бот недоступен/);
+  assert.match(ui.toast.textContent, /Выбранный бот недоступен/);
+  assert.equal(radio("predictive").disabled, true);
   assert.equal(
-    ui.botSelect.children.find((option) => option.value === "predictive").disabled,
-    true,
+    scrollCalls.length,
+    rejectedPlayScrolls,
+    "Rejected Play never scrolls toward a nonexistent match",
   );
+  assert.equal(ui.arenaPanel.focusCalls.length, rejectedPlayArenaFocus);
+  assert.notEqual(document.activeElement, ui.arenaPanel);
 
-  // A terminal strategy failure refreshes once, preserving the failed selection. A late
+  // A terminal strategy failure refreshes once, preserving the failed entry's status. A late
   // catalog response started before that failure cannot restore stale playable status.
   rejectSelection = false;
   catalogPayload = browserCatalog;
   setBotCatalog(browserCatalog);
-  ui.botSelect.value = "calm";
-  ui.botSelect.dispatch("change");
+  selectBot("calm");
   holdNextCatalog = true;
   ui.botForm.dispatch("submit");
   await flush();
@@ -1176,28 +1790,32 @@ async function main() {
         : bot,
     ),
   };
-  serverSnapshot = idleSnapshot;
+  serverSnapshot = { ...idleSnapshot, message: terminalFailureMessage };
   pushSnapshot(serverSnapshot);
   await flush();
   assert.equal(catalogRequests(), beforeTerminalFailure + 1);
-  assert.equal(ui.botSelect.value, "calm");
-  assert.equal(ui.botButton.disabled, true);
-  assert.match(ui.botCatalogStatus.textContent, /перестал отвечать/);
-  pushSnapshot({ ...idleSnapshot, tick: 1 });
-  pushSnapshot({ ...idleSnapshot, tick: 2 });
+  assert.equal(checkedId(), "predictive");
+  assert.equal(ui.botButton.disabled, false);
+  assert.match(cardText("calm", ".bot-card-availability"), /перестал отвечать/);
+  assert.equal(
+    ui.sessionMessage.textContent,
+    terminalFailureMessage,
+    "The backend's terminal failure survives the idle transition",
+  );
+  pushSnapshot({ ...serverSnapshot, tick: 1 });
+  pushSnapshot({ ...serverSnapshot, tick: 2 });
   await flush();
   assert.equal(catalogRequests(), beforeTerminalFailure + 1);
   releaseOldCatalog();
   await flush();
-  assert.equal(ui.botButton.disabled, true);
-  assert.equal(ui.botSelect.children.find((option) => option.value === "calm").disabled, true);
+  assert.equal(ui.botButton.disabled, false);
+  assert.equal(radio("calm").disabled, true);
 
   // An unsolicited runtime fallback refreshes primary availability once and keeps both
   // names/reason visible. Later ticks preserve the selection without catalog fetches.
   catalogPayload = browserCatalog;
   setBotCatalog(browserCatalog);
-  ui.botSelect.value = "predictive";
-  ui.botSelect.dispatch("change");
+  selectBot("predictive");
   ui.botForm.dispatch("submit");
   await flush();
   const beforeFallback = catalogRequests();
@@ -1226,12 +1844,60 @@ async function main() {
   pushSnapshot(serverSnapshot);
   await flush();
   assert.equal(catalogRequests(), beforeFallback + 1);
-  assert.equal(ui.botSelect.value, "predictive");
-  assert.match(ui.botCatalogStatus.textContent, /перестал отвечать/);
+  assert.equal(checkedId(), "predictive");
+  assert.match(ui.botProfileAvailability.textContent, /перестал отвечать.*Тихий/);
   assert.match(ui.opponentFallback.textContent, /Прогноз.*Тихий.*перестал отвечать/);
   pushSnapshot({ ...serverSnapshot, tick: 11 });
   await flush();
   assert.equal(catalogRequests(), beforeFallback + 1);
+  serverSnapshot = { ...serverSnapshot, phase: "gameover", tick: 100, leftScore: 5, rightScore: 3 };
+  pushSnapshot(serverSnapshot);
+  assert.equal(ui.restartButton.textContent, "Реванш с «Тихий»");
+  const fallbackRound = serverSnapshot.roundId;
+  const beforeRematchScrolls = scrollCalls.length;
+  const beforeRematchFocus = ui.arenaPanel.focusCalls.length;
+  const beforeRematchStatus = statusRequests();
+  window.dispatch("keydown", { key: "ArrowDown", target: ui.arenaPanel });
+  assert.equal(lastSentAxis(), 1);
+  pushOldGameOverDuringRestart = true;
+  ui.restartButton.dispatch("click");
+  await flush();
+  assert.equal(
+    statusRequests(),
+    beforeRematchStatus + 1,
+    "An old game-over WebSocket frame during rematch requires one current-status reconciliation",
+  );
+  assert.ok(
+    requests.filter((request) => request.path === "/api/status").at(-1).options.signal instanceof
+      AbortSignal,
+  );
+  assert.ok(requests.some((request) => request.path === "/api/restart"));
+  assert.equal(serverSnapshot.roundId, fallbackRound + 1);
+  assert.equal(
+    ui.overlay.dataset.phase,
+    "countdown",
+    "Current status accepts the new rematch round",
+  );
+  assert.equal(ui.restartButton.disabled, true);
+  assert.equal(serverSnapshot.requestedBotId, "predictive");
+  assert.equal(serverSnapshot.effectiveBotId, "calm");
+  assert.equal(ui.opponentFallback.hidden, false);
+  assert.match(ui.opponentFallback.textContent, /Прогноз.*Тихий.*перестал отвечать/);
+  assert.equal(ui.rightPlayer.textContent, "Бот Тихий");
+  assert.equal(checkedId(), "predictive");
+  assert.equal(scrollCalls.length, beforeRematchScrolls + 1);
+  assert.equal(ui.arenaPanel.focusCalls.length, beforeRematchFocus + 1);
+  assert.equal(document.activeElement, ui.arenaPanel);
+  assert.equal(
+    lastSentAxis(),
+    0,
+    "Successful rematch clears held input before arena control resumes",
+  );
+  pushSnapshot({ ...serverSnapshot, tick: 1 });
+  await flush();
+  assert.equal(statusRequests(), beforeRematchStatus + 1);
+  assert.equal(scrollCalls.length, beforeRematchScrolls + 1);
+  assert.equal(ui.arenaPanel.focusCalls.length, beforeRematchFocus + 1);
   ui.leaveButton.dispatch("click");
   await flush();
 
@@ -1239,8 +1905,7 @@ async function main() {
   // a later rejected Play attempt; its snapshot transition shares the POST's refresh.
   catalogPayload = browserCatalog;
   setBotCatalog(browserCatalog);
-  ui.botSelect.value = "calm";
-  ui.botSelect.dispatch("change");
+  selectBot("calm");
   ui.botForm.dispatch("submit");
   await flush();
   serverSnapshot = { ...serverSnapshot, phase: "gameover", tick: 100 };
@@ -1260,20 +1925,79 @@ async function main() {
     ),
   };
   rejectRestart = true;
+  const failedRematchScrolls = scrollCalls.length;
+  const failedRematchArenaFocus = ui.arenaPanel.focusCalls.length;
   ui.restartButton.dispatch("click");
   await flush();
   assert.equal(catalogRequests(), beforeRematchFailure + 1);
-  assert.equal(ui.botSelect.value, "calm");
-  assert.equal(ui.botButton.disabled, true);
-  assert.match(ui.botCatalogStatus.textContent, /не смог продолжить игру/);
+  assert.equal(checkedId(), "predictive");
+  assert.equal(ui.botButton.disabled, false);
+  assert.match(cardText("calm", ".bot-card-availability"), /не смог продолжить игру/);
   assert.equal(ui.leaveButton.disabled, true);
+  assert.equal(scrollCalls.length, failedRematchScrolls);
+  assert.equal(ui.arenaPanel.focusCalls.length, failedRematchArenaFocus);
+
+  // A matching successful response must not steal focus from a newer different bot session.
+  catalogPayload = browserCatalog;
+  setBotCatalog(browserCatalog);
+  renderView(idleSnapshot, false, false);
+  selectBot("predictive");
+  const beforeSupersedingScrolls = scrollCalls.length;
+  const beforeSupersedingFocus = ui.arenaPanel.focusCalls.length;
+  supersedingBotDuringStart = "calm";
+  ui.botForm.dispatch("submit");
+  await flush();
+  assert.equal(ui.rightPlayer.textContent, "Бот Тихий");
+  assert.equal(scrollCalls.length, beforeSupersedingScrolls);
+  assert.equal(ui.arenaPanel.focusCalls.length, beforeSupersedingFocus);
+  ui.leaveButton.dispatch("click");
+  await flush();
+
+  // An older successful response never reveals a match after a later leave or different round.
+  for (const scenario of ["left", "later-round"]) {
+    catalogPayload = browserCatalog;
+    setBotCatalog(browserCatalog);
+    renderView(idleSnapshot, false, false);
+    selectBot("calm");
+    const beforeScrolls = scrollCalls.length;
+    const beforeFocus = ui.arenaPanel.focusCalls.length;
+    const beforeStatus = statusRequests();
+    pushIdleBeforeMatchingBotResponse = true;
+    statusAfterIdleFrame = scenario;
+    ui.botForm.dispatch("submit");
+    await flush();
+    assert.equal(
+      statusRequests(),
+      beforeStatus + 1,
+      "Superseded Play uses one bounded current-status check",
+    );
+    assert.equal(
+      scrollCalls.length,
+      beforeScrolls,
+      `Current status ${scenario} rejects stale arena reveal`,
+    );
+    assert.equal(ui.arenaPanel.focusCalls.length, beforeFocus);
+    if (scenario === "left") {
+      assert.equal(ui.arenaModeLabel.textContent, "Выберите режим");
+      assert.equal(serverSnapshot.opponentMode, "none");
+    } else {
+      assert.equal(ui.rightPlayer.textContent, "Бот Тихий");
+      assert.equal(serverSnapshot.roundId, 62);
+      ui.leaveButton.dispatch("click");
+      await flush();
+    }
+  }
 
   // Parser errors returned by a POST remain Russian in the visible toast.
   invalidActionResponse = true;
+  const beforeRejectedLanAction = scrollCalls.length;
+  const beforeRejectedLanFocus = ui.arenaPanel.focusCalls.length;
   ui.quickForm.dispatch("submit");
   await flush();
   assert.match(ui.toast.textContent, /некорректный ответ/);
   assert.doesNotMatch(ui.toast.textContent, /Unsupported|Invalid snapshot/);
+  assert.equal(scrollCalls.length, beforeRejectedLanAction);
+  assert.equal(ui.arenaPanel.focusCalls.length, beforeRejectedLanFocus);
 
   // Fetch errors offer retry in Russian, and configured HTML-looking metadata remains text.
   catalogError = true;
@@ -1282,6 +2006,11 @@ async function main() {
   assert.equal(ui.botCatalogRetry.hidden, false);
   assert.match(ui.botCatalogStatus.textContent, /Не удалось загрузить ботов/);
   assert.doesNotMatch(ui.botCatalogStatus.textContent, /Network|sensitive/);
+  assert.equal(ui.quickButton.disabled, false);
+  assert.equal(ui.joinButton.disabled, false);
+  assert.equal(ui.botCatalog.disabled, true);
+  ui.botCatalogRetry.focus();
+  assert.equal(document.activeElement, ui.botCatalogRetry);
   catalogError = false;
   catalogPayload = {
     ...browserCatalog,
@@ -1292,20 +2021,26 @@ async function main() {
   ui.botCatalogRetry.dispatch("click");
   await flush();
   assert.equal(ui.botCatalogRetry.hidden, true);
-  assert.match(
-    ui.botSelect.children.find((option) => option.value === "config-only-opponent").textContent,
-    /<b>Настроенный бот<\/b>/,
+  assert.equal(ui.botCatalog.disabled, false);
+  assert.equal(
+    document.activeElement,
+    radio(checkedId()),
+    "Retry restores native radio focus only after fieldset is enabled",
   );
-  const replacements = ui.botSelect.replacementCount;
+  assert.match(cardText("config-only-opponent", ".bot-card-name"), /<b>Настроенный бот<\/b>/);
+  const replacements = ui.botCatalogGroups.replacementCount;
   renderView({ ...idleSnapshot, tick: 1 }, false, false);
   renderView({ ...idleSnapshot, tick: 2 }, false, false);
-  assert.equal(ui.botSelect.replacementCount, replacements);
-  assert.equal(ui.botSelect.value, "calm");
+  assert.equal(ui.botCatalogGroups.replacementCount, replacements);
+  assert.equal(checkedId(), "calm");
   setBotCatalog({ version: 8, defaultBotId: "calm", bots: [] });
   renderView(idleSnapshot, false, false);
   assert.equal(ui.botButton.disabled, true);
   assert.match(ui.botCatalogStatus.textContent, /нет ботов/);
+  assert.equal(checkedId(), null);
+  assert.equal(ui.botProfile.hidden, true);
   assert.equal(ui.quickButton.disabled, false);
+  assert.equal(ui.joinButton.disabled, false);
   console.log(
     "Frontend behavior checks passed: motion, prediction, events, bot identities/fallback, LAN, catalog refresh, and generic selection.",
   );

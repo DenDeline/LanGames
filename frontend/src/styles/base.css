@@ -22,7 +22,7 @@
   box-sizing: border-box;
 }
 html {
-  min-width: 320px;
+  min-width: 0;
 }
 body {
   min-height: 100vh;

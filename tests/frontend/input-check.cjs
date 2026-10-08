@@ -33,8 +33,16 @@ async function main() {
     constructor(editable = false) {
       this.editable = editable;
     }
-    closest() {
-      return this.editable || null;
+    closest(selector) {
+      const tag =
+        typeof this.editable === "string" ? this.editable : this.editable ? "input" : null;
+      return tag &&
+        selector
+          .split(",")
+          .map((part) => part.trim())
+          .includes(tag)
+        ? this
+        : null;
     }
   };
   globalThis.window = eventTarget();
@@ -77,6 +85,21 @@ async function main() {
   assert.ok(keyUpY < startY);
   window.dispatch("keyup", { key: "w" });
   assert.equal(input.axis, 0);
+  const botRadio = new Element("input");
+  botRadio.type = "radio";
+  botRadio.name = "botId";
+  for (const key of ["ArrowUp", "ArrowDown", "w", "s"]) {
+    assert.equal(
+      window.dispatch("keydown", { key, target: botRadio }).prevented,
+      undefined,
+      "Native catalog radio keys stay available to browser selection",
+    );
+    assert.equal(input.axis, 0, "Catalog navigation must not move the paddle");
+  }
+  window.dispatch("keydown", { key: "ArrowDown" });
+  assert.equal(input.axis, 1);
+  document.dispatch("focusin", { target: botRadio });
+  assert.equal(input.axis, 0, "Entering the catalog clears a held paddle input");
 
   window.dispatch("keydown", { key: "ArrowDown" });
   assert.equal(input.axis, 1);

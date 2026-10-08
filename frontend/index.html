@@ -26,7 +26,7 @@
       </header>
 
       <main class="layout">
-        <section class="arena-panel" aria-label="Игровое поле">
+        <section class="arena-panel" id="game-arena" tabindex="-1" aria-label="Игровое поле">
           <div class="arena-heading">
             <div>
               <p class="eyebrow" id="arena-mode-label">Выберите режим</p>
@@ -110,16 +110,52 @@
 
             <form class="bot-offer" id="bot-form">
               <span class="bot-label">ОДИН ИГРОК</span>
-              <label for="bot-select">Бот-соперник</label>
-              <select id="bot-select" aria-describedby="bot-catalog-status" disabled>
-                <option value="">Загружаем ботов…</option>
-              </select>
+              <fieldset
+                class="bot-catalog"
+                id="bot-catalog"
+                aria-describedby="bot-catalog-status"
+                disabled
+              >
+                <legend>Боты-соперники</legend>
+                <div class="bot-catalog-groups" id="bot-catalog-groups"></div>
+              </fieldset>
               <p id="bot-catalog-status" role="status" aria-live="polite">
                 Загружаем список соперников…
               </p>
               <button class="secondary-button" id="bot-catalog-retry" type="button" hidden>
                 Повторить
               </button>
+              <section
+                class="bot-profile"
+                id="bot-profile"
+                aria-labelledby="bot-profile-name"
+                hidden
+              >
+                <div class="bot-profile-heading">
+                  <span class="bot-avatar" id="bot-profile-avatar" aria-hidden="true"></span>
+                  <div>
+                    <span class="bot-profile-label">ВЫБРАННЫЙ СОПЕРНИК</span>
+                    <h3 id="bot-profile-name"></h3>
+                  </div>
+                </div>
+                <p id="bot-profile-description"></p>
+                <dl class="bot-profile-details">
+                  <div>
+                    <dt>Сложность</dt>
+                    <dd id="bot-profile-difficulty"></dd>
+                  </div>
+                  <div>
+                    <dt>Стиль</dt>
+                    <dd id="bot-profile-style"></dd>
+                  </div>
+                </dl>
+                <p
+                  class="bot-profile-availability"
+                  id="bot-profile-availability"
+                  role="status"
+                  aria-live="polite"
+                ></p>
+              </section>
               <button class="primary-button bot-button" id="bot-button" type="submit" disabled>
                 Играть с ботом
               </button>

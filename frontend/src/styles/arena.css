@@ -66,14 +66,14 @@
 }
 .score-player {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
   color: #a9b7c9;
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.13em;
   text-transform: uppercase;
-  white-space: nowrap;
+  white-space: normal;
+  line-height: 1.35;
 }
 .score-side-left .score-player {
   color: var(--cyan);
@@ -315,4 +315,23 @@ kbd {
 }
 .touch-controls button:active {
   background: #275462;
+}
+
+#arena-mode-label,
+.overlay-kicker,
+#overlay-title,
+#overlay-description {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.arena-heading > div {
+  min-width: 0;
+}
+
+#game-arena {
+  scroll-margin-top: 16px;
+}
+#game-arena:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 4px;
 }

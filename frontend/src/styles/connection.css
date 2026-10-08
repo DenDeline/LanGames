@@ -293,15 +293,3 @@ button:disabled {
   font-size: 11px;
   line-height: 1.4;
 }
-
-.bot-offer label {
-  display: block;
-  margin-bottom: 8px;
-  font-size: 12px;
-}
-.bot-offer select {
-  margin-bottom: 12px;
-}
-#bot-catalog-retry {
-  margin-bottom: 10px;
-}

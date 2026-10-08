@@ -105,6 +105,24 @@
   #overlay-description {
     font-size: 10px;
   }
+  .game-overlay[data-phase="gameover"] {
+    gap: 3px;
+    padding: 6px;
+  }
+  .game-overlay[data-phase="gameover"] .overlay-kicker {
+    font-size: 8px;
+    letter-spacing: 0.08em;
+    line-height: 1.2;
+  }
+  .game-overlay[data-phase="gameover"] #overlay-title {
+    font-size: clamp(12px, 3.8vw, 15px);
+    letter-spacing: -0.02em;
+    line-height: 1.08;
+  }
+  .game-overlay[data-phase="gameover"] #overlay-description {
+    font-size: 10px;
+    line-height: 1.2;
+  }
   .keyboard-hint {
     font-size: 10px;
   }

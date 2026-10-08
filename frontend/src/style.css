@@ -2,6 +2,7 @@
 @import "./styles/shell.css";
 @import "./styles/arena.css";
 @import "./styles/connection.css";
+@import "./styles/bot-catalog.css";
 @import "./styles/session.css";
 @import "./styles/feedback.css";
 @import "./styles/responsive.css";

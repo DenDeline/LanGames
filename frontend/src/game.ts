@@ -4,7 +4,7 @@ import { FeedbackController } from "./feedback.js";
 import { InputController } from "./input.js";
 import { MotionModel } from "./motion.js";
 import { GameSession } from "./session.js";
-import { isRecord } from "./snapshot.js";
+import { isRecord, parseSnapshot } from "./snapshot.js";
 import { SoundController } from "./sound.js";
 import {
   getNickname,
@@ -30,6 +30,7 @@ interface DiscoveredHost {
 const SOCKET_RECONNECT_MS = 1500;
 const CONTROL_SEND_INTERVAL_MS = 33;
 const STATUS_POLL_INTERVAL_MS = 4000;
+const ACTION_STATUS_TIMEOUT_MS = 1000;
 
 let socket: WebSocket | null = null;
 let reconnectTimer: number | undefined;
@@ -90,10 +91,10 @@ async function readJson(response: Response): Promise<Record<string, unknown>> {
   return data;
 }
 
-async function refreshStatus(): Promise<void> {
+async function refreshStatus(signal?: AbortSignal): Promise<void> {
   const requestVersion = webSocketSnapshotVersion;
   try {
-    const response = await fetch("/api/status", { cache: "no-store" });
+    const response = await fetch("/api/status", { cache: "no-store", signal });
     const data = await readJson(response);
     if (requestVersion === webSocketSnapshotVersion) session.apply(data);
   } catch {
@@ -120,6 +121,12 @@ async function postAction(
   body?: { port?: number; address?: string; nickname?: string; botId?: string },
 ): Promise<void> {
   if (busy) return;
+  const expectedBotId =
+    path === "/api/local-opponent"
+      ? body?.botId
+      : path === "/api/restart" && session.snapshot.opponentMode === "bot"
+        ? session.snapshot.requestedBotId
+        : null;
   const refreshBots =
     path === "/api/local-opponent" || path === "/api/leave" || path === "/api/restart";
   actionRefreshesCatalog = refreshBots;
@@ -134,7 +141,34 @@ async function postAction(
     });
     const data = await readJson(response);
     if (data.role) {
-      if (requestVersion === webSocketSnapshotVersion) session.apply(data);
+      const actionSnapshot = parseSnapshot(data);
+      if (requestVersion === webSocketSnapshotVersion) session.apply(actionSnapshot);
+      const successfulBotAction =
+        typeof expectedBotId === "string" &&
+        actionSnapshot.opponentMode === "bot" &&
+        actionSnapshot.requestedBotId === expectedBotId;
+      // A newer pre-action idle/game-over frame may precede the successful HTTP reply.
+      // Reconcile briefly while preserving staleness checks and subsequent session changes.
+      if (
+        successfulBotAction &&
+        requestVersion !== webSocketSnapshotVersion &&
+        (session.snapshot.opponentMode === "none" ||
+          (session.snapshot.opponentMode === "bot" &&
+            session.snapshot.requestedBotId === expectedBotId &&
+            session.snapshot.roundId !== actionSnapshot.roundId))
+      ) {
+        await refreshStatus(AbortSignal.timeout(ACTION_STATUS_TIMEOUT_MS));
+      }
+      if (
+        successfulBotAction &&
+        session.snapshot.opponentMode === "bot" &&
+        session.snapshot.requestedBotId === expectedBotId &&
+        session.snapshot.roundId === actionSnapshot.roundId
+      ) {
+        input.clear();
+        ui.arenaPanel.scrollIntoView({ behavior: "instant", block: "start" });
+        ui.arenaPanel.focus({ preventScroll: true });
+      }
     } else {
       await refreshStatus();
     }
@@ -308,7 +342,7 @@ export function startGame(): void {
     const botId = getSelectedBotId();
     if (nickname !== null && botId !== null) postAction("/api/local-opponent", { nickname, botId });
   });
-  ui.botSelect.addEventListener("change", () => {
+  ui.botCatalog.addEventListener("change", () => {
     updateBotSelection();
     render(session.snapshot, busy, discovering);
   });

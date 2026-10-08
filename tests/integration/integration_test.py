@@ -549,7 +549,8 @@ try:
     page = urllib.request.urlopen("http://127.0.0.1:5180/").read()
     assert b"game-canvas" in page
     assert b'id="bot-form"' in page and b'id="bot-button"' in page
-    assert b'id="bot-select"' in page and b'id="bot-catalog-status"' in page
+    assert b'id="bot-catalog"' in page and b'id="bot-profile"' in page
+    assert b'id="bot-catalog-status"' in page
     assert b'id="opponent-fallback"' in page
     assert b'id="tab-host"' in page and b'id="tab-join"' in page
     assets = re.findall(rb'(?:src|href)="(/assets/[^"]+)"', page)

@@ -32,7 +32,7 @@ internal sealed partial class PongPeer
 
     // The receive loop may call this without awaiting its own completion.
     private (UdpClient? Socket, CancellationTokenSource? Stop, Task? Receiver) ResetSocketLocked(
-        string message = "Нажмите «Быстрая игра» или подключитесь к другу.")
+        string message = "Выберите бота или сыграйте с другом по локальной сети.")
     {
         var retryQuick = _quickMode && _role == PeerRole.Guest &&
                          _connection is (ConnectionState.Connecting or ConnectionState.AwaitingAcceptance);

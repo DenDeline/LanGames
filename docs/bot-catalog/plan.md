@@ -21,17 +21,17 @@ The coordinator performs research, decomposition, coordination, and review. Its 
 | --- | --- | --- |
 | 1 | Typed, validated appsettings bot catalog, reusable behavior settings, stable IDs, and immutable lookup | Reviewed: `d2c7b1b` |
 | 2 | Registered bot strategies, truthful availability/fallback, and session lifecycle resolving a selected entry | Reviewed: `a34d425` |
-| 3 | Catalog-based browser API and versioned session contracts, replacing simple/hard public selection | Assigned |
-| Checkpoint A | Review steps 1–3 together; reconcile configuration, availability, migration, and UI needs | Required |
-| 4 | Responsive, accessible opponent catalog and selected-bot details integrated with existing gameplay/LAN UI | Ready after checkpoint A |
-| 5 | End-to-end regression coverage for config-only extra bots, errors, cleanup, fallback, and LAN coexistence | Ready after step 4 review |
-| 6 | Evidence-based .NET 10/C# 14 runtime optimization and Native AOT verification | Ready after step 5 review |
+| 3 | Catalog-based browser API and versioned session contracts, replacing simple/hard public selection | Reviewed: `2881f34` |
+| Checkpoint A | Review steps 1–3 together; reconcile configuration, availability, migration, and UI needs | Complete |
+| 4 | Responsive native radio-card catalog, selected profile, honest availability, and one Play action | Assigned |
+| 5 | Close actual gaps: config-only fourth bot, UI states, configured behavior and browser/LAN integration | Ready after step 4 review |
+| 6 | Benchmark actual configured runtime; optimize evidenced costs and verify Native AOT | Ready after step 5 review |
 | Checkpoint B | Review steps 4–6 together; reconcile performance, UX, and final validation needs | Required |
 | 7 | Final published-app validation, configuration/operator documentation, and delivery evidence | Ready after checkpoint B |
 
 ## Step boundaries and review gates
 
-Implementation chat: **Implement configurable bot catalog**, thread `01a11af7-357d-7593-a957-5a83a56b56b3`, project `lanpong`, same checkout. Branch: `codex/bot-catalog`. Steps 1–2 are reviewed; only step 3 is currently assigned. The worker commits each bounded step and stops for review. The coordinator is authorized by the human to send subsequent step assignments to this chat.
+Implementation chat: **Implement configurable bot catalog**, thread `01a11af7-357d-7593-a957-5a83a56b56b3`, project `lanpong`, same checkout. Branch: `codex/bot-catalog`. Steps 1–3 and checkpoint A are reviewed; only step 4 is currently assigned. The worker commits each bounded step and stops for review. The coordinator is authorized by the human to send subsequent step assignments to this chat.
 
 Research and architecture decisions are in [research.md](research.md). They are a specification for this feature, with routine implementation detail left to the worker.
 
@@ -39,9 +39,25 @@ Research and architecture decisions are in [research.md](research.md). They are 
 2. **Runtime/lifecycle:** Implement registered tracker/ONNX factories, configurable policy parameters/model settings, generic selection/lifetime, and explicit fallback identity. Preserve model schema/default cadence and training tools. Test multiple entries sharing a strategy, reset/rematch, lazy model loading, failure/cleanup, and rejected selection preserving the current session. Temporary compatibility methods may keep the old browser API compiling until step 3. Commit `refactor(bots): resolve opponents through strategy registry` or equivalent.
 3. **Contracts:** Add catalog discovery and bot-ID start; change generic local-bot snapshot identity across source-generated HTTP JSON, versioned browser MessagePack, TypeScript decoding, and directly affected fixtures/tests. Remove public hard/simple selection. Adapt existing UI wiring minimally if required for a coherent build, leaving catalog UX for step 4. Test invalid requests, HTTP/WS parity, selected/effective identity, and unchanged LAN UDP encoding. Commit `feat(api)!: select catalog bots by id` or equivalent.
 4. **UX:** Replace the two bot forms with native selectable catalog cards, grouped difficulty guidance, selected profile and one Play action. Include loading/error/retry/empty/unavailable states, identity in score/session/overlays, persistent configured fallback notices, rematch and returning to selection, and keyboard/mobile support. Protect LAN actions, touch/input/sound settings. Validate real browser desktop and narrow layout. Commit `feat(ui): add opponent catalog and selected bot profiles` or equivalent.
-5. **Integration:** Prove a config-only extra bot is discoverable, selectable, and correctly identified through HTTP/WS; exercise custom behavior, invalid/disabled IDs, missing/corrupt model and fallback, session transitions/rematch/cleanup, and existing two-process LAN. Add tests for genuine uncovered risks, then run existing appropriate suites. Commit `test(bots): cover configurable catalog and session transitions` or equivalent.
+5. **Integration:** Extend the real configuration-provider/process fixture with a playable extra tracker, a long HTML-looking name, distinctive tuning, and exact metadata/default/order assertions. Prove selection and HTTP/MessagePack identity, observable tuning, rematch/leave, and a short LAN round using that configured process. Reuse the missing-model process assertions for a real corrupt/wrong-checksum model and explicit fallback. Existing unit and frontend coverage already proves lifecycle/concurrency, invalid IDs, text rendering, and fourth-ID form submission; avoid duplicating it. Run appropriate existing suites. Commit `test(bots): cover configurable catalog and session transitions` or equivalent.
 6. **Optimization/AOT:** Inspect the implemented hot path; preserve/reduce managed allocations with concrete changes only where evidence supports them. Verify no binding, registry lookup, DOM rebuilding, or rich metadata construction runs per tick. Benchmark the configured runtime path and publish Native AOT on macOS ARM64; run model/HTTP/catalog smoke and inspect warnings. If the design is already optimal, record evidence instead of artificial code churn. Commit `perf(bots): ...` when optimizing, or `test(bots): verify native catalog runtime` if validation is the outcome.
 7. **Delivery:** Update operator/user docs and migration details (including historical docs references if necessary), record reproducible config examples and verification results, rerun only checks warranted by final changes, and inspect final clean history. Commit `docs(bots): document catalog configuration and migration` or equivalent.
+
+## Checkpoint A reconciliation — after step 3
+
+Reviewed commits: `d2c7b1b`, `a34d425`, `2881f34`. Foundation, runtime, and browser contracts fit the original goal. Configuration-driven entries share registered strategies, generated binding survives Native AOT, session ownership and explicit fallback are tested, and public discovery/start/snapshots are generic. Browser protocol is now v8 with 30 fields; LAN UDP is unchanged. Temporary adapters and production model-path override are removed. Independent backend/frontend review found no blockers.
+
+Refinements before further work:
+
+- Step 4 should replace the minimal dropdown with native radio cards and a selected profile. Prefer the remembered/default entry only while `canPlay` is true; otherwise choose the first eligible entry, or show the unavailable-only/empty state with LAN actions reachable.
+- A known-unavailable entry with a playable configured fallback remains selectable but must explain that substitution before Play. An unchecked model is eligible for an attempt, not reported as already verified.
+- Keep catalog rendering independent of snapshots and preserve the completed overlap guard and refresh-on-failure/rematch behavior. Bot identities from snapshots remain usable if catalog loading fails.
+- Use player-facing style descriptions rather than ONNX/runtime terminology in the visible product copy. Native strategy/model details belong in operator documentation.
+- Step 5 should add only genuine coverage gaps: a fourth bot added through configuration alone, custom tuning/long or HTML-looking metadata, catalog failure/retry/unavailable states, and browser selection/input behavior. Reuse the existing 164-test lifecycle, fallback, concurrency, contract, and LAN coverage instead of duplicating it.
+- Step 6 must measure the real configured `BotRuntime`/prepared session path, not only the retained legacy Hard diagnostic. Preserve the warmed preallocated model path and cached identity. Optimize only observed costs; report managed allocations and latency separately from native memory.
+- Step 7 must document required `botId`, v8 identity/migration, content-root model paths, array/provider overrides, explicit fallback chains, and availability/configuration changes taking effect after restart.
+
+No extra production library, preview .NET migration, UDP contract change, hot reload, or active-session replacement is justified by this checkpoint.
 
 ## Acceptance criteria to refine after research
 
@@ -60,3 +76,4 @@ Research and architecture decisions are in [research.md](research.md). They are 
 - 2026-10-08: Step 1 dispatched to the separate implementation chat. Research also evaluated FluentValidation, Scrutor, Lit, Web Awesome, and Shoelace; built-in framework options and native HTML controls best fit the focused refactor.
 - 2026-10-08: Step 1 reviewed at `d2c7b1b`. Sixteen catalog tests and 122 total .NET tests pass; frontend/build, existing integration, Native AOT publish/smoke pass. Only prior MessagePack IL3053/IL2104 publish warnings remain. The worker removed configuration reload callbacks so invalid live edits cannot affect startup-only options. Step 2 is next; no plan reconciliation checkpoint is due yet.
 - 2026-10-08: Step 2 reviewed at `a34d425`. All 160 .NET tests, frontend/build, source integration, Native AOT smoke and full published integration pass. Controllers use configured tuning and preprepared fallback chains; ownership/disposal and one-admission concurrent starts are covered. Model availability is honest (`not checked` before lazy initialization) and known failures remain latched until restart. Step 3 must remove temporary browser adapters and use safe public descriptors; checkpoint A follows that step.
+- 2026-10-08: Step 3 reviewed at `2881f34`, with 164 .NET tests plus frontend/format/build, source integration, Native AOT smoke and full published integration passing. Safe catalog discovery, required IDs, separate bot-name bounds, and v8 requested/effective identity are covered. Checkpoint A reconciled the remaining steps as above; only step 4 is dispatched next.

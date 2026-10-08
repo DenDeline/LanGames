@@ -52,7 +52,7 @@ internal sealed partial class PongPeer : IHostedLifecycleService, IAsyncDisposab
     private int _restartAfterRound;
     private PeerRole _role = PeerRole.None;
     private ConnectionState _connection = ConnectionState.Idle;
-    private string _message = "Нажмите «Быстрая игра» или подключитесь к другу.";
+    private string _message = "Выберите бота или сыграйте с другом по локальной сети.";
     private string _localNickname = $"Игрок {Random.Shared.Next(1000, 10000)}";
     private string? _peerNickname;
     private int _udpPort;

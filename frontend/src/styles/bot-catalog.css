@@ -1,0 +1,227 @@
+.bot-catalog {
+  min-width: 0;
+  margin: 0 0 14px;
+  padding: 0;
+  border: 0;
+}
+.bot-catalog legend {
+  margin-bottom: 12px;
+  padding: 0;
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 760;
+}
+.bot-catalog-groups {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+.bot-category {
+  min-width: 0;
+}
+.bot-category h3 {
+  margin: 0 0 8px;
+  color: #a5c3cc;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  overflow-wrap: anywhere;
+}
+.bot-card-list {
+  display: grid;
+  gap: 8px;
+}
+.bot-offer .bot-card {
+  display: grid;
+  grid-template-columns: 18px 38px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
+  min-height: 68px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #3c5265;
+  border-radius: 10px;
+  background: #0e1b2bcc;
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s;
+}
+.bot-offer .bot-card:hover {
+  border-color: #56838a;
+  background: #18303ccc;
+}
+.bot-offer .bot-card.is-selected {
+  border-color: var(--cyan);
+  background: #173c44cc;
+  box-shadow: inset 0 0 0 1px #66e8df33;
+}
+.bot-offer .bot-card:has(input:focus-visible) {
+  outline: 2px solid var(--cyan);
+  outline-offset: 3px;
+}
+.bot-card[data-playable="false"] {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+.bot-catalog:disabled .bot-card {
+  cursor: default;
+}
+.bot-offer .bot-card input[type="radio"] {
+  width: 18px;
+  height: 18px;
+  min-width: 18px;
+  min-height: 0;
+  margin: 10px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  appearance: auto;
+  accent-color: var(--cyan);
+  background: transparent;
+  cursor: inherit;
+}
+.bot-avatar {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  min-width: 0;
+  border: 1px solid #477479;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #295661, #1b3044);
+  color: var(--cyan);
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.bot-avatar[data-dense="true"] {
+  font-size: 8px;
+  line-height: 1.05;
+}
+.bot-card-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.bot-card-name {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+.bot-card-difficulty {
+  color: var(--cyan);
+  font-size: 11px;
+  font-weight: 750;
+}
+.bot-card-style {
+  color: #adbdce;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.bot-card-availability {
+  color: #94aabc;
+  font-size: 10px;
+  line-height: 1.45;
+}
+.bot-card[data-availability="unavailable"] .bot-card-availability,
+.bot-card[data-availability="disabled"] .bot-card-availability {
+  color: #ffc491;
+}
+#bot-catalog-status {
+  margin: 0 0 14px;
+  color: #a5bdc9;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+#bot-catalog-status[data-state="error"] {
+  color: #ffc491;
+}
+#bot-catalog-retry {
+  width: 100%;
+  min-height: 44px;
+  margin-bottom: 14px;
+}
+.bot-profile {
+  min-width: 0;
+  margin: 0 0 14px;
+  padding: 15px;
+  border: 1px solid #44626e;
+  border-radius: 11px;
+  background: #112a36b3;
+  overflow-wrap: anywhere;
+}
+.bot-profile[hidden] {
+  display: none;
+}
+.bot-profile-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.bot-profile-heading > div {
+  min-width: 0;
+}
+.bot-profile-heading .bot-avatar {
+  flex: none;
+  width: 44px;
+  height: 44px;
+}
+.bot-profile-label {
+  color: #8cb6bc;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+.bot-profile h3 {
+  margin: 5px 0 0;
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1.2;
+}
+.bot-profile-details {
+  display: grid;
+  gap: 9px;
+  margin: 0 0 13px;
+}
+.bot-profile-details div {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 10px;
+}
+.bot-profile-details dt {
+  color: #92acbd;
+  font-size: 10px;
+}
+.bot-profile-details dd {
+  min-width: 0;
+  margin: 0;
+  color: #d7e8ec;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+.bot-offer .bot-profile-availability {
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid #355763;
+  color: #a3d3ce;
+  font-size: 11px;
+}
+.bot-offer .bot-profile-availability[data-state="unavailable"] {
+  color: #ffd0a4;
+}
+.bot-button {
+  min-height: 44px;
+  padding: 11px 15px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
