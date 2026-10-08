@@ -141,7 +141,7 @@ internal static class ConfiguredBotDiagnostics
         RequireHealthy(session, definition, 0);
         return new(definition.Id, session.Effective.Id, definition.StrategyId, cadence, verifiedDigest,
             verifiedDigest is null ? null : string.Equals(verifiedDigest,
-                HardLocalOpponentController.ExpectedModelSha256, StringComparison.Ordinal),
+                BotModelV1.ExpectedSha256, StringComparison.Ordinal),
             preparationMilliseconds, RuntimeInformation.FrameworkDescription,
             RuntimeInformation.ProcessArchitecture.ToString(), RuntimeFeature.IsDynamicCodeSupported,
             options.Samples, options.Warmup, Scope, workloads);

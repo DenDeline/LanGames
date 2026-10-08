@@ -9,16 +9,6 @@ if (args.Length == 1 && args[0] == "--onnx-smoke")
     OnnxSmoke.Run();
     return;
 }
-if (args.Length == 1 && args[0] == "--hard-smoke")
-{
-    HardModelDiagnostics.Smoke();
-    return;
-}
-if (args.Length == 1 && args[0] == "--hard-benchmark")
-{
-    HardModelDiagnostics.Benchmark();
-    return;
-}
 
 try
 {

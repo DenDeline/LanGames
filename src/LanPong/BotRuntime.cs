@@ -18,7 +18,7 @@ internal sealed class BotRuntime
 {
     private readonly FrozenDictionary<string, IBotStrategyFactory> _factories;
     private readonly Dictionary<string, BotAvailability> _availability = new(StringComparer.Ordinal);
-    private readonly object _availabilityGate = new();
+    private readonly Lock _availabilityGate = new();
     private readonly ILogger<BotRuntime> _logger;
 
     public BotRuntime(BotCatalog catalog, IEnumerable<IBotStrategyFactory> factories, ILogger<BotRuntime> logger)

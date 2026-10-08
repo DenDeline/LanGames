@@ -3,7 +3,7 @@ using static LanPong.GameConstants;
 namespace LanPong;
 
 /// <summary>A sampled, short-lookahead tracker for the right paddle.</summary>
-internal sealed class SimpleLocalOpponentController : ILocalOpponentController
+internal sealed class TrackerBotPolicy : ILocalOpponentController
 {
     internal const int ObservationIntervalTicks = 9; // 150 ms at the authoritative 60 Hz tick.
     internal const double ObservationActivationX = 0.72;
@@ -14,11 +14,11 @@ internal sealed class SimpleLocalOpponentController : ILocalOpponentController
     private long _nextObservationTick;
     private double _targetY = ArenaCenter;
 
-    internal SimpleLocalOpponentController()
+    internal TrackerBotPolicy()
         : this(new TrackerBotSettings(ObservationIntervalTicks, ObservationActivationX,
             LookAheadSeconds, TargetDeadZone)) { }
 
-    internal SimpleLocalOpponentController(TrackerBotSettings settings)
+    internal TrackerBotPolicy(TrackerBotSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
         _settings = settings;

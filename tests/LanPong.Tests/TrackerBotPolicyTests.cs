@@ -1,11 +1,11 @@
 namespace LanPong.Tests;
 
-public sealed class SimpleLocalOpponentControllerTests
+public sealed class TrackerBotPolicyTests
 {
     [Test]
     public async Task GetAxis_TracksApproachAndCentersWhenBallRetreats()
     {
-        var bot = new SimpleLocalOpponentController();
+        var bot = new TrackerBotPolicy();
 
         await Assert.That(bot.GetAxis(Playing(rightY: 0.5, ballY: 0.75, vx: 0.55))).IsEqualTo(1);
         bot.Reset();
@@ -17,27 +17,27 @@ public sealed class SimpleLocalOpponentControllerTests
     [Test]
     public async Task GetAxis_WaitsForLateApproachAndNextSampleBeforeTracking()
     {
-        var bot = new SimpleLocalOpponentController();
+        var bot = new TrackerBotPolicy();
         var beforeActivation = Playing(rightY: 0.5, ballY: 0.82, vx: 0.55,
-            ballX: SimpleLocalOpponentController.ObservationActivationX - 0.001, tick: 100);
+            ballX: TrackerBotPolicy.ObservationActivationX - 0.001, tick: 100);
 
         await Assert.That(bot.GetAxis(beforeActivation)).IsEqualTo(0);
         await Assert.That(bot.GetAxis(beforeActivation with
         {
-            BallX = SimpleLocalOpponentController.ObservationActivationX + 0.001,
+            BallX = TrackerBotPolicy.ObservationActivationX + 0.001,
             TickNumber = 101
         })).IsEqualTo(0);
         await Assert.That(bot.GetAxis(beforeActivation with
         {
-            BallX = SimpleLocalOpponentController.ObservationActivationX + 0.001,
-            TickNumber = 100 + SimpleLocalOpponentController.ObservationIntervalTicks
+            BallX = TrackerBotPolicy.ObservationActivationX + 0.001,
+            TickNumber = 100 + TrackerBotPolicy.ObservationIntervalTicks
         })).IsEqualTo(1);
     }
 
     [Test]
     public async Task GetAxis_ReflectsShortLookaheadAtBothWalls()
     {
-        var bot = new SimpleLocalOpponentController();
+        var bot = new TrackerBotPolicy();
 
         // A downward ball will bounce before the next observation. Following its
         // current position would move toward the bottom instead of back up.
@@ -51,15 +51,15 @@ public sealed class SimpleLocalOpponentControllerTests
     [Test]
     public async Task GetAxis_LimitsObservationRateAndResetsForServeAndRematch()
     {
-        var bot = new SimpleLocalOpponentController();
+        var bot = new TrackerBotPolicy();
         await Assert.That(bot.GetAxis(Playing(rightY: 0.5, ballY: 0.8, vx: 0.55, tick: 100)))
             .IsEqualTo(1);
 
-        for (var tick = 101; tick < 100 + SimpleLocalOpponentController.ObservationIntervalTicks; tick++)
+        for (var tick = 101; tick < 100 + TrackerBotPolicy.ObservationIntervalTicks; tick++)
             await Assert.That(bot.GetAxis(Playing(rightY: 0.5, ballY: 0.2, vx: 0.55, tick: tick)))
                 .IsEqualTo(1);
         await Assert.That(bot.GetAxis(Playing(rightY: 0.5, ballY: 0.2, vx: 0.55,
-            tick: 100 + SimpleLocalOpponentController.ObservationIntervalTicks))).IsEqualTo(-1);
+            tick: 100 + TrackerBotPolicy.ObservationIntervalTicks))).IsEqualTo(-1);
 
         await Assert.That(bot.GetAxis(Playing(rightY: 0.8, phase: GamePhase.Countdown, tick: 200)))
             .IsEqualTo(-1);
@@ -76,7 +76,7 @@ public sealed class SimpleLocalOpponentControllerTests
     [Test]
     public async Task GetAxis_UsesLegalInputsAndNeverMovesPaddleBeyondBounds()
     {
-        var bot = new SimpleLocalOpponentController();
+        var bot = new TrackerBotPolicy();
         await Assert.That(bot.GetAxis(Playing(rightY: GameConstants.MaxPaddleY,
             ballY: GameConstants.BottomContactY, vx: 0.55))).IsEqualTo(0);
         bot.Reset();
@@ -102,7 +102,7 @@ public sealed class SimpleLocalOpponentControllerTests
     {
         var game = new GameEngine();
         game.Restore(Playing(rightY: 0.1, ballX: 0.91, ballY: 0.9, vx: 0.55));
-        var bot = new SimpleLocalOpponentController();
+        var bot = new TrackerBotPolicy();
 
         for (var tick = 0; tick < 20; tick++)
             game.Advance(GameConstants.FixedStepSeconds, 0, bot.GetAxis(game.Capture()));
@@ -139,7 +139,7 @@ public sealed class SimpleLocalOpponentControllerTests
         await Assert.That(totalRallies).IsGreaterThan(0);
 
         var game = new GameEngine();
-        var bot = new SimpleLocalOpponentController();
+        var bot = new TrackerBotPolicy();
         game.StartMatch();
         AdvanceUntilGameOver(game, bot, 3);
         var previousRound = game.RoundId;
@@ -155,12 +155,12 @@ public sealed class SimpleLocalOpponentControllerTests
     private static MatchResult RunMatch(int seed)
     {
         var game = new GameEngine();
-        var bot = new SimpleLocalOpponentController();
+        var bot = new TrackerBotPolicy();
         game.StartMatch();
         return AdvanceUntilGameOver(game, bot, seed);
     }
 
-    private static MatchResult AdvanceUntilGameOver(GameEngine game, SimpleLocalOpponentController bot, int seed)
+    private static MatchResult AdvanceUntilGameOver(GameEngine game, TrackerBotPolicy bot, int seed)
     {
         var seen = new HashSet<string>();
         var serves = 0;

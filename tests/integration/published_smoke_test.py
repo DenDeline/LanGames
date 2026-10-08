@@ -14,8 +14,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from integration_test import decode_snapshot, expect_identity_parity, recv_frame, send_frame, websocket
 
-HARD_MODEL_SHA256 = "5d5d3cf0910d967cf2d6dc60e8fe0b63f772060178bf6673f6ddc5cdba98ab5a"
+
+MODEL_SHA256 = "5d5d3cf0910d967cf2d6dc60e8fe0b63f772060178bf6673f6ddc5cdba98ab5a"
+MODEL_CADENCE_TICKS = 9
 BOT_FIELDS = {
     "id", "name", "description", "style", "difficulty", "category", "order", "glyph",
     "enabled", "fallbackBotId", "availability", "availabilityReason", "canPlay",
@@ -34,7 +37,12 @@ def request_json(base_url, path, payload=None):
         return json.load(response)
 
 
-def verify_catalog_contract(base_url, status):
+def verify_catalog_contract(binary, port, base_url, status):
+    model = binary.parent / "Models" / "hard-v1.onnx"
+    assert model.is_file() and model.stat().st_size > 0, f"Published bot model is missing: {model}"
+    digest = hashlib.sha256(model.read_bytes()).hexdigest()
+    assert digest == MODEL_SHA256, (MODEL_SHA256, digest)
+
     identity_fields = ("requestedBotId", "requestedBotName", "effectiveBotId", "effectiveBotName", "botFallbackReason")
     assert status["version"] == 8 and "requestedOpponentMode" not in status, status
     assert status["opponentMode"] == "none" and status["opponentFallbackActive"] is False, status
@@ -49,17 +57,53 @@ def verify_catalog_contract(base_url, status):
     assert by_id["vektor"]["availability"] == "notChecked", catalog
     assert all(by_id[bot_id]["availability"] == "ready" for bot_id in ("lada", "iskra")), catalog
 
-    # Exercise the configured production path in the published app as well as standalone diagnostics.
+    # Real play must execute several model decisions, beyond preparation and countdown.
     started = request_json(base_url, "/api/local-opponent", {"nickname": "Smoke", "botId": "vektor"})
     assert started["version"] == 8 and started["opponentMode"] == "bot", started
     assert started["requestedBotId"] == started["effectiveBotId"] == "vektor", started
     assert started["requestedBotName"] == started["effectiveBotName"] == by_id["vektor"]["name"], started
     assert started["peerNickname"] is None and started["opponentFallbackActive"] is False, started
     assert started["botFallbackReason"] is None and "requestedOpponentMode" not in started, started
+
+    def healthy(snapshot):
+        assert snapshot["version"] == 8 and snapshot["opponentMode"] == "bot", snapshot
+        assert snapshot["requestedBotId"] == snapshot["effectiveBotId"] == "vektor", snapshot
+        assert snapshot["requestedBotName"] == snapshot["effectiveBotName"] == by_id["vektor"]["name"], snapshot
+        assert snapshot["peerNickname"] is None and snapshot["opponentFallbackActive"] is False, snapshot
+        assert snapshot["botFallbackReason"] is None, snapshot
+
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        playing = request_json(base_url, "/api/status")
+        healthy(playing)
+        if playing["phase"] == "playing":
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("Published Vektor did not enter Playing")
+
+    with websocket(port) as conn:
+        # Reuse the binary protocol fixture, including its exact v8 snapshot shape.
+        while time.monotonic() < deadline:
+            conn.settimeout(max(0.01, deadline - time.monotonic()))
+            snapshot = decode_snapshot(recv_frame(conn))
+            healthy(snapshot)
+            if (snapshot["phase"] == "playing"
+                    and snapshot["tick"] >= playing["tick"] + 2 * MODEL_CADENCE_TICKS
+                    and abs(snapshot["rightY"] - started["rightY"]) > 0.001):
+                break
+        else:
+            raise AssertionError("Published Vektor did not advance model cadence and move its paddle")
+        current = request_json(base_url, "/api/status")
+        healthy(current)
+        assert current["phase"] == "playing" and current["tick"] >= playing["tick"] + 2 * MODEL_CADENCE_TICKS, current
+        expect_identity_parity(current, snapshot)
+        send_frame(conn, 0x8, (1000).to_bytes(2, "big"))
+
     assert next(bot for bot in request_json(base_url, "/api/bots")["bots"] if bot["id"] == "vektor")["availability"] == "ready"
     left = request_json(base_url, "/api/leave", {})
     assert left["opponentMode"] == "none" and all(left[field] is None for field in identity_fields), left
-    print("PASS: published protocol v8 status/catalog and configured model identity")
+    print(f"PASS: published Vektor Playing, cadence-advanced HTTP/WebSocket identity, paddle motion and model SHA-256 {digest}")
 
 
 def free_port():
@@ -124,32 +168,6 @@ def verify_onnx_smoke(binary):
     print(f"PASS: published ONNX inference returned 2 -> 3 with {libraries[0].name}")
 
 
-def verify_hard_smoke(binary):
-    model = binary.parent / "Models" / "hard-v1.onnx"
-    assert model.is_file() and model.stat().st_size > 0, f"Published Hard model is missing: {model}"
-    digest = hashlib.sha256(model.read_bytes()).hexdigest()
-    assert digest == HARD_MODEL_SHA256, (
-        f"Published Hard model SHA-256 mismatch: expected {HARD_MODEL_SHA256}, got {digest}"
-    )
-
-    # The CLI path loads the packaged model and executes the trained diagnostic controller.
-    with tempfile.TemporaryDirectory() as smoke_cwd:
-        result = subprocess.run(
-            [str(binary), "--hard-smoke"],
-            cwd=smoke_cwd,
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=False,
-        )
-    expected = f"Hard ONNX smoke passed: SHA-256 {HARD_MODEL_SHA256}, axis "
-    assert result.returncode == 0 and expected in result.stdout, (
-        f"Published Hard inference failed (exit {result.returncode}).\n"
-        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
-    print(f"PASS: published Hard ONNX inference used model SHA-256 {digest}")
-
-
 def verify_configured_benchmark(binary):
     # Holding the requested HTTP endpoint makes accidental server startup fail.
     # Diagnostics must load normal configuration without starting networking.
@@ -203,7 +221,7 @@ def verify_configured_benchmark(binary):
                 {"Bots__DefaultBotId": "iskra"},
             )
             verify_report(configured_default, "iskra", 4)
-            verify_report(run(["vektor"]), "vektor", 9, HARD_MODEL_SHA256)
+            verify_report(run(["vektor"]), "vektor", MODEL_CADENCE_TICKS, MODEL_SHA256)
 
             # ASP.NET Core host settings must choose a root distinct from cwd and
             # then load that environment's normal JSON provider before bot resolution.
@@ -241,7 +259,6 @@ def main():
         raise FileNotFoundError(f"Published executable does not exist: {binary}")
 
     verify_onnx_smoke(binary)
-    verify_hard_smoke(binary)
     verify_configured_benchmark(binary)
 
     port = free_port()
@@ -250,7 +267,7 @@ def main():
     with tempfile.TemporaryFile(mode="w+b") as log:
         try:
             process = subprocess.Popen(
-                [str(binary), "--urls", base_url],
+                [str(binary), "--environment", "Production", "--contentRoot", str(binary.parent), "--urls", base_url],
                 cwd=binary.parent,
                 stdout=log,
                 stderr=subprocess.STDOUT,
@@ -260,7 +277,7 @@ def main():
             local_addresses = status.get("localAddresses")
             assert type(udp_port) is int and 0 <= udp_port <= 65535, status
             assert isinstance(local_addresses, list) and "127.0.0.1" in local_addresses, status
-            verify_catalog_contract(base_url, status)
+            verify_catalog_contract(binary, port, base_url, status)
 
             with urllib.request.urlopen(f"{base_url}/", timeout=3) as response:
                 page = response.read()

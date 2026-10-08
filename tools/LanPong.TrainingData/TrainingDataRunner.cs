@@ -68,6 +68,8 @@ internal sealed record DirectDuelReport(string MasterSeed, int ScenarioCount,
     double TeacherWinRateCompleted, double TeacherWilson95Lower,
     double TeacherWilson95Upper, DirectDuelMatch[] Matches);
 
+// Historical baseline labels and fallback fields stay in the report schema for
+// artifact comparison. Strict evaluation always writes false/0/null or fails.
 internal sealed record ModelEvaluationPair(int ScenarioIndex, string Seed, string LeftPolicy,
     MatchMetrics Student, MatchMetrics Simple, bool StudentFallbackActive,
     string? StudentFallbackReason)
@@ -257,7 +259,6 @@ internal static class TrainingDataRunner
         ValidateCount(scenarioCount, nameof(scenarioCount));
         ValidateCount(maxTicks, nameof(maxTicks));
         using var student = EvaluatedModelPolicy.Create(backend, modelPath);
-        var fallbackAtLoad = student.IsFallbackActive;
         var pairs = new ModelEvaluationPair[scenarioCount];
         for (var index = 0; index < scenarioCount; index++)
         {
@@ -272,7 +273,7 @@ internal static class TrainingDataRunner
                 index, "simple", maxTicks, 0, null, null);
             pairs[index] = new ModelEvaluationPair(index, matchSeed.ToString(),
                 LeftPolicyProfile.ForMatch(index).Name, studentMatch, simpleMatch,
-                student.IsFallbackActive, student.FallbackReason);
+                false, null);
         }
 
         var profileSummaries = LeftPolicyProfile.All
@@ -290,8 +291,7 @@ internal static class TrainingDataRunner
         var (pairedLower, pairedUpper) = Wilson95(better, better + worse);
         return new ModelEvaluationReport(RightBotObservationV1.Version, SeedPolicy,
             seed.ToString(), student.Backend, student.ModelSha256,
-            fallbackAtLoad, pairs.Count(pair => pair.StudentFallbackActive),
-            student.FallbackReason, scenarioCount, maxTicks,
+            false, 0, null, scenarioCount, maxTicks,
             studentWins, simpleWins, studentMargin, simpleMargin,
             better, worse, ties, studentWins / (double)scenarioCount,
             simpleWins / (double)scenarioCount, winLower, winUpper,
@@ -309,12 +309,8 @@ internal static class TrainingDataRunner
             $"{report.ScenarioCount}, Simple {report.SimpleWins}/{report.ScenarioCount}; " +
             $"score margins {report.StudentScoreMargin}:{report.SimpleScoreMargin}, " +
             $"paired scores {report.PairedBetter}:{report.PairedWorse}:{report.PairedTies}, " +
-            $"fallback matches {report.StudentFallbackMatches}/{report.ScenarioCount}, " +
             $"student win Wilson 95% [{report.StudentWinWilson95Lower:F3}, " +
             $"{report.StudentWinWilson95Upper:F3}]. Report: {options.OutputFile}");
-        if (report.Backend == "production" && !report.UsedModelThroughout)
-            throw new InvalidOperationException("Production Hard entered Simple fallback; " +
-                $"the evaluation report is at {options.OutputFile}.");
     }
 
     public static DirectModelDuelReport EvaluateModelDirect(string? modelPath, ulong seed,
@@ -327,7 +323,6 @@ internal static class TrainingDataRunner
             throw new ArgumentException("Countdown mode must be seeded-targets or policies.",
                 nameof(countdownMode));
         using var student = EvaluatedModelPolicy.Create(backend, modelPath);
-        var fallbackAtLoad = student.IsFallbackActive;
         const int openingTicks = 120;
         var matches = new DirectModelDuelMatch[scenarioCount * 2];
         for (var index = 0; index < scenarioCount; index++)
@@ -347,8 +342,7 @@ internal static class TrainingDataRunner
         var (lower, upper) = Wilson95(studentWins, completed);
         var (scheduledLower, scheduledUpper) = Wilson95(studentWins, matches.Length);
         return new DirectModelDuelReport(seed.ToString(), student.Backend,
-            student.ModelSha256, fallbackAtLoad,
-            matches.Count(match => match.StudentFallbackActive), student.FallbackReason,
+            student.ModelSha256, false, 0, null,
             "splitmix64-v1: scenario seed = derive(master, 4, index); " +
             "opening and optional later targets = derive(scenarioSeed, 21, pointIndex)",
             "Both paddles follow the same seed-specific legal target axis for " +
@@ -389,7 +383,6 @@ internal static class TrainingDataRunner
             $"{report.CountdownMode}): " +
             $"student {report.StudentWins}, " +
             $"Simple {report.SimpleWins}, capped {report.CappedMatches}/" +
-            $"{report.Matches.Length}, fallback {report.FallbackGames}/" +
             $"{report.Matches.Length}; student right {report.StudentRightWins}/" +
             $"{report.StudentRightCompleted}, left {report.StudentLeftWins}/" +
             $"{report.StudentLeftCompleted}; distinct openings " +
@@ -401,9 +394,6 @@ internal static class TrainingDataRunner
             $"[{report.StudentScheduledWilson95Lower:F3}, " +
             $"{report.StudentScheduledWilson95Upper:F3}]. " +
             $"Report: {options.OutputFile}");
-        if (report.Backend == "production" && !report.UsedModelThroughout)
-            throw new InvalidOperationException("Production Hard entered Simple fallback; " +
-                $"the evaluation report is at {options.OutputFile}.");
     }
 
     private static ModelProfileSummary SummarizeProfile(string name, ModelEvaluationPair[] pairs)
@@ -541,7 +531,7 @@ internal static class TrainingDataRunner
         left.Reset();
         var behaviorTeacher = new TeacherPolicy();
         behaviorTeacher.Reset();
-        var simple = new SimpleLocalOpponentController();
+        var simple = new TrackerBotPolicy();
         simple.Reset();
         student?.Reset();
         var seenEvents = new HashSet<string>(StringComparer.Ordinal);
@@ -642,7 +632,7 @@ internal static class TrainingDataRunner
         game.StartMatch();
         var teacher = new TeacherPolicy();
         teacher.Reset();
-        var simple = new SimpleLocalOpponentController();
+        var simple = new TrackerBotPolicy();
         simple.Reset();
         var ticks = 0;
         while (ticks < maxTicks && game.Phase != GamePhase.GameOver)
@@ -680,7 +670,7 @@ internal static class TrainingDataRunner
         var game = new GameEngine();
         game.StartMatch();
         student.Reset();
-        var simple = new SimpleLocalOpponentController();
+        var simple = new TrackerBotPolicy();
         simple.Reset();
         var ticks = 0;
         var openingHash = hashOffset;
@@ -732,7 +722,7 @@ internal static class TrainingDataRunner
             studentRight ? "right" : "left", game.Phase == GamePhase.GameOver,
             ticks, game.LeftScore, game.RightScore,
             openingHash.ToString("x16"), trajectoryHash.ToString("x16"),
-            student.IsFallbackActive, student.FallbackReason);
+            false, null);
     }
 
     private static double DirectModelPointTarget(ulong seed, int pointIndex)

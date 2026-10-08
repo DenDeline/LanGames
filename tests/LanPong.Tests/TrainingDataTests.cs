@@ -39,8 +39,8 @@ public sealed class TrainingDataTests
             var leftReplay = new LeftOpponentPolicy(LeftPolicyProfile.ForMatch(profileIndex), seed);
             left.Reset();
             leftReplay.Reset();
-            var right = new SimpleLocalOpponentController();
-            var rightReplay = new SimpleLocalOpponentController();
+            var right = new TrackerBotPolicy();
+            var rightReplay = new TrackerBotPolicy();
             for (var tick = 0; tick < 500; tick++)
             {
                 var state = first.CaptureCheckpoint();
@@ -334,10 +334,9 @@ public sealed class TrainingDataTests
     }
 
     [Test]
-    public async Task ProductionModelEvaluation_UsesFrozenHardControllerWithoutFallback()
+    public async Task ProductionModelEvaluation_UsesSupportedPolicyAndPreservesExactTrajectories()
     {
-        var modelPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,
-            "../../../../../src/LanPong/Models/hard-v1.onnx"));
+        var modelPath = FrozenModelPath();
         await Assert.That(File.Exists(modelPath)).IsTrue();
         var pairedOffline = TrainingDataRunner.EvaluateModel(modelPath,
             20261020, 2, 8_000);
@@ -345,9 +344,11 @@ public sealed class TrainingDataTests
             20261020, 2, 8_000, "production");
         await Assert.That(pairedProduction.Backend).IsEqualTo("production");
         await Assert.That(pairedProduction.StudentModelSha256)
-            .IsEqualTo(HardLocalOpponentController.ExpectedModelSha256);
+            .IsEqualTo(BotModelV1.ExpectedSha256);
         await Assert.That(pairedProduction.UsedModelThroughout).IsTrue();
+        await Assert.That(pairedProduction.FallbackActiveAtLoad).IsFalse();
         await Assert.That(pairedProduction.StudentFallbackMatches).IsEqualTo(0);
+        await Assert.That(pairedProduction.FallbackReason).IsNull();
         for (var index = 0; index < pairedOffline.Pairs.Length; index++)
             await Assert.That(pairedProduction.Pairs[index].Student)
                 .IsEqualTo(pairedOffline.Pairs[index].Student);
@@ -358,7 +359,9 @@ public sealed class TrainingDataTests
             20261020, 2, 8_000, "policies", "production");
         await Assert.That(directProduction.Backend).IsEqualTo("production");
         await Assert.That(directProduction.UsedModelThroughout).IsTrue();
+        await Assert.That(directProduction.FallbackActiveAtLoad).IsFalse();
         await Assert.That(directProduction.FallbackGames).IsEqualTo(0);
+        await Assert.That(directProduction.FallbackReason).IsNull();
         await Assert.That(directProduction.CappedMatches).IsEqualTo(0);
         for (var index = 0; index < directOffline.Matches.Length; index++)
         {
@@ -366,54 +369,98 @@ public sealed class TrainingDataTests
                 .IsEqualTo(directOffline.Matches[index].PlayingTrajectoryHash);
             await Assert.That(directProduction.Matches[index].StudentFallbackActive)
                 .IsFalse();
+            await Assert.That(directProduction.Matches[index].StudentFallbackReason)
+                .IsNull();
         }
+    }
 
-        var root = Path.Combine(Path.GetTempPath(), $"lanpong-wrong-hard-{Guid.NewGuid():N}");
+    [Test]
+    public async Task ProductionModelEvaluation_RejectsInvalidModelBeforeChangingReportFiles()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"lanpong-invalid-model-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         try
         {
             var wrongModel = Path.Combine(root, "wrong.onnx");
             File.WriteAllBytes(wrongModel, FixedStudentModel());
-            var wrongReport = Path.Combine(root, "wrong-report.json");
+            var pairedReport = Path.Combine(root, "paired-report.json");
+            const string existingReport = "existing evaluation evidence";
+            File.WriteAllText(pairedReport, existingReport);
             await Assert.That(() => TrainingDataRunner.EvaluateModelToFile(
-                new ModelEvaluationOptions(wrongReport, wrongModel, 20261020,
-                    1, 8_000, "production"))).Throws<InvalidOperationException>();
-            using (var report = JsonDocument.Parse(File.ReadAllText(wrongReport)))
-            {
-                await Assert.That(report.RootElement.GetProperty("fallbackActiveAtLoad").GetBoolean())
-                    .IsTrue();
-                await Assert.That(report.RootElement.GetProperty("studentFallbackMatches").GetInt32())
-                    .IsEqualTo(1);
-                await Assert.That(report.RootElement.GetProperty("usedModelThroughout").GetBoolean())
-                    .IsFalse();
-            }
+                new ModelEvaluationOptions(pairedReport, wrongModel, 20261020,
+                    1, 8_000, "production"))).Throws<InvalidDataException>();
+            await Assert.That(File.ReadAllText(pairedReport)).IsEqualTo(existingReport);
 
-            var wrongDirectReport = Path.Combine(root, "wrong-direct-report.json");
+            var directDirectory = Path.Combine(root, "new-report-directory");
+            var directReport = Path.Combine(directDirectory, "direct-report.json");
             await Assert.That(() => TrainingDataRunner.EvaluateModelDirectToFile(
-                new DirectModelEvaluationOptions(wrongDirectReport, wrongModel,
+                new DirectModelEvaluationOptions(directReport, wrongModel,
                     20261020, 1, 8_000, "policies", "production")))
-                .Throws<InvalidOperationException>();
-            using (var report = JsonDocument.Parse(File.ReadAllText(wrongDirectReport)))
-            {
-                await Assert.That(report.RootElement.GetProperty("fallbackActiveAtLoad").GetBoolean())
-                    .IsTrue();
-                await Assert.That(report.RootElement.GetProperty("fallbackGames").GetInt32())
-                    .IsEqualTo(2);
-                await Assert.That(report.RootElement.GetProperty("usedModelThroughout").GetBoolean())
-                    .IsFalse();
-            }
+                .Throws<InvalidDataException>();
+            await Assert.That(Directory.Exists(directDirectory)).IsFalse();
 
             var missingModel = Path.Combine(root, "missing.onnx");
-            var missing = TrainingDataRunner.EvaluateModel(missingModel,
-                20261020, 1, 8_000, "production");
-            await Assert.That(missing.FallbackActiveAtLoad).IsTrue();
-            await Assert.That(missing.StudentModelSha256).IsNull();
-            await Assert.That(missing.StudentFallbackMatches).IsEqualTo(1);
+            await Assert.That(() => TrainingDataRunner.EvaluateModelToFile(
+                new ModelEvaluationOptions(pairedReport, missingModel, 20261020,
+                    1, 8_000, "production"))).Throws<FileNotFoundException>();
+            await Assert.That(File.ReadAllText(pairedReport)).IsEqualTo(existingReport);
+            await Assert.That(() => TrainingDataRunner.EvaluateModelDirectToFile(
+                new DirectModelEvaluationOptions(directReport, missingModel,
+                    20261020, 1, 8_000, "policies", "production")))
+                .Throws<FileNotFoundException>();
+            await Assert.That(Directory.Exists(directDirectory)).IsFalse();
         }
         finally
         {
             Directory.Delete(root, true);
         }
+    }
+
+    [Test]
+    public async Task ProductionModelPolicy_PropagatesSessionPreparationFailure()
+    {
+        var attempts = 0;
+        IOnnxInferenceSession RejectPreparation(string path)
+        {
+            attempts++;
+            if (path != FrozenModelPath()) throw new ArgumentException("Unexpected model path.");
+            throw new InvalidDataException("Cannot prepare the model session.");
+        }
+
+        await Assert.That(() => EvaluatedModelPolicy.CreateProduction(FrozenModelPath(),
+            RejectPreparation)).Throws<InvalidDataException>();
+        await Assert.That(attempts).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task ProductionModelPolicy_PropagatesInferenceFailureAndDisposesOwnedSessionOnce()
+    {
+        var session = new FailingModelSession();
+        var creations = 0;
+        IOnnxInferenceSession CreateSession(string _)
+        {
+            creations++;
+            return session;
+        }
+
+        var policy = EvaluatedModelPolicy.CreateProduction(FrozenModelPath(), CreateSession);
+        try
+        {
+            await Assert.That(policy.ModelSha256).IsEqualTo(BotModelV1.ExpectedSha256);
+            await Assert.That(policy.GetAxis(new GameState
+                { Phase = GamePhase.Playing, TickNumber = 9 })).IsEqualTo(1);
+            await Assert.That(() => policy.GetAxis(new GameState
+                { Phase = GamePhase.Playing, TickNumber = 18 }))
+                .Throws<InvalidDataException>();
+            await Assert.That(session.Calls).IsEqualTo(2);
+            await Assert.That(creations).IsEqualTo(1);
+        }
+        finally
+        {
+            policy.Dispose();
+            policy.Dispose();
+        }
+        await Assert.That(session.Disposals).IsEqualTo(1);
     }
 
     [Test]
@@ -443,6 +490,25 @@ public sealed class TrainingDataTests
         {
             Directory.Delete(directory, true);
         }
+    }
+
+    private static string FrozenModelPath() => Path.GetFullPath(Path.Combine(
+        AppContext.BaseDirectory, "../../../../../src/LanPong", BotModelV1.RelativeModelPath));
+
+    private sealed class FailingModelSession : IOnnxInferenceSession
+    {
+        public int Calls { get; private set; }
+        public int Disposals { get; private set; }
+
+        public void Run(ReadOnlySpan<float> observation, Span<float> logits)
+        {
+            if (++Calls > 1) throw new InvalidDataException("Inference failed after a valid action.");
+            logits[0] = 0;
+            logits[1] = 0;
+            logits[2] = 1;
+        }
+
+        public void Dispose() => Disposals++;
     }
 
     // A tiny standard-library-style ONNX protobuf fixture: Gemm([1,10],

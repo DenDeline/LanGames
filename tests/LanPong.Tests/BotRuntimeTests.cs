@@ -286,7 +286,7 @@ public sealed class BotRuntimeTests
     };
 
     private static BotEntryOptions Onnx(string id, string? fallback = null, string path = "Models/hard-v1.onnx",
-        string checksum = HardLocalOpponentController.ExpectedModelSha256) => new()
+        string checksum = BotModelV1.ExpectedSha256) => new()
     {
         Id = id, Name = id, Description = "A configured policy", Style = "Prediction", Difficulty = "Challenge",
         Category = "Original", StrategyId = "onnx", Onnx = new() { ModelPath = path, ExpectedSha256 = checksum },

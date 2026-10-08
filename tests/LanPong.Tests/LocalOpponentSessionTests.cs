@@ -109,7 +109,7 @@ public sealed class LocalOpponentSessionTests
     public async Task StartModelBotAsync_WhenModelIsMissing_ReportsFallbackAndKeepsSessionPlayable()
     {
         var missingModel = Path.Combine(Path.GetTempPath(), $"missing-lanpong-{Guid.NewGuid():N}.onnx");
-        var runtime = BotTestSupport.Runtime([BotTestSupport.Tracker(name: "Simple"),
+        var runtime = BotTestSupport.Runtime([BotTestSupport.Tracker(name: "Tracker"),
                 BotTestSupport.Onnx(fallback: "tracker", path: missingModel)],
             new TrackerBotStrategyFactory(), OnnxFactory(entry => new OnnxLocalOpponentController(entry.Onnx!)));
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, runtime);
@@ -126,7 +126,7 @@ public sealed class LocalOpponentSessionTests
         await Assert.That(started.OpponentFallbackActive).IsTrue();
         await Assert.That(started.Connection).IsEqualTo(ConnectionState.Connected);
         await Assert.That(started.UdpPort).IsEqualTo(0);
-        await Assert.That(started.Message.Contains("Simple", StringComparison.Ordinal)).IsTrue();
+        await Assert.That(started.Message.Contains("Tracker", StringComparison.Ordinal)).IsTrue();
         await Assert.That(started.Message.Contains("FileNotFoundException", StringComparison.Ordinal))
             .IsFalse();
 
@@ -138,7 +138,7 @@ public sealed class LocalOpponentSessionTests
         await Assert.That(peer.Snapshot().RequestedBotId).IsEqualTo("model");
         await Assert.That(peer.Snapshot().OpponentFallbackActive).IsTrue();
         await Assert.That(peer.Snapshot().OpponentMode).IsEqualTo(OpponentMode.Bot);
-        await Assert.That(peer.Snapshot().Message.Contains("Simple", StringComparison.Ordinal)).IsTrue();
+        await Assert.That(peer.Snapshot().Message.Contains("Tracker", StringComparison.Ordinal)).IsTrue();
 
         await peer.LeaveAsync();
         await Assert.That(peer.BotStatus).IsNull();
@@ -151,18 +151,19 @@ public sealed class LocalOpponentSessionTests
         await peer.StartBotAsync("Игрок", "tracker");
         await Assert.That(peer.BotStatus!.RequestedBotId).IsEqualTo("tracker");
         await Assert.That(peer.Snapshot().RequestedBotId).IsEqualTo("tracker");
-        await Assert.That(peer.Snapshot().Message.Contains("Hard", StringComparison.Ordinal)).IsFalse();
+        await Assert.That(peer.Snapshot().EffectiveBotName).IsEqualTo("Tracker");
+        await Assert.That(peer.Snapshot().BotFallbackReason).IsNull();
         await peer.LeaveAsync();
     }
 
     [Test]
     public async Task StartModelBotAsync_WithFrozenModel_PreservesSelectedIdentityAcrossRematch()
     {
-        OnnxLocalOpponentController? hard = null;
+        OnnxLocalOpponentController? modelController = null;
         var runtime = BotTestSupport.Runtime([BotTestSupport.Tracker(),
                 BotTestSupport.Onnx(path: BotTestSupport.ModelPath())],
             new TrackerBotStrategyFactory(),
-            OnnxFactory(entry => hard = new OnnxLocalOpponentController(entry.Onnx!)));
+            OnnxFactory(entry => modelController = new OnnxLocalOpponentController(entry.Onnx!)));
         await using var peer = new PongPeer(NullLogger<PongPeer>.Instance, runtime);
 
         await peer.StartBotAsync("Игрок", "model");
@@ -170,7 +171,7 @@ public sealed class LocalOpponentSessionTests
         await Assert.That(started.OpponentMode).IsEqualTo(OpponentMode.Bot);
         await Assert.That(started.RequestedBotId).IsEqualTo("model");
         await Assert.That(started.OpponentFallbackActive).IsFalse();
-        await Assert.That(hard!.ModelSha256).IsEqualTo(HardLocalOpponentController.ExpectedModelSha256);
+        await Assert.That(modelController!.ModelSha256).IsEqualTo(BotModelV1.ExpectedSha256);
         await WaitForAsync(peer, snapshot => snapshot.Tick > started.Tick);
 
         peer.Restart();
@@ -210,7 +211,7 @@ public sealed class LocalOpponentSessionTests
     public async Task StartModelBotAsync_WhenInferenceFails_UpdatesStatusWithoutStoppingClock()
     {
         var inference = new ThrowingInferenceSession();
-        var runtime = BotTestSupport.Runtime([BotTestSupport.Tracker(name: "Simple"),
+        var runtime = BotTestSupport.Runtime([BotTestSupport.Tracker(name: "Tracker"),
                 BotTestSupport.Onnx(fallback: "tracker")],
             new TrackerBotStrategyFactory(),
             OnnxFactory(entry => new OnnxLocalOpponentController(entry.Onnx!, inference)));
@@ -226,7 +227,7 @@ public sealed class LocalOpponentSessionTests
 
         var fallback = await WaitForAsync(peer, _ => peer.BotStatus?.EffectiveBotId == "tracker" && inference.Disposed,
             TimeSpan.FromSeconds(5));
-        await Assert.That(fallback.Message.Contains("Simple", StringComparison.Ordinal)).IsTrue();
+        await Assert.That(fallback.Message.Contains("Tracker", StringComparison.Ordinal)).IsTrue();
         await Assert.That(fallback.OpponentMode).IsEqualTo(OpponentMode.Bot);
         await Assert.That(fallback.RequestedBotId).IsEqualTo("model");
         await Assert.That(fallback.EffectiveBotId).IsEqualTo("tracker");
@@ -283,7 +284,7 @@ public sealed class LocalOpponentSessionTests
     private static TestBotFactory OnnxFactory(Func<BotDefinition, ILocalOpponentController> create) =>
         new(BotStrategyDescriptor.OnnxId, BotSettingsKind.Onnx, create);
 
-    private sealed class ThrowingInferenceSession : IHardInferenceSession
+    private sealed class ThrowingInferenceSession : IOnnxInferenceSession
     {
         public bool Disposed { get; private set; }
 

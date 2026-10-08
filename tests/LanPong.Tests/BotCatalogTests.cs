@@ -17,7 +17,7 @@ public sealed class BotCatalogTests
         values["Bots:Entries:0:Tracker:LookAheadSeconds"] = "0.37";
         values["Bots:Entries:0:Tracker:TargetDeadZone"] = "0.024";
         values["Bots:Entries:1:Onnx:InferenceCadenceTicks"] = "18";
-        values["Bots:Entries:1:Onnx:ExpectedSha256"] = HardLocalOpponentController.ExpectedModelSha256.ToUpperInvariant();
+        values["Bots:Entries:1:Onnx:ExpectedSha256"] = BotModelV1.ExpectedSha256.ToUpperInvariant();
         using var services = BuildServices(values);
         var catalog = services.GetRequiredService<BotCatalog>();
 
@@ -35,7 +35,7 @@ public sealed class BotCatalogTests
             .IsEqualTo(new TrackerBotSettings(13, 0.61, 0.37, 0.024));
         await Assert.That(catalog.TryGet("model", out var model)).IsTrue();
         await Assert.That(model!.FallbackBotId).IsEqualTo("steady");
-        await Assert.That(model.Onnx!.ExpectedSha256).IsEqualTo(HardLocalOpponentController.ExpectedModelSha256);
+        await Assert.That(model.Onnx!.ExpectedSha256).IsEqualTo(BotModelV1.ExpectedSha256);
         await Assert.That(model.Onnx.InferenceCadenceTicks).IsEqualTo(18);
         await Assert.That(catalog.TryGet("STEADY", out _)).IsFalse();
         await Assert.That(catalog.TryGet("missing", out _)).IsFalse();
@@ -50,7 +50,7 @@ public sealed class BotCatalogTests
         var catalog = services.GetRequiredService<BotCatalog>();
         await Assert.That(catalog.DefaultBot.Tracker).IsEqualTo(CalibratedTracker());
         await Assert.That(catalog.TryGet("model", out var model)).IsTrue();
-        await Assert.That(model!.Onnx!.ExpectedSha256).IsEqualTo(HardLocalOpponentController.ExpectedModelSha256);
+        await Assert.That(model!.Onnx!.ExpectedSha256).IsEqualTo(BotModelV1.ExpectedSha256);
         await Assert.That(model.Onnx.InferenceCadenceTicks).IsEqualTo(RightBotObservationV1.InferenceCadenceTicks);
         await Assert.That(new OnnxBotOptions().ModelPath).IsEqualTo("Models/hard-v1.onnx");
     }
@@ -72,7 +72,7 @@ public sealed class BotCatalogTests
         await Assert.That(trackers.Select(entry => entry.Tracker).Distinct().Count()).IsGreaterThanOrEqualTo(2);
         await Assert.That(trackers.Any(entry => entry.Tracker == CalibratedTracker())).IsTrue();
         await Assert.That(models.Any(entry => entry.Onnx == new OnnxBotSettings("Models/hard-v1.onnx",
-            HardLocalOpponentController.ExpectedModelSha256, RightBotObservationV1.InferenceCadenceTicks))).IsTrue();
+            BotModelV1.ExpectedSha256, RightBotObservationV1.InferenceCadenceTicks))).IsTrue();
         await Assert.That(catalog.DefaultBot.Enabled).IsTrue();
     }
 
@@ -105,7 +105,6 @@ public sealed class BotCatalogTests
             await Assert.That(catalog.DefaultBot.Onnx!.ModelPath).IsEqualTo(missing);
             await Assert.That(catalog.DefaultBot.FallbackBotId).IsNull();
             await Assert.That(File.Exists(missing)).IsFalse();
-            await Assert.That(host.Services.GetService<HardLocalOpponentController>()).IsNull();
         }
         finally
         {
@@ -158,7 +157,7 @@ public sealed class BotCatalogTests
         await Assert.That(catalog.TryGet("steady", out _)).IsTrue();
         await Assert.That(catalog.TryGet("changed", out _)).IsFalse();
         await Assert.That(catalog.TryGet("model", out var model)).IsTrue();
-        await Assert.That(model!.Onnx!.ExpectedSha256).IsEqualTo(HardLocalOpponentController.ExpectedModelSha256);
+        await Assert.That(model!.Onnx!.ExpectedSha256).IsEqualTo(BotModelV1.ExpectedSha256);
     }
 
     [Test]
@@ -182,9 +181,9 @@ public sealed class BotCatalogTests
             await Assert.That(ReferenceEquals(startupOptions, monitor.CurrentValue)).IsTrue();
             await Assert.That(monitor.CurrentValue.DefaultBotId).IsEqualTo("steady");
             await Assert.That(monitor.CurrentValue.Entries[0].Tracker!.ObservationIntervalTicks)
-                .IsEqualTo(SimpleLocalOpponentController.ObservationIntervalTicks);
+                .IsEqualTo(TrackerBotPolicy.ObservationIntervalTicks);
             await Assert.That(monitor.CurrentValue.Entries[0].Tracker!.LookAheadSeconds)
-                .IsEqualTo(SimpleLocalOpponentController.LookAheadSeconds);
+                .IsEqualTo(TrackerBotPolicy.LookAheadSeconds);
             await Assert.That(ReferenceEquals(catalog, host.Services.GetRequiredService<BotCatalog>())).IsTrue();
             await Assert.That(catalog.DefaultBotId).IsEqualTo("steady");
             await Assert.That(catalog.DefaultBot.Tracker).IsEqualTo(CalibratedTracker());
@@ -452,8 +451,8 @@ public sealed class BotCatalogTests
     };
 
     private static TrackerBotSettings CalibratedTracker() => new(
-        SimpleLocalOpponentController.ObservationIntervalTicks, SimpleLocalOpponentController.ObservationActivationX,
-        SimpleLocalOpponentController.LookAheadSeconds, SimpleLocalOpponentController.TargetDeadZone);
+        TrackerBotPolicy.ObservationIntervalTicks, TrackerBotPolicy.ObservationActivationX,
+        TrackerBotPolicy.LookAheadSeconds, TrackerBotPolicy.TargetDeadZone);
 
     private static BotsOptionsValidator Validator() => new(new BotStrategyRegistry([
         new BotStrategyDescriptor("tracker", BotSettingsKind.Tracker), new BotStrategyDescriptor("onnx", BotSettingsKind.Onnx)]));

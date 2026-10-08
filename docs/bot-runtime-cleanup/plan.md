@@ -1,0 +1,55 @@
+# Bot runtime cleanup, compact mode selection and benchmark tooling
+
+## Objective and coordination agreement
+
+Remove the legacy bot implementations completely, organize the supported configured bot runtime by responsibility, exclude development diagnostics and benchmark code from the production application, reduce the space used by opponent selection, and introduce a researched BenchmarkDotNet suite for the real configured runtime.
+
+The coordinator researches, decomposes, coordinates and reviews. Its repository writes are Markdown only in `docs/bot-runtime-cleanup/`. The separate **Implement configurable bot catalog** chat (`01a11af7-357d-7593-a957-5a83a56b56b3`) executes exactly one assigned step at a time, validates it, makes a conventional commit and stops for review. Breaking contracts are authorized. Reconcile this plan after steps 3 and 6 before assigning subsequent work. No remote push, PR, release or deployment is included.
+
+## Current evidence and working state
+
+Baseline: branch `codex/bot-catalog`, HEAD `2424622`; the previous seven-step catalog goal is complete. The worktree has one pre-existing user edit in `BotRuntime.cs`: `_availabilityGate` changes from `object` to `System.Threading.Lock`. Preserve it; do not reset or discard it. Its treatment will be explicit in the first runtime step.
+
+The app still contains `HardLocalOpponentController`, the configured tracker's `SimpleLocalOpponentController` name, shared inference classes inside the legacy Hard file, legacy diagnostics, the configured benchmark CLI and a tiny smoke model. The training tool and tests depend on these types. The current catalog UI exposes every card inline. The app already targets stable .NET 10/C# 14 with generated binding/JSON and Native AOT.
+
+## High-level implementation decomposition
+
+| Step | Outcome | Status |
+| --- | --- | --- |
+| 1 | Canonical tracker/ONNX policies and inference adapter; remove legacy controllers and migrate all live callers/tests/training | Assigned |
+| 2 | Organize production bot functionality into coherent folders and namespaces | Planned |
+| 3 | Separate development diagnostics from the production app and publish payload; validate production through its real API | Planned |
+| Checkpoint A | Reconcile canonical runtime, project boundaries, build/publish proof and compact UX specification | Required |
+| 4 | Compact game-mode dropdown and on-demand opponent picker, preserving named profiles and LAN flows | Planned |
+| 5 | Dedicated BenchmarkDotNet project for configured sessions with bounded, meaningful comparisons | Planned |
+| 6 | Integrated browser/runtime/tooling validation and measured performance review; optimize only supported findings | Planned |
+| Checkpoint B | Reconcile UX, release exclusion and benchmark evidence before final delivery | Required |
+| 7 | Current operator/developer/migration docs, final review and clean conventional history | Planned |
+
+## Step review gates
+
+1. **Remove legacy runtime:** Extract supported ONNX inference resources/model-contract constants from the Hard legacy file; use canonical configurable tracker/ONNX policies everywhere. Delete `HardLocalOpponentController` rather than move or wrap it, remove the Simple legacy type/name and implicit fallback path, and migrate training/evaluation/test consumers to canonical supported policies with explicit failure reporting. Delete directly obsolete `HardModelDiagnostics`/Hard dispatch and smoke hooks rather than rewriting a legacy diagnostic around the new policy. Replace their real-model proof with normal production API play that reaches healthy cadence-advanced Playing and matching WebSocket identity. Preserve trained observation/action/cadence behavior and hashes. Replace legacy parity tests with meaningful canonical golden/schema/lifecycle evidence; do not retain dead compatibility classes for tests. Preserve the existing user Lock edit and record it if committed. Commit `refactor(bots): remove legacy opponent controllers` or equivalent.
+2. **Organize runtime:** Move bot options/catalog, contracts, strategies/controllers, model observation/inference and session runtime into coherent `Bots/` folders with deliberate namespace boundaries. Keep gameplay physics, peer/network and tool concerns separate. Avoid a broad unrelated project reorganization. Update imports/project references and verify generated binding/JSON, training and tests. Commit `refactor(bots): organize configured runtime by responsibility` or equivalent.
+3. **Isolate tooling:** Remove remaining `OnnxSmoke` and configured diagnostic/benchmark dispatch from the production entry point. Step 1 already removes directly obsolete Hard diagnostics; put useful configured probes/measurement helpers in a dedicated developer tool. Production must contain no diagnostic types, benchmark framework dependency or tiny smoke model; organize tool-only assets there. Keep production ONNX initialization/telemetry guard required for gameplay. Update published smoke/release validation to exercise a real configured model via catalog/start/status/WebSocket rather than production diagnostic flags. Validate a separate AOT tool only if needed for probe parity. Prove source/project/reference/publish exclusion and successful real production AOT gameplay. Commit `refactor(tools): isolate bot diagnostics from production` or equivalent.
+4. **Compact UX:** Research public Chess.com mode-selection patterns. Prefer native controls: an idle game-mode select and a compact selected-opponent summary with an on-demand picker instead of a permanent card grid. Keep one named Play action, truthful readiness/fallback, keyboard/focus/dialog semantics, remembered eligible selection in the open tab, retry/empty/unavailable states, and named match/rematch/leave behavior. Preserve quick/manual LAN, nickname, input/touch/audio and race guards. Test actual desktop and 320/390px layouts and demonstrate reduced initial selection height. Commit `feat(ui): compact game modes and opponent selection` or equivalent.
+5. **BenchmarkDotNet:** Research current primary documentation/package/toolchains first. Add a separate permanent coverage benchmark project; the package must not enter the production dependency graph. Measure canonical configured prepared sessions with representative varying monotonic states, consecutive versus cadence-spaced decisions, honest model identity and failure guards, setup/disposal outside measurement and correct operation counts. Define a small comparison matrix and avoid no-inline custom timing harness results masquerading as BDN. Pass CLI args/filter, Dry validation first, one representative normal run, then bounded final comparisons; examine managed and Native AOT support from evidence. Commit `test(benchmarks): measure configured bot sessions with BenchmarkDotNet` or equivalent.
+6. **Final technical gate:** Verify legacy-source removal, diagnostic/benchmark exclusion from the published application, normal production model fallback/gameplay/LAN, canonical training tools, and compact browser flows. Run appropriate full source/native integration and frontend/unit checks, inspect publish warnings, and review real BDN artifacts. Optimize only concrete measured costs; do not invent a speedup or claim native allocation/full-clock latency from scoped managed diagnostics. Commit `test(bots): verify clean production and compact flows` or equivalent, or a justified performance commit.
+7. **Delivery:** Update current guides and commands after removing production flags/legacy classes; preserve explicitly historical training/results as historical evidence. Explain mode/picker UX, folder/project boundaries, diagnostic and BDN commands, execution/measurement limits and actual platform coverage. Record final conventional history, review findings and clean checkout. Commit `docs(bots): document runtime layout and developer tooling` or equivalent.
+
+## Completion proof
+
+- No live source type/caller named `HardLocalOpponentController` or legacy Simple controller; trained policy behavior has direct supported-runtime evidence.
+- Production bot code is organized coherently; developer diagnostics/BDN and smoke-only assets have an explicit separate project boundary and are absent from the app's shipped dependency/payload and dispatch paths.
+- Initial bot/mode UI occupies materially less space, with the catalog available on demand and all bot/LAN/accessibility/failure flows verified in a real browser.
+- A working BenchmarkDotNet suite exercises the actual configured runtime with valid inputs/ownership/operation units, artifacts and honest scope.
+- Research precedes implementations, checkpoints occur after 3 and 6, every step is independently committed/reviewed, and the final checkout is clean.
+
+## Coordinator progress classification
+
+The preceding goal turn was progress: it delivered seven reviewed commits, verified a clean checkout and completed the earlier catalog objective. This continuation starts a new active objective and revalidates the current worktree rather than relying on that prior completion.
+
+## Review log
+
+- 2026-10-08: New decomposition recorded before implementation. Current state and the pre-existing Lock edit were inspected. Independent runtime/tooling, compact UX and BenchmarkDotNet research are next; no implementation step is assigned yet.
+- 2026-10-08: Runtime dependency mapping confirms extraction of the supported ONNX adapter and model constants before deleting the duplicate implicit-fallback controller. Existing framework/ONNX dependencies suffice. Public UX research favors native progressive disclosure; full specification is recorded in research.md. The attempted step 1 dispatch was rejected by automatic approval review because the continuation was not accepted as trusted direct authorization for controller deletion and broad production/training/test changes. The worker remains idle; a direct human authorization question is pending. Read-only research continues. Dependency review refined step 1 to delete the obsolete Hard diagnostic callers immediately and replace their probe with normal production API proof.
+- 2026-10-08: The human explicitly answered "Approve the planned refactor" for all seven steps. That resolves the automatic authorization rejection and authorizes subsequent one-step assignments. Step 1 is dispatched with the refined direct-caller removal and normal production model-play gate; no other step is assigned.

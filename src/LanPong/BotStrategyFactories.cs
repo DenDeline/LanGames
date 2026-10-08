@@ -14,7 +14,7 @@ internal sealed class TrackerBotStrategyFactory : IBotStrategyFactory
     public BotStrategyDescriptor Descriptor { get; } = new(BotStrategyDescriptor.TrackerId, BotSettingsKind.Tracker);
 
     public ILocalOpponentController Create(BotDefinition entry) =>
-        new SimpleLocalOpponentController(entry.Tracker ??
+        new TrackerBotPolicy(entry.Tracker ??
             throw new InvalidOperationException("A tracker strategy requires tracker settings."));
 }
 

@@ -8,23 +8,18 @@ internal sealed class EvaluatedModelPolicy : ILocalOpponentController, IDisposab
 {
     private readonly ILocalOpponentController _controller;
     private readonly IDisposable _owner;
-    private readonly HardLocalOpponentController? _production;
 
     private EvaluatedModelPolicy(string backend, string? modelSha256,
-        ILocalOpponentController controller, IDisposable owner,
-        HardLocalOpponentController? production = null)
+        ILocalOpponentController controller, IDisposable owner)
     {
         Backend = backend;
         ModelSha256 = modelSha256;
         _controller = controller;
         _owner = owner;
-        _production = production;
     }
 
     public string Backend { get; }
     public string? ModelSha256 { get; }
-    public bool IsFallbackActive => _production?.IsFallbackActive ?? false;
-    public string? FallbackReason => _production?.FallbackReason;
 
     public static EvaluatedModelPolicy Create(string backend, string? modelPath)
     {
@@ -40,22 +35,32 @@ internal sealed class EvaluatedModelPolicy : ILocalOpponentController, IDisposab
                 var student = new OnnxStudentPolicy(absolutePath);
                 return new EvaluatedModelPolicy(backend, sha, student, student);
             }
-            var hard = new HardLocalOpponentController(absolutePath);
-            try
-            {
-                // Production Hard loads and warms on its first Reset. Capture
-                // SHA and load fallback only after that startup transition.
-                hard.Reset();
-                return new EvaluatedModelPolicy(backend, hard.ModelSha256, hard, hard, hard);
-            }
-            catch
-            {
-                hard.Dispose();
-                throw;
-            }
+            return CreateProduction(absolutePath);
         }
 
         throw new ArgumentException("Backend must be offline or production.", nameof(backend));
+    }
+
+    internal static EvaluatedModelPolicy CreateProduction(string modelPath,
+        Func<string, IOnnxInferenceSession>? createSession = null)
+    {
+        var settings = new OnnxBotSettings(Path.GetFullPath(modelPath),
+            BotModelV1.ExpectedSha256, RightBotObservationV1.InferenceCadenceTicks);
+        var policy = createSession is null
+            ? new OnnxLocalOpponentController(settings)
+            : new OnnxLocalOpponentController(settings, createSession);
+        try
+        {
+            // Use the prepared production policy itself. A failed load or
+            // inference aborts evaluation rather than substituting a baseline.
+            policy.Reset();
+            return new EvaluatedModelPolicy("production", policy.ModelSha256, policy, policy);
+        }
+        catch
+        {
+            policy.Dispose();
+            throw;
+        }
     }
 
     public void Reset() => _controller.Reset();

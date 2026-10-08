@@ -22,7 +22,7 @@ internal sealed class TeacherPolicy : ILocalOpponentController
         [0, 0.04, -0.04, 0.08, -0.08, 0.09, -0.09];
 
     private readonly GameEngine _rollout = new();
-    private readonly SimpleLocalOpponentController _assumedLeft = new();
+    private readonly TrackerBotPolicy _assumedLeft = new();
     private int _heldAxis;
 
     public void Reset()

@@ -6,20 +6,20 @@ namespace LanPong;
 internal sealed class OnnxLocalOpponentController : ILocalOpponentController, IDisposable
 {
     private readonly OnnxBotSettings _settings;
-    private readonly Func<string, IHardInferenceSession> _createSession;
+    private readonly Func<string, IOnnxInferenceSession> _createSession;
     private readonly float[] _observation = new float[RightBotObservationV1.FeatureCount];
-    private readonly float[] _logits = new float[3];
-    private IHardInferenceSession? _session;
+    private readonly float[] _logits = new float[BotModelV1.ActionCount];
+    private IOnnxInferenceSession? _session;
     private int _axis;
     private bool _prepared;
     private bool _disposed;
 
     internal OnnxLocalOpponentController(OnnxBotSettings settings)
-        : this(settings, static path => new OrtHardInferenceSession(path)) { }
+        : this(settings, static path => new OrtOnnxInferenceSession(path)) { }
 
     // The factory creates a validated, warmed session. Initialization remains outside gameplay.
     internal OnnxLocalOpponentController(OnnxBotSettings settings,
-        Func<string, IHardInferenceSession> createSession)
+        Func<string, IOnnxInferenceSession> createSession)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(createSession);
@@ -28,7 +28,7 @@ internal sealed class OnnxLocalOpponentController : ILocalOpponentController, ID
     }
 
     // Focused tests can inject an already prepared session without a model artifact.
-    internal OnnxLocalOpponentController(OnnxBotSettings settings, IHardInferenceSession session)
+    internal OnnxLocalOpponentController(OnnxBotSettings settings, IOnnxInferenceSession session)
         : this(settings)
     {
         ArgumentNullException.ThrowIfNull(session);
@@ -72,7 +72,7 @@ internal sealed class OnnxLocalOpponentController : ILocalOpponentController, ID
         if (!float.IsFinite(_logits[0]) || !float.IsFinite(_logits[1]) || !float.IsFinite(_logits[2]))
             throw new InvalidDataException("ONNX model returned non-finite logits.");
         var bestClass = 1; // Preserve the trained policy's preference for stay on a tie.
-        for (var candidate = 0; candidate < 3; candidate++)
+        for (var candidate = 0; candidate < BotModelV1.ActionCount; candidate++)
             if (_logits[candidate] > _logits[bestClass]) bestClass = candidate;
         _axis = RightBotObservationV1.AxisFromClass(bestClass);
         return _axis;

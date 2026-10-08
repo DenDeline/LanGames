@@ -131,43 +131,46 @@ internal static class TrainingCli
             Exact-engine right-bot data and evaluation (60 fixed ticks/second).
 
             evaluate --output FILE [--seed 20261007] [--matches 24] [--max-ticks 20000]
-              Compare Teacher and Simple as right policies against identical seeded
+              Compare Teacher and the tracker baseline as right policies against identical seeded
               left opponents. Output has paired per-match scores, wins, and seeds.
 
             direct-evaluate --output FILE [--seed 20261007] [--matches 8]
               [--max-ticks 20000]
-              Diagnostic direct Teacher-vs-Simple duels with both side assignments,
+              Diagnostic direct Teacher-vs-tracker duels with both side assignments,
               using the same seeded, legal opening disturbance for each pair.
               Capped games are reported, never counted as wins.
 
             evaluate-model --output FILE --student-model MODEL
               [--backend offline|production] [--seed 20261007]
               [--matches 24] [--max-ticks 20000]
-              Compare an exported ONNX model and Simple as right policies
+              Compare an exported ONNX model and the tracker baseline as right policies
               against paired seeded left opponents. Report per-profile wins,
-              score margins, Wilson intervals, model SHA-256, fallback status,
-              and match results. Production invokes the integrated Hard
-              controller with the frozen model at MODEL and verifies its hash.
+              score margins, Wilson intervals, model SHA-256, and match results.
+              Production uses the strict supported ONNX policy with the frozen
+              model at MODEL, verifies its hash, and fails on load or inference errors.
 
             direct-evaluate-model --output FILE --student-model MODEL
               [--backend offline|production]
               [--seed 20261007] [--matches 8] [--max-ticks 20000]
               [--countdown-mode seeded-targets|policies]
-              Direct student-vs-Simple duels, one game per side assignment for
+              Direct student-vs-tracker duels, one game per side assignment for
               each seed. The default moves both paddles toward seeded targets
               between points; policies lets each bot control its countdown.
               Report completed and capped games, side wins, Wilson interval,
-              model SHA-256, fallback status, protocol, and match results.
-              Production invokes the integrated Hard controller with MODEL.
+              model SHA-256, protocol, and match results. Production uses the
+              strict supported ONNX policy with MODEL and fails on model errors.
 
             generate --output DIRECTORY [--seed 20261007] [--train 48]
               [--validation 12] [--test 12] [--gate-matches 24]
               [--max-ticks 20000] [--sample-every 9]
               [--behavior teacher|simple|student] [--student-model FILE]
-              Verify Teacher beats Simple on held-out scenarios before writing
+              Verify Teacher beats the tracker baseline on held-out scenarios before writing
               split JSONL labels, manifest.json, matches.json, evaluation.json.
               Student behavior loads an ONNX model with observation -> logits;
               visited student states still receive Teacher labels.
+
+            Historical reports and --behavior simple retain the label "simple"
+            for the same calibrated tracker baseline and reproducible datasets.
             """);
     }
 }

@@ -29,17 +29,17 @@ internal sealed class BotEntryOptions
 
 internal sealed class TrackerBotOptions
 {
-    // Defaults preserve the calibrated Simple policy; bounds are checked at startup.
-    public int ObservationIntervalTicks { get; set; } = SimpleLocalOpponentController.ObservationIntervalTicks;
-    public double ObservationActivationX { get; set; } = SimpleLocalOpponentController.ObservationActivationX;
-    public double LookAheadSeconds { get; set; } = SimpleLocalOpponentController.LookAheadSeconds;
-    public double TargetDeadZone { get; set; } = SimpleLocalOpponentController.TargetDeadZone;
+    // Defaults preserve the calibrated tracker policy; bounds are checked at startup.
+    public int ObservationIntervalTicks { get; set; } = TrackerBotPolicy.ObservationIntervalTicks;
+    public double ObservationActivationX { get; set; } = TrackerBotPolicy.ObservationActivationX;
+    public double LookAheadSeconds { get; set; } = TrackerBotPolicy.LookAheadSeconds;
+    public double TargetDeadZone { get; set; } = TrackerBotPolicy.TargetDeadZone;
 }
 
 internal sealed class OnnxBotOptions
 {
     // Relative paths will be resolved by the runtime against the application content root.
-    public string ModelPath { get; set; } = "Models/hard-v1.onnx";
-    public string ExpectedSha256 { get; set; } = HardLocalOpponentController.ExpectedModelSha256;
+    public string ModelPath { get; set; } = BotModelV1.RelativeModelPath;
+    public string ExpectedSha256 { get; set; } = BotModelV1.ExpectedSha256;
     public int InferenceCadenceTicks { get; set; } = RightBotObservationV1.InferenceCadenceTicks;
 }
