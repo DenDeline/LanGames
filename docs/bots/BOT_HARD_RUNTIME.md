@@ -1,29 +1,42 @@
-# Production Hard runtime and acceptance (bot plan steps 7–8)
+# Historical Hard runtime and acceptance (original bot plan steps 7–8)
 
-The app packages the frozen [Hard v1 model](BOT_MODEL.md) at
+This document records the original Simple/Hard runtime and version 7 browser
+acceptance. Its model, training/evaluator results, commands and measurements
+remain historical evidence. The current app selects configured catalog entries
+by `botId` and uses version 8 HTTP/WebSocket identity. See the
+[configuration and migration guide](../bot-catalog/configuration.md) for current
+runtime/operator behavior and [configured-runtime measurements](../bot-catalog/performance.md)
+for `--bot-benchmark`. The retained `--hard-smoke` and `--hard-benchmark`
+commands exercise the legacy Hard controller; they do not measure the current
+configured `BotRuntime`/prepared-session path.
+
+At the original acceptance, the app packaged the frozen [Hard v1 model](BOT_MODEL.md) at
 `Models/hard-v1.onnx` beside the executable. The expected SHA-256 is
 `5d5d3cf0910d967cf2d6dc60e8fe0b63f772060178bf6673f6ddc5cdba98ab5a`.
-The production controller checks this hash and the exact float32
-`observation[1,10]` and `logits[1,3]` metadata before using the model. It loads
-one ONNX Runtime CPU session on the first Hard start, warms it once, and reuses
+The then-production controller checked this hash and the exact float32
+`observation[1,10]` and `logits[1,3]` metadata before using the model. It loaded
+one ONNX Runtime CPU session on the first Hard start, warmed it once, and reused
 the session and bound input/output buffers across decisions and rematches.
-Ordinary app startup and LAN play do not load the model.
+Ordinary app startup and LAN play did not load the model.
 
-Hard decides on absolute engine ticks divisible by nine, holds its last axis
-between decisions, and returns a neutral axis during countdown. The output
+Hard decided on absolute engine ticks divisible by nine, held its last axis
+between decisions, and returned a neutral axis during countdown. The output
 classes map to up/stay/down, with stay winning a logit tie. These rules match
 the training evaluator's policy-owned countdown protocol. If loading or
-inference fails, the controller switches to Simple for the rest of its lifetime
-and records the failure reason. The local game clock continues, and an internal
-session status reports that fallback to its caller. The browser now offers
-separate Simple and Hard actions. Version 7 HTTP/WebSocket snapshots distinguish
+inference failed, the controller switched to Simple for the rest of its lifetime
+and recorded the failure reason. The local game clock continued, and an internal
+session status reported that fallback to its caller. The browser offered
+separate Simple and Hard actions. Version 7 HTTP/WebSocket snapshots distinguished
 the requested Hard mode from the actual Simple controller after fallback and
-include a fallback flag. The page keeps a visible fallback notice through play,
-game over, and rematch; leaving clears it.
+included a fallback flag. The page kept a visible fallback notice through play,
+game over, and rematch; leaving cleared it.
 
-## Reproduce the runtime checks
+## Original runtime checks and retained legacy diagnostics
 
-From the repository root, after restoring the .NET dependencies:
+The original reproduction commands below ran from the repository root, after
+restoring the .NET dependencies. The legacy diagnostic commands remain
+supported. The integration scripts now cover the current catalog/v8 contracts;
+running them today does not reproduce the old Simple/Hard UI acceptance.
 
 ```bash
 dotnet test --solution LanPong.slnx -c Release --no-restore
@@ -38,16 +51,17 @@ LANPONG_TEST_BINARY="$PWD/.artifacts/publish/hard-step8-osx-arm64/LanPong" \
 .artifacts/publish/hard-step8-osx-arm64/LanPong --hard-benchmark
 ```
 
-The published smoke checks the actual model's SHA-256 and inference, the
-existing tiny Native AOT ONNX probe, and HTTP startup. The release smoke runs
-on macOS ARM64, Linux x64, and Windows x64 in the release workflow. The
-benchmark performs 1,000 warmup decisions and measures 10,000 model decisions
+The original published smoke checked the actual model's SHA-256 and inference,
+the existing tiny Native AOT ONNX probe, and HTTP startup. The release workflow
+configured smoke for macOS ARM64, Linux x64, and Windows x64; the local
+execution evidence below is macOS ARM64. The legacy benchmark performs
+1,000 warmup decisions and measures 10,000 model decisions
 on finite synthetic engine states, one per nine-tick cadence. Allocation is
 measured with `GC.GetAllocatedBytesForCurrentThread` and is **managed**
 allocation on that thread, not native ONNX memory use. The path is an explicit
 diagnostic command; normal game ticks have no timing instrumentation.
 
-At Step 7 on the development macOS ARM64 host, the Native AOT executable
+At original Step 7 on the development macOS ARM64 host, the Native AOT executable
 passed the published smoke and the full two-process local/LAN integration suite. Its
 10,000-decision benchmark measured p95 **0.0025 ms**,
 p99 **0.0026 ms**, worst **0.0405 ms**, and **0 managed bytes per decision**.
@@ -55,15 +69,17 @@ The engine tick budget is 16.6667 ms. These are local measurements, not a
 cross-platform latency guarantee. The published executable was 18,579,032
 bytes, `libonnxruntime.dylib` was 43,879,424 bytes, and the model was 30,393
 bytes. The Native AOT publish reported an IL3053 warning for MessagePack and
-an IL2104 trim warning; it reported no ONNX Runtime warnings. The Step 7 macOS
-publish also included two Windows PE DLLs, which Step 8 removes from Unix
+an IL2104 trim warning; it reported no ONNX Runtime warnings. The original Step 7 macOS
+publish also included two Windows PE DLLs, which Step 8 removed from Unix
 publishes after verifying the macOS binary works with only
 `libonnxruntime.dylib`.
 
-## Development gameplay check with the production controller
+## Development gameplay check with the original production controller
 
-The training-data tool accepts `--backend production` to run the **same
-controller** used by the app through the exact .NET game engine. It requires
+The training-data tool accepts `--backend production` to run
+`HardLocalOpponentController`, the controller used by the app at the version 7
+acceptance, through the exact .NET game engine. This evaluator backend remains
+available and does not resolve current catalog entries. It requires
 an explicit `--student-model` path, verifies the frozen hash, and records
 fallback per match. Production evaluation writes a report and exits with an
 error if any match used Simple fallback. Its default backend remains the
@@ -94,11 +110,11 @@ checkpoints and 45 distinct playing trajectories on each side. The offline
 and production backends produced identical trajectory hashes, ticks, and
 scores across this development run's 200 direct games.
 
-## Playable Hard and final acceptance
+## Historical playable Hard and final version 7 acceptance
 
 The final gate ran after the version 7 browser and server contract, native
 telemetry guard, and integration checks were implemented. It used the same
-production Hard controller as the app and the reserved master seed `20261107`.
+production Hard controller then used by the app and the reserved master seed `20261107`.
 To reproduce from the repository root:
 
 ```bash
@@ -140,7 +156,7 @@ gives 46/46 successful pairs and a descriptive Wilson 95% interval of
 the same 46 openings and 100 distinct playing trajectories per side; it does
 not replace the normal countdown protocol.
 
-The final macOS ARM64 Native AOT executable passed real-model and tiny-model
+The original final macOS ARM64 Native AOT executable passed real-model and tiny-model
 published smoke, HTTP startup, and the full published two-process Hard/Simple
 and LAN integration suite. Its 10,000-decision benchmark measured p95
 **0.0034 ms**, p99 **0.0035 ms**, worst **0.0315 ms**, and **0 managed bytes per
@@ -149,8 +165,8 @@ contained 139,838,226 file bytes, including debug symbols; the release-style
 `.tar.gz` was 31,106,656 bytes. The executable was 18,645,480 bytes, native
 macOS ONNX Runtime library 43,879,424 bytes, and model 30,393 bytes. Removing
 the two Windows PE DLLs saved 16,750,192 file bytes. The same release workflow
-still runs real-model published smoke on Linux x64 and Windows x64; those target
-executions were not available on this macOS host.
+also configured real-model published smoke on Linux x64 and Windows x64; those
+target executions were not available on this macOS host.
 
 One pre-fix full integration run intermittently aborted while the ONNX Runtime
 1DS telemetry worker shut down. The macOS crash report showed its native

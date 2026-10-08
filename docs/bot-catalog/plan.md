@@ -25,13 +25,13 @@ The coordinator performs research, decomposition, coordination, and review. Its 
 | Checkpoint A | Review steps 1–3 together; reconcile configuration, availability, migration, and UI needs | Complete |
 | 4 | Responsive native radio-card catalog, selected profile, honest availability, and one Play action | Reviewed: `3083f37` |
 | 5 | Close actual gaps: config-only fourth bot, UI states, configured behavior and browser/LAN integration | Reviewed: `48aa7f9` |
-| 6 | Benchmark actual configured runtime; optimize evidenced costs and verify Native AOT | Assigned |
-| Checkpoint B | Review steps 4–6 together; reconcile performance, UX, and final validation needs | Required |
-| 7 | Final published-app validation, configuration/operator documentation, and delivery evidence | Ready after checkpoint B |
+| 6 | Benchmark actual configured runtime; optimize evidenced costs and verify Native AOT | Reviewed: `3cc36ad` |
+| Checkpoint B | Review steps 4–6 together; reconcile performance, UX, and final validation needs | Complete |
+| 7 | Final published-app validation, configuration/operator documentation, and delivery evidence | Reviewed; final documentation and example verified |
 
 ## Step boundaries and review gates
 
-Implementation chat: **Implement configurable bot catalog**, thread `01a11af7-357d-7593-a957-5a83a56b56b3`, project `lanpong`, same checkout. Branch: `codex/bot-catalog`. Steps 1–5 and checkpoint A are reviewed; only step 6 is currently assigned. The worker commits each bounded step and stops for review. The coordinator is authorized by the human to send subsequent step assignments to this chat.
+Implementation chat: **Implement configurable bot catalog**, thread `01a11af7-357d-7593-a957-5a83a56b56b3`, project `lanpong`, same checkout. Branch: `codex/bot-catalog`. All seven steps and both reconciliation checkpoints are reviewed. The final conventional documentation commit records the delivery boundary; no implementation step remains. The worker executed one assigned step at a time and stopped for coordinator review. No push, pull request or deployment is part of this delivery.
 
 Research and architecture decisions are in [research.md](research.md). They are a specification for this feature, with routine implementation detail left to the worker.
 
@@ -59,6 +59,24 @@ Refinements before further work:
 
 No extra production library, preview .NET migration, UDP contract change, hot reload, or active-session replacement is justified by this checkpoint.
 
+## Checkpoint B reconciliation — after step 6
+
+Reviewed commits: `3083f37`, `48aa7f9`, `3cc36ad`. The native radio-card catalog and named match flow pass desktop, 320px and 390px checks, including selection, launch/rematch visibility, fallback, retry, long metadata and leave. Real process integration proves an additional tuned tracker requires configuration only and coexists with LAN play. Missing and corrupt models use explicit, visible fallback and coherent session transitions.
+
+The configured diagnostic shares the application's providers, catalog, factories and prepared session. It owns a built but unstarted application, rejects fallback, and records verified model identity. Independent review reconciled all 18 saved managed/native reports with their tables. Every measured calling-thread managed allocation delta was zero; native cadence-spaced ONNX batch means were 2.316–2.333 microseconds. Tracker timings approach the timer floor. Preparation, native memory, disposal and full-clock/input-to-display latency are outside the policy measurement scope; the 552.288 ms preparation outlier remains documented. No speedup or latency bound is claimed. No further production optimization is supported by these results.
+
+Refinements before the final step:
+
+- Update the root README's player flow and v8 browser/API contract, with an authoritative linked configuration and migration guide in this directory.
+- Provide a complete additional tracker entry, verify that exact example through the final published diagnostic, and explain stable IDs, ordering/grouping, metadata bounds, tuning, content-root model paths, digest checks and explicit acyclic fallback.
+- Explain restart-only configuration and latched availability. Configuration arrays merge by numeric index across providers; partial overrides do not replace an entire array or remove old strategy settings. Document safe file edits and targeted environment overrides.
+- Explain required case-sensitive `botId`, generic `bot` mode, separate requested/effective identity, leave-before-start, persistent fallback on rematch, removal of `LANPONG_HARD_MODEL_PATH`, and coordinated browser/backend migration to v8 with 30 snapshot fields. UDP v8 remains independently unchanged.
+- Mark the old Hard runtime/UI acceptance as historical while preserving training results, hashes, commands and retained legacy diagnostics. Correct historical research pointers instead of rewriting past evidence.
+- Link the configured benchmark and its scoped results; force Production in reproducible commands. Reuse the completed full source/native integration and 173-test evidence; rerun only checks warranted by documentation examples or new changes.
+- Finish with conventional history, a clean checkout and accurate delivery evidence. macOS ARM64 is validated; Linux/Windows execution and optional strict mDNS are not claimed. Existing MessagePack IL3053/IL2104 warnings remain.
+
+No new dependency, preview framework, reload mechanism, scheduling rewrite or additional gameplay/API scope is justified. Step 7 is documentation and delivery verification only.
+
 ## Acceptance criteria to refine after research
 
 - Adding another bot using an already registered strategy requires appsettings changes only, with no bot-specific backend or UI branch.
@@ -79,3 +97,5 @@ No extra production library, preview .NET migration, UDP contract change, hot re
 - 2026-10-08: Step 3 reviewed at `2881f34`, with 164 .NET tests plus frontend/format/build, source integration, Native AOT smoke and full published integration passing. Safe catalog discovery, required IDs, separate bot-name bounds, and v8 requested/effective identity are covered. Checkpoint A reconciled the remaining steps as above; only step 4 is dispatched next.
 - 2026-10-08: Step 4 reviewed at `3083f37`. Frontend/format/build, Release build and 20 catalog/API tests pass. Desktop/320/390 browser evidence includes retry, fallback, long metadata and long-name game-over layouts. Coordinator independently confirmed native arrow selection, successful launch visibility/focus and leave at 390px. Source review accepts bounded start/rematch status reconciliation with exact bot/round guards. Step 5 is assigned only to real process-level coverage gaps.
 - 2026-10-08: Step 5 reviewed at `48aa7f9`. All 164 .NET tests, frontend/build/format, source integration and fresh macOS ARM64 AOT smoke/full integration pass. Real provider-only fourth tracker metadata, default/order, long HTML-looking HTTP/WS names, live tuning, rematch/leave and LAN coexistence are proved; missing and damaged model assets have explicit sanitized fallback. Optional strict mDNS testing was not enabled. Only existing MessagePack publish warnings remain. Step 6 is assigned using built-in diagnostics research and the focused static performance review; checkpoint B follows it.
+- 2026-10-08: Step 6 reviewed at `3cc36ad`. All 173 .NET tests, frontend/build/format, source and native integration pass. Eighteen actual configured-session measurements and their documented aggregation are independently accepted; policy windows show zero calling-thread managed allocation. Diagnostic provider parity, fallback rejection, AOT serialization and complete unstarted-host ownership pass source review and fresh published smoke. Only existing MessagePack warnings remain. Checkpoint B reconciled final documentation and delivery scope before assigning step 7.
+- 2026-10-08: Step 7 reviewed. Current README and configuration/migration guidance agree with the implemented catalog, named UI, v8 identity, explicit fallback, restart-only settings and index-based overrides. Historical model/training results are preserved and distinguished from configured runtime diagnostics. The exact documented Sokol entry passed explicit-ID and default selection on the final macOS ARM64 binary, with tracker cadence 7 and no fallback. Coordinator and independent operator/API/UX reviewers accepted the final wording; document links, contract layout, formatting and diff checks are recorded in the delivery evidence. The final commit and clean checkout are audited before completing the Codex goal.
