@@ -1,5 +1,11 @@
 # Research and design decisions
 
+Historical research for the completed catalog work. The original choices and
+stages below are retained; later cleanup changed the browser layout, contracts
+and diagnostic boundary. See the [current tooling and migration guide](../bot-runtime-cleanup/current-guide.md)
+for v9, compact selection, side ownership and separate managed diagnostics, and
+[configuration.md](configuration.md) for current operator settings.
+
 Research date: 2026-10-08. This document describes LanPong design decisions, not Chess.com's private implementation.
 
 ## Repository baseline before implementation

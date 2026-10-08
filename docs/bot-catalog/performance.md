@@ -1,5 +1,14 @@
 # Configured bot runtime measurements
 
+Historical report from the completed catalog work, before the runtime cleanup.
+All 18 captures, tables, the preparation outlier, provenance and original command
+blocks below are retained. Their application diagnostic dispatch and source layout
+describe that revision; the published app no longer accepts those diagnostic
+commands. The current managed tool, v9 contracts and publication checks are in the
+[current tooling and migration guide](../bot-runtime-cleanup/current-guide.md),
+with operator settings in [configuration.md](configuration.md). No new timing
+measurements or speedup claims are added here.
+
 Measured on 2026-10-08 for step 6. No steady gameplay optimization was justified: the [focused static review](performance-review.md) found no actionable hot-path allocation or lookup, and every measured policy window reported zero calling-thread managed bytes. This change adds a diagnostic and verification rather than an artificial runtime rewrite. These are scoped observations, not allocation freedom for native memory or a complete game tick, a latency bound, or a before/after speedup claim.
 
 ## Configuration and execution

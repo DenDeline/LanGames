@@ -1,5 +1,12 @@
 # Bot implementation plan
 
+Historical completed Simple/Hard implementation plan. Its v7 contracts, runtime
+classes, diagnostics and results below record the original delivery and follow-up
+fixes. The frozen model and training evidence remain relevant; current configured
+bots, v9 contracts and separate managed tooling are documented in the
+[current tooling and migration guide](../bot-runtime-cleanup/current-guide.md)
+and [catalog configuration guide](../bot-catalog/configuration.md).
+
 Status: all nine steps complete and reviewed; the bot goal is accepted. The coordinator owns this plan and reviews code; implementation belongs to a separate Codex worker task. The worker took one step at a time and ended each step with a conventional commit. The coordinator reconciled this plan after steps 1–3, 4–6, and 7–8.
 
 ## Goal and acceptance

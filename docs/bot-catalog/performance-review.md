@@ -1,5 +1,14 @@
 # Focused configured-runtime performance review
 
+Historical source review from the completed catalog work. All original source
+filenames, line numbers, counts and findings below refer to that revision and are
+retained as evidence; legacy classes have since been removed and current files
+have moved. These lines have not been retargeted to the current tree. For current
+tooling, runtime layout, v9 contracts and validation limits, see the
+[current tooling and migration guide](../bot-runtime-cleanup/current-guide.md)
+and [catalog configuration guide](configuration.md). This is not a new static
+review or measurement of the cleanup changes.
+
 Reviewed 2026-10-08, after API step 3 and while UI step 4 was in progress. Read-only review used `dotnet-diag:analyzing-dotnet-performance`; no code, builds, or benchmarks were run by the reviewer.
 
 Scope: nine complete C# files, 1,535 lines at review time: BotRuntime.cs (294), OnnxLocalOpponentController.cs (90), SimpleLocalOpponentController.cs (76), HardLocalOpponentController.cs (223), RightBotObservationV1.cs (99), PongPeer.cs (501), PongPeer.Clock.cs (239), BotSessionIdentity.cs (5), ILocalOpponentController.cs (8). Auxiliary checks confirmed GameState is a value type and GameEngine.Capture retains the existing event-history reference.

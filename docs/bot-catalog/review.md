@@ -1,5 +1,11 @@
 # Coordinator review record
 
+Historical completed catalog review. Its accepted steps, contracts, source
+pointers and validation below describe that revision. Current v9 behavior and
+separate managed tooling are documented in the
+[current tooling and migration guide](../bot-runtime-cleanup/current-guide.md)
+and [catalog configuration guide](configuration.md).
+
 ## Runtime risks and required evidence
 
 - The local strategy runs under the simulation state lock. A strategy exception must not fault the shared clock and break later LAN play or shutdown. Failure without an explicit configured fallback needs a coherent stopped local session and safe user-visible reason.

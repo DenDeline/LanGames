@@ -3,12 +3,14 @@
 This document records the original Simple/Hard runtime and version 7 browser
 acceptance. Its model, training/evaluator results, commands and measurements
 remain historical evidence. The current app selects configured catalog entries
-by `botId` and uses version 8 HTTP/WebSocket identity. See the
-[configuration and migration guide](../bot-catalog/configuration.md) for current
-runtime/operator behavior and [configured-runtime measurements](../bot-catalog/performance.md)
-for `--bot-benchmark`. The retained `--hard-smoke` and `--hard-benchmark`
-commands exercise the legacy Hard controller; they do not measure the current
-configured `BotRuntime`/prepared-session path.
+by `botId` and uses version 9 browser/API/catalog and UDP contracts. See the
+[current tooling, contracts and migration guide](../bot-runtime-cleanup/current-guide.md)
+and [catalog configuration guide](../bot-catalog/configuration.md) for current
+runtime/operator behavior. The [configured-runtime measurements](../bot-catalog/performance.md)
+are also historical. `HardLocalOpponentController`, `SimpleLocalOpponentController`,
+`--hard-smoke` and `--hard-benchmark` were removed; their original commands below
+are unavailable in the current app. `--onnx-smoke` and `--bot-benchmark` now belong
+to the separate managed `tools/LanPong.BotDiagnostics` tool, not the published app.
 
 At the original acceptance, the app packaged the frozen [Hard v1 model](BOT_MODEL.md) at
 `Models/hard-v1.onnx` beside the executable. The expected SHA-256 is
@@ -31,12 +33,14 @@ the requested Hard mode from the actual Simple controller after fallback and
 included a fallback flag. The page kept a visible fallback notice through play,
 game over, and rematch; leaving cleared it.
 
-## Original runtime checks and retained legacy diagnostics
+## Historical runtime checks and legacy diagnostics
 
 The original reproduction commands below ran from the repository root, after
-restoring the .NET dependencies. The legacy diagnostic commands remain
-supported. The integration scripts now cover the current catalog/v8 contracts;
-running them today does not reproduce the old Simple/Hard UI acceptance.
+restoring the .NET dependencies. This is a historical command block, including
+the deleted legacy diagnostic entry points. Current integration scripts cover
+the v9 contracts, and running them today does not reproduce the old Simple/Hard
+UI acceptance. Use the [current guide](../bot-runtime-cleanup/current-guide.md)
+for supported tool, publication and smoke commands.
 
 ```bash
 dotnet test --solution LanPong.slnx -c Release --no-restore
@@ -54,7 +58,7 @@ LANPONG_TEST_BINARY="$PWD/.artifacts/publish/hard-step8-osx-arm64/LanPong" \
 The original published smoke checked the actual model's SHA-256 and inference,
 the existing tiny Native AOT ONNX probe, and HTTP startup. The release workflow
 configured smoke for macOS ARM64, Linux x64, and Windows x64; the local
-execution evidence below is macOS ARM64. The legacy benchmark performs
+execution evidence below is macOS ARM64. The legacy benchmark performed
 1,000 warmup decisions and measures 10,000 model decisions
 on finite synthetic engine states, one per nine-tick cadence. Allocation is
 measured with `GC.GetAllocatedBytesForCurrentThread` and is **managed**
@@ -74,16 +78,19 @@ publish also included two Windows PE DLLs, which Step 8 removed from Unix
 publishes after verifying the macOS binary works with only
 `libonnxruntime.dylib`.
 
-## Development gameplay check with the original production controller
+## Historical development gameplay check and current evaluator adapter
 
-The training-data tool accepts `--backend production` to run
-`HardLocalOpponentController`, the controller used by the app at the version 7
-acceptance, through the exact .NET game engine. This evaluator backend remains
-available and does not resolve current catalog entries. It requires
-an explicit `--student-model` path, verifies the frozen hash, and records
-fallback per match. Production evaluation writes a report and exits with an
-error if any match used Simple fallback. Its default backend remains the
-offline student for comparison. To reproduce this development check:
+At the version 7 acceptance, the training-data tool's `--backend production`
+ran `HardLocalOpponentController` through the exact .NET game engine and recorded
+fallback per match. That class has since been removed. Today this backend uses
+`EvaluatedModelPolicy.CreateProduction` to prepare the strict configured
+`OnnxLocalOpponentController` with the canonical frozen model hash and nine-tick
+cadence. It requires an explicit `--student-model` path; loading or inference
+failure aborts evaluation without implicit Simple fallback. It does not resolve
+catalog entries or follow their configured fallback chains. The default backend
+remains the offline student. See the [current guide](../bot-runtime-cleanup/current-guide.md)
+for this adapter and preserved policy-parity evidence. The original development
+commands and results are retained below:
 
 ```bash
 dotnet run --project tools/LanPong.TrainingData -c Release -- evaluate-model \
@@ -115,7 +122,8 @@ scores across this development run's 200 direct games.
 The final gate ran after the version 7 browser and server contract, native
 telemetry guard, and integration checks were implemented. It used the same
 production Hard controller then used by the app and the reserved master seed `20261107`.
-To reproduce from the repository root:
+The original commands below ran from the repository root and are retained as
+historical provenance; today's production backend uses the strict adapter above:
 
 ```bash
 dotnet run --project tools/LanPong.TrainingData -c Release -- direct-evaluate-model \

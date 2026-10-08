@@ -1,5 +1,10 @@
 # Configurable bot catalog and opponent experience
 
+Historical completed catalog plan. Its stages, v8 contracts and diagnostics below
+record that delivery. The later runtime cleanup uses v9 and separate managed
+tooling; see the [current tooling and migration guide](../bot-runtime-cleanup/current-guide.md)
+and [current catalog configuration](configuration.md).
+
 ## Goal and working agreement
 
 Replace hardcoded simple/hard opponent selection with an appsettings-driven bot catalog and redesign the opponent experience using publicly documented Chess.com bot-selection patterns as reference. Breaking contract changes are authorized. Preserve LAN play, deterministic gameplay, and Native AOT support.

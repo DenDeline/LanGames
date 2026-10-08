@@ -2,7 +2,7 @@
 
 Каталог задаётся в секции `Bots` файла `appsettings.json` и обычных источниках конфигурации ASP.NET Core. В поставке есть `lada` и `iskra` со стратегией `tracker`, а также `vektor` со стратегией `onnx`. Дополнительный профиль этих стратегий требует только конфигурации: сервер и браузер обнаруживают его по ID. Новая стратегия поведения требует реализации и регистрации дескриптора и `IBotStrategyFactory` в коде, а при новом виде настроек — расширения типизированной конфигурации и её проверки.
 
-Это руководство описывает текущий контракт. Запуск игры и LAN-сценарии находятся в [README](../../README.md), решения — в [research.md](research.md), этапы и проверенная область — в [plan.md](plan.md), метод и ограничения измерений — в [performance.md](performance.md). Точные правила реализованы в [BotsOptionsValidator.cs](../../src/LanPong/BotsOptionsValidator.cs).
+Это руководство описывает текущий контракт. Запуск игры и LAN-сценарии находятся в [README](../../README.md), текущие инструменты и миграция v9 — в [current-guide.md](../bot-runtime-cleanup/current-guide.md). Первоначальные решения и этапы сохранены в [research.md](research.md) и [plan.md](plan.md), исторические измерения и их ограничения — в [performance.md](performance.md). Точные правила реализованы в [BotsOptionsValidator.cs](../../src/LanPong/Bots/Configuration/BotsOptionsValidator.cs).
 
 ## Добавить четвёртого бота
 
@@ -76,7 +76,7 @@ API сортирует записи по `Order`, затем по `Id` в ordina
 | `LookAheadSeconds`         | От 0 до 2 секунд включительно                                                                       | 0.25                  |
 | `TargetDeadZone`           | От 0 до 0.5 включительно, в нормализованной вертикальной координате                                 | 0.018                 |
 
-Трекер наблюдает приближающийся к правой ракетке мяч после порога X, прогнозирует его положение на коротком горизонте и двигается, когда расстояние до цели превышает dead zone. Период наблюдения ограничивает частоту пересчёта цели. Параметры и изменяемое состояние отдельны для каждого профиля и матча; одинаковый `StrategyId` не объединяет их состояние.
+В каноническом представлении трекер наблюдает приближающийся к правой ракетке мяч после порога X, прогнозирует его положение на коротком горизонте и двигается, когда расстояние до цели превышает dead zone. Для бота слева runtime отражает наблюдение в это каноническое представление, сохраняя прежнюю политику и модель. Период наблюдения ограничивает частоту пересчёта цели. Параметры и изменяемое состояние отдельны для каждого профиля и матча; одинаковый `StrategyId` не объединяет их состояние.
 
 | Поле `Onnx`             | Допустимое значение                                                                                | Значение при пропуске                                              |
 | ----------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
@@ -106,7 +106,7 @@ Bots__Entries__3__Tracker__ObservationIntervalTicks=7 \
 
 ## Доступность и явный резерв
 
-`GET /api/bots` возвращает `version: 8`, `defaultBotId` и массив `bots`. Каждая публичная запись содержит `id`, `name`, `description`, `style`, `difficulty`, `category`, `order`, `glyph`, `enabled`, `fallbackBotId`, `availability`, `availabilityReason`, `canPlay`. В ответе нет `StrategyId`, путей модели, хешей и объектов настроек.
+`GET /api/bots` возвращает `version: 9`, `defaultBotId` и массив `bots`. Каждая публичная запись содержит `id`, `name`, `description`, `style`, `difficulty`, `category`, `order`, `glyph`, `enabled`, `fallbackBotId`, `availability`, `availabilityReason`, `canPlay`. В ответе нет `StrategyId`, путей модели, хешей и объектов настроек.
 
 | `availability` | Значение                                                                                                                                               |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -125,33 +125,55 @@ Bots__Entries__3__Tracker__ObservationIntervalTicks=7 \
 
 ## HTTP: обнаружение, запуск, реванш и выход
 
-Запросите каталог, затем передайте **точный** case-sensitive ID. Сервер не обрезает пробелы и не приводит ID к нижнему регистру. Человеческий `nickname` обязателен: после обрезки внешних пробелов 1–24 единицы UTF-16, без управляющих символов. Бот может иметь имя до 64 единиц и не занимает `peerNickname`.
+Запросите каталог, затем передайте **точный** case-sensitive ID. Сервер не обрезает пробелы и не приводит ID к нижнему регистру. Человеческий `nickname` обязателен: после обрезки внешних пробелов 1–24 единицы UTF-16, без управляющих символов. Бот может иметь имя до 64 единиц и не занимает `peerNickname`. `side` также обязателен и принимает ровно `left`, `right` или `random`; числа, другой регистр и составные значения отвергаются.
 
 ```sh
 curl --fail-with-body http://127.0.0.1:5080/api/bots
 ```
 
-Сначала покиньте текущий матч, LAN-лобби или поиск игры. Новый бот допускается только из состояния `none`/`idle`. Неизвестный или отключённый ID, попытка активной замены либо невозможность подготовить ни одного звена выбранной явной цепочки дают HTTP 400 без замены текущего матча. Основной профиль в состоянии `unavailable` может успешно запуститься через пригодный настроенный резерв; `notChecked` допускает попытку подготовки.
+Сначала покиньте текущий матч, LAN-лобби или поиск игры. Новый бот допускается только из состояния `none`/`idle`. Неизвестный или отключённый ID, неверная сторона, попытка активной замены либо невозможность подготовить ни одного звена выбранной явной цепочки дают HTTP 400 без замены текущего матча. Основной профиль в состоянии `unavailable` может успешно запуститься через пригодный настроенный резерв; `notChecked` допускает попытку подготовки.
 
 ```sh
 curl --fail-with-body -X POST http://127.0.0.1:5080/api/leave \
   -H 'Content-Type: application/json' -d '{}'
 curl --fail-with-body -X POST http://127.0.0.1:5080/api/local-opponent \
-  -H 'Content-Type: application/json' -d '{"nickname":"Игрок","botId":"sokol"}'
+  -H 'Content-Type: application/json' -d '{"nickname":"Игрок","botId":"sokol","side":"left"}'
 curl --fail-with-body http://127.0.0.1:5080/api/status
-curl --fail-with-body -X POST http://127.0.0.1:5080/api/restart \
-  -H 'Content-Type: application/json' -d '{}'
+```
+
+У успешного `sokol` режим `bot`, оба ID равны `sokol`, оба имени — `Сокол`, `peerNickname: null`, `opponentFallbackActive: false`, `botFallbackReason: null`. При `side: random` сервер разрешает сторону один раз на успешном допуске; читайте фактическую сторону из `localSide`, а не выводите её из `role`. В LAN хост выбирает начальные стороны случайно при принятии подключения. Повторные Welcome передают текущие авторитетные сторону и раунд, включая уже изменённые реваншем, и не выполняют новый случайный выбор. Сетевые роли `host`/`guest` не обозначают левую/правую ракетку.
+
+Дождитесь настоящего завершения раунда и `canRematch: true`. Следующий пример читает **текущие** `matchId` и `roundId` из HTTP, отказывается отправлять преждевременный реванш и передаёт обязательный `expectedRoundId`:
+
+```sh
+restart_payload="$(python3 - <<'PY_RESTART'
+import json
+import urllib.request
+
+with urllib.request.urlopen("http://127.0.0.1:5080/api/status") as response:
+    snapshot = json.load(response)
+if snapshot.get("canRematch") is not True:
+    raise SystemExit("The current round is not confirmed finished; finish it before restarting")
+print(json.dumps({"matchId": snapshot["matchId"], "expectedRoundId": snapshot["roundId"]}))
+PY_RESTART
+)" && curl --fail-with-body -X POST http://127.0.0.1:5080/api/restart \
+  -H 'Content-Type: application/json' -d "$restart_payload"
+```
+
+Отсутствующие/неверные поля, другой матч, устаревший раунд и незавершённая игра дают HTTP 400. Доменная ошибка возвращается как `{"error":"..."}`; неверный JSON или binding также дают HTTP 400. У гостя одного предсказанного `GameOver` недостаточно: нужно подтверждённое состояние хоста. HTTP 200 на запрос гостя может ещё содержать исходный завершённый раунд, пока повторяемый UDP-запрос ждёт авторитетного следующего состояния. До него имена и итоговые очки сохраняют прежнее физическое расположение. Следующее принятое состояние увеличивает `roundId`, меняет стороны один раз, сбрасывает счёт, управление, историю и прогретые решения бота и начинает countdown; идентичность матча и выбранного бота сохраняется. Отказ при reset может продвинуть явную fallback-цепочку: `effectiveBotId` и имя показывают новый фактический профиль. Авторитетная коррекция того же раунда с `canRematch: false` отменяет ожидающий запрос и связанное намерение перевести фокус, даже если повторный прогноз всё ещё показывает `GameOver`; фазы самой по себе недостаточно. Пока ожидание идёт, продолжайте принимать HTTP/WebSocket, а не трактуйте любой HTTP 200 как уже выполненную смену сторон.
+
+```sh
 curl --fail-with-body -X POST http://127.0.0.1:5080/api/leave \
   -H 'Content-Type: application/json' -d '{}'
 ```
 
-У успешного `sokol` режим `bot`, оба ID равны `sokol`, оба имени — `Сокол`, `peerNickname: null`, `opponentFallbackActive: false`, `botFallbackReason: null`. Реванш увеличивает `roundId`, сбрасывает счёт и начинает countdown. После выхода все строки идентичности и причины бота равны `null`, флаг fallback — `false`. В LAN `requestedBotId`, `requestedBotName`, `effectiveBotId`, `effectiveBotName` и `botFallbackReason` также равны `null`, `opponentFallbackActive` — `false`, а `peerNickname` снова обозначает человека.
+После выхода `localSide`/`matchId`, все строки идентичности и причины бота равны `null`, флаг fallback — `false`. В LAN `requestedBotId`, `requestedBotName`, `effectiveBotId`, `effectiveBotName` и `botFallbackReason` также равны `null`, `opponentFallbackActive` — `false`, а `peerNickname` снова обозначает человека.
 
 ## Миграция клиентов и старых настроек
 
-Обновляйте сервер и браузер совместно; старая открытая вкладка должна перезагрузить новую сборку. Текущие HTTP-снимки, каталог и браузерный MessagePack используют обязательную версию **8**. Старые значения режима `simple`/`hard` и поле снимка `requestedOpponentMode` удалены. Запрос только с `{nickname, mode}` больше не задаёт профиль: `botId` обязателен. Если корректный `botId` передан вместе с лишним старым `mode`, выбор определяется `botId`. Отсутствующий `botId` не выбирает профиль по умолчанию. Общий `opponentMode` принимает `none`, `lan`, `bot`; бинарные значения — 0, 1, 2.
+Обновляйте приложение, браузер и **все LAN-клиенты** совместно; старая открытая вкладка должна перезагрузить новую сборку. Текущие HTTP-снимки, каталог, браузерный MessagePack и отдельный UDP-протокол используют обязательную версию **9**. Старые значения режима `simple`/`hard` и поле снимка `requestedOpponentMode` удалены. Запрос только с `{nickname, mode}` больше не задаёт профиль: `nickname`, `botId` и `side` обязательны. Лишний старый `mode` не заменяет ни одного обязательного поля. Отсутствующий `botId` не выбирает профиль по умолчанию. Общий `opponentMode` принимает `none`, `lan`, `bot`; бинарные значения — 0, 1, 2.
 
-WebSocket-снимок содержит **30 полей**. Индексы 0–22 сохраняют прежний порядок; хвост имеет следующий вид:
+WebSocket-снимок содержит **35 полей**. Индексы 0–29 сохраняют прежний порядок; поля каталога и новый хвост имеют следующий вид:
 
 | Индекс | Поле                     |
 | ------ | ------------------------ |
@@ -162,28 +184,39 @@ WebSocket-снимок содержит **30 полей**. Индексы 0–22
 | 27     | `effectiveBotName`       |
 | 28     | `opponentFallbackActive` |
 | 29     | `botFallbackReason`      |
+| 30     | `localSide`              |
+| 31     | `matchId`                |
+| 32     | `sourceId`               |
+| 33     | `snapshotSequence`       |
+| 34     | `canRematch`             |
 
-Управление — одно MessagePack-значение `[8, axis]`, где `axis` равен -1, 0 или 1. `peerNickname` в бот-матче равен `null`; имена ботов берутся из отдельных полей. Nullable-поля присутствуют в HTTP JSON; отсутствующие значения передаются как JSON `null` и MessagePack `nil`. UDP-протокол LAN остаётся отдельным протоколом версии 8; эта миграция каталога его формат не меняет.
+`localSide` — JSON `left`/`right`, бинарно 1/2; до назначения стороны передаётся `null`/`nil`. `matchId` также равен `null`/`nil` до назначения и затем содержит непустой ID матча в формате 32 строчных hex-символов. `sourceId` в том же формате обозначает время жизни **локального** `PongPeer`, поэтому у хоста и гостя он различается. Положительный `snapshotSequence` увеличивается при каждом захвате снимка под блокировкой. Эти два поля упорядочивают задержанные HTTP/WebSocket-ответы независимо от физического `tick`, нового матча и раунда; после перезапуска источника клиент принимает новую базовую последовательность и отвергает уже покинутый источник. `canRematch` — обязательный boolean, разрешающий реванш лишь для подключённого назначенного и подтверждённо завершённого текущего раунда.
 
-Переменная `LANPONG_HARD_MODEL_PATH` больше не управляет игровым ботом. Перенесите путь в `Bots.Entries[index].Onnx.ModelPath` или точечный override `Bots__Entries__2__Onnx__ModelPath` для исходного `vektor`, согласуйте `ExpectedSha256` и перезапустите процесс. Сохранённые `--hard-smoke`/`--hard-benchmark` относятся к отдельной legacy-диагностике и не доказывают работу выбранного каталожного профиля; инструменты обучения и их результаты остаются отдельными.
+Управление — одно MessagePack-значение `[9, matchId, roundId, axis]`, где `roundId` — положительный текущий раунд, а `axis` равен -1, 0 или 1. Проверка матча и раунда отсекает запоздалые клавиши прежней стороны после реванша или выхода. `peerNickname` в бот-матче равен `null`; имена ботов берутся из отдельных полей. Nullable-поля присутствуют в HTTP JSON; отсутствующие значения передаются как JSON `null` и MessagePack `nil`.
+
+В UDP v9 Welcome содержит `hostSide` и текущий `roundId`, State — `hostSide`, Restart — `expectedRoundId`. Первое назначение стороны выполняется при принятии; повторные Welcome не выбирают её заново и передают текущую авторитетную сторону и раунд, в том числе после уже принятого реванша. Удалённый `HasValidShape` не заменён таблицей или предварительным проходом: действует обычное однопроходное generated MessagePack-декодирование с `reader.End` и проверками размера пакета, версии и значений. Подробности — в [текущем руководстве](../bot-runtime-cleanup/current-guide.md).
+
+Переменная `LANPONG_HARD_MODEL_PATH` больше не управляет игровым ботом. Перенесите путь в `Bots.Entries[index].Onnx.ModelPath` или точечный override `Bots__Entries__2__Onnx__ModelPath` для исходного `vektor`, согласуйте `ExpectedSha256` и перезапустите процесс. Прежние `--hard-smoke`/`--hard-benchmark` и legacy-контроллеры удалены и недоступны. `--onnx-smoke` и настроенный `--bot-benchmark` существуют только в отдельном managed-инструменте; инструменты обучения и их исторические результаты остаются отдельными.
 
 ## Проверить конфигурацию без запуска сети
 
-Из папки опубликованного приложения после добавления примера можно проверить и явный `sokol`, и default. Эти команды используют те же источники конфигурации и фабрики, создают и освобождают подготовленную сессию, но не запускают игровой peer или сетевой listener:
+Из корня репозитория используйте отдельный managed-инструмент `tools/LanPong.BotDiagnostics` (`PublishAot=false`). Он принимает обычные источники конфигурации и фабрики, создаёт и освобождает подготовленную сессию, но не запускает игровой peer или сетевой listener. Производственное приложение не содержит этого dispatch, отчётов и маленькой smoke-модели. Явный относительный `--contentRoot` инструмента разрешается от папки его бинарного файла; используйте **абсолютный** root с изменённым `appsettings.json` и моделями. В следующем примере полный `sokol` добавлен в `src/LanPong/appsettings.json`, а `DefaultBotId` равен `sokol`:
 
 ```sh
-./LanPong --bot-benchmark sokol --benchmark-samples 100 --benchmark-warmup 2 \
-  --environment Production --contentRoot "$PWD"
-./LanPong --bot-benchmark --benchmark-samples 100 --benchmark-warmup 2 \
-  --environment Production --contentRoot "$PWD"
+dotnet run --project tools/LanPong.BotDiagnostics -c Release -- \
+  --bot-benchmark sokol --benchmark-samples 100 --benchmark-warmup 2 \
+  --environment Production --contentRoot "$PWD/src/LanPong"
+dotnet run --project tools/LanPong.BotDiagnostics -c Release -- \
+  --bot-benchmark --benchmark-samples 100 --benchmark-warmup 2 \
+  --environment Production --contentRoot "$PWD/src/LanPong"
 ```
 
-При `DefaultBotId: sokol` оба JSON-отчёта должны показать `requestedBotId = effectiveBotId = sokol`, `strategyId = tracker`, `cadenceTicks = 7`; для трекера `verifiedModelSha256` равен `null`. Диагностика отвергает fallback, смену идентичности, исчерпанную сессию и недопустимую ось, возвращая ненулевой код без отчёта. Ошибки конфигурации сохраняют имя проблемного параметра.
+Для каталога в другой папке замените `$PWD/src/LanPong` её абсолютным путём. При `DefaultBotId: sokol` оба JSON-отчёта должны показать `requestedBotId = effectiveBotId = sokol`, `strategyId = tracker`, `cadenceTicks = 7`; для трекера `verifiedModelSha256` равен `null`. Диагностика отвергает fallback, смену идентичности, исчерпанную сессию и недопустимую ось, возвращая ненулевой код без отчёта. Ошибки конфигурации сохраняют имя проблемного параметра.
 
-100 samples / 2 warmup — короткая проверка примера, не основание для выводов о производительности. Для измерений используйте воспроизводимые команды и ограничения из [performance.md](performance.md). `dynamicCodeSupported` описывает возможность runtime, а не устанавливает managed/Native AOT режим; режим подтверждается способом запуска и публикацией. Нулевые calling-thread managed allocations не означают отсутствие native allocations, утечек или задержек полного игрового тика.
+ID после `--bot-benchmark` необязателен: без него выбирается default каталога. Допустимы 100–100000 samples и 2–100000 warmup; оба значения по умолчанию равны 20000. 100 samples / 2 warmup — короткая проверка примера, не основание для выводов о производительности. Это сохранённый developer probe, не BenchmarkDotNet. Текущие команды и границы находятся в [current-guide.md](../bot-runtime-cleanup/current-guide.md); оригинальные измерения, команды и ограничения сохранены как исторические в [performance.md](performance.md). `dynamicCodeSupported` описывает возможность runtime, а не устанавливает managed/Native AOT режим. Нулевые calling-thread managed allocations не означают отсутствие native allocations, утечек или задержек полного игрового тика.
 
 ## Проверенная область
 
-На 2026-10-08 пройдены 173 .NET-теста, frontend-проверки и сборка, полная интеграция из исходников и с опубликованным Native AOT приложением, а также smoke окончательной версии диагностики с корректным владением ресурсами. Браузер проверен на desktop и ширинах 320/390 px. Выполнение опубликованного приложения проверено на macOS ARM64; выполнение на Linux/Windows и необязательные строгие mDNS-loopback проверки не подтверждались. При публикации сохраняются ранее известные предупреждения MessagePack `IL3053`/`IL2104`.
+На 2026-10-08 пройдены **215 .NET-тестов**, frontend-проверки и сборка, source-интеграция и полная интеграция свежего Native AOT приложения, реальная Вектор Playing/cadence/motion/hash HTTP/WebSocket smoke, отдельный managed diagnostic smoke и проверки production compile/reference/dependency/publish boundary. Браузерное доказательство предыдущего принятого этапа покрывает desktop 1366/1024 px и ширины 320/390 px, выбор Left/Right/Random и реальные завершённые реванши со сменой сторон. Неизменённая training parity также перенесена из принятого этапа. Выполнение опубликованного приложения подтверждено только на macOS ARM64; Linux/Windows — настроенные release CI цели, локально здесь не запускались. Необязательные строгие mDNS-loopback проверки не выполнялись. При публикации сохраняются ранее известные предупреждения MessagePack `IL3053`/`IL2104`. Проверенная область и provenance собраны в [текущем руководстве](../bot-runtime-cleanup/current-guide.md) и [плане cleanup](../bot-runtime-cleanup/plan.md).
 
-Точный JSON-объект `sokol` из этого руководства проверен тем же днём окончательным опубликованным бинарным файлом с исправленным владением ресурсами: в отдельном временном content root с копией поставки и явным `--environment Production` выполнены два вызова — с `--bot-benchmark sokol` и без ID при `DefaultBotId: sokol`. Оба показали `requestedBotId = effectiveBotId = sokol`, `strategyId = tracker`, `cadenceTicks = 7` без fallback. Исходные отчёты сохранены локально в `.artifacts/bot-catalog-step7/explicit-sokol.json` и `.artifacts/bot-catalog-step7/default-sokol.json` вместе с проверенным объектом. Проверка использовала 100 samples / 2 warmup и подтверждает загрузку примера, выбор и идентичность; она не является измерением производительности.
+Историческая проверка точного JSON-объекта `sokol` 8 октября 2026 года использовала прежнюю опубликованную диагностику каталога: во временном content root с копией поставки и явным `--environment Production` выполнены вызовы с `--bot-benchmark sokol` и без ID при `DefaultBotId: sokol`. Оба показали `requestedBotId = effectiveBotId = sokol`, `strategyId = tracker`, `cadenceTicks = 7` без fallback. Исходные отчёты сохранены локально в `.artifacts/bot-catalog-step7/explicit-sokol.json` и `.artifacts/bot-catalog-step7/default-sokol.json` вместе с проверенным объектом. Этот способ запуска теперь исторический: текущая публикация диагностику не содержит, используйте managed-инструмент выше. Проверка 100 samples / 2 warmup подтверждала загрузку примера, выбор и идентичность, а не производительность.
