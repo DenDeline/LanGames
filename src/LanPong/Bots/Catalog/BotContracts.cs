@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace LanPong;
+namespace LanPong.Bots.Catalog;
 
 [JsonConverter(typeof(JsonStringEnumConverter<BotAvailabilityState>))]
 internal enum BotAvailabilityState

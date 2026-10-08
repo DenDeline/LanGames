@@ -1,4 +1,4 @@
-namespace LanPong;
+namespace LanPong.Bots.Inference;
 
 internal interface IOnnxInferenceSession : IDisposable
 {

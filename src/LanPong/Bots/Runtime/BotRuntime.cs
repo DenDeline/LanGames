@@ -1,7 +1,10 @@
 using System.Collections.Frozen;
 using Microsoft.Extensions.Logging;
+using LanPong.Bots.Catalog;
+using LanPong.Bots.Configuration;
+using LanPong.Bots.Strategies;
 
-namespace LanPong;
+namespace LanPong.Bots.Runtime;
 
 internal sealed record BotAvailability(BotAvailabilityState State, string? Reason);
 

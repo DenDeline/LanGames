@@ -1,7 +1,7 @@
 using Microsoft.ML.OnnxRuntime;
 using OrtSessionOptions = Microsoft.ML.OnnxRuntime.SessionOptions;
 
-namespace LanPong;
+namespace LanPong.Bots.Inference;
 
 /// <summary>One warmed CPU session with preallocated, reusable input and output OrtValues.</summary>
 internal sealed class OrtOnnxInferenceSession : IOnnxInferenceSession

@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Options;
+using LanPong.Bots.Strategies;
 
-namespace LanPong;
+namespace LanPong.Bots.Configuration;
 
 internal sealed class BotsOptionsValidator(BotStrategyRegistry strategies) : IValidateOptions<BotsOptions>
 {

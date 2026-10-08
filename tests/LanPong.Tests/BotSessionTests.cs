@@ -1,3 +1,5 @@
+using LanPong.Bots.Catalog;
+using LanPong.Bots.Strategies;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace LanPong.Tests;

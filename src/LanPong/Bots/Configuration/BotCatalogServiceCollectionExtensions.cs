@@ -1,6 +1,9 @@
 using Microsoft.Extensions.Options;
+using LanPong.Bots.Catalog;
+using LanPong.Bots.Runtime;
+using LanPong.Bots.Strategies;
 
-namespace LanPong;
+namespace LanPong.Bots.Configuration;
 
 internal static class BotCatalogServiceCollectionExtensions
 {

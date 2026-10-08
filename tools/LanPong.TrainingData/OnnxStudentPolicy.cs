@@ -1,4 +1,6 @@
 using LanPong;
+using LanPong.Bots.Inference;
+using LanPong.Bots.Strategies;
 using Microsoft.ML.OnnxRuntime;
 
 namespace LanPong.TrainingData;

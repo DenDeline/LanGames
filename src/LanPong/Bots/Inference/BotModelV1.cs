@@ -1,4 +1,4 @@
-namespace LanPong;
+namespace LanPong.Bots.Inference;
 
 /// <summary>The frozen version 1 model artifact and its output contract.</summary>
 internal static class BotModelV1

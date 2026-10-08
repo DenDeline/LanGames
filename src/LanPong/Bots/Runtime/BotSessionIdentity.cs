@@ -1,4 +1,4 @@
-namespace LanPong;
+namespace LanPong.Bots.Runtime;
 
 // Kept separate from the version 7 browser snapshot until the contract migration.
 internal sealed record BotSessionIdentity(string RequestedBotId, string RequestedName,

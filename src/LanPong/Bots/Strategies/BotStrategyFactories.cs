@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Hosting;
+using LanPong.Bots.Catalog;
 
-namespace LanPong;
+namespace LanPong.Bots.Strategies;
 
 /// <summary>Creates a fresh policy for one configured entry; preparation belongs to BotRuntime.</summary>
 internal interface IBotStrategyFactory

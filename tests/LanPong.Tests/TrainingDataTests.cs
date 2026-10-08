@@ -2,6 +2,8 @@ using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using LanPong.Bots.Inference;
+using LanPong.Bots.Strategies;
 using LanPong.TrainingData;
 
 namespace LanPong.Tests;

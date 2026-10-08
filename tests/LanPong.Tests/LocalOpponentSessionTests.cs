@@ -1,4 +1,7 @@
 using System.Buffers;
+using LanPong.Bots.Catalog;
+using LanPong.Bots.Inference;
+using LanPong.Bots.Strategies;
 using MessagePack;
 using Microsoft.Extensions.Logging.Abstractions;
 

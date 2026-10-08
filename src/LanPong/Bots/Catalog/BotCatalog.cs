@@ -1,8 +1,9 @@
 using System.Collections.Frozen;
 using System.Collections.Immutable;
 using Microsoft.Extensions.Options;
+using LanPong.Bots.Configuration;
 
-namespace LanPong;
+namespace LanPong.Bots.Catalog;
 
 internal sealed record TrackerBotSettings(int ObservationIntervalTicks, double ObservationActivationX,
     double LookAheadSeconds, double TargetDeadZone);

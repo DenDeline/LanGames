@@ -1,7 +1,8 @@
 using System.Collections.Frozen;
 using System.Collections.Immutable;
+using LanPong.Bots.Configuration;
 
-namespace LanPong;
+namespace LanPong.Bots.Strategies;
 
 internal enum BotSettingsKind
 {

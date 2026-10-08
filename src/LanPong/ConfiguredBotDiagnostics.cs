@@ -4,6 +4,10 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using LanPong.Bots.Catalog;
+using LanPong.Bots.Configuration;
+using LanPong.Bots.Inference;
+using LanPong.Bots.Runtime;
 
 namespace LanPong;
 

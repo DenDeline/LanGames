@@ -1,6 +1,7 @@
 using static LanPong.GameConstants;
+using LanPong.Bots.Catalog;
 
-namespace LanPong;
+namespace LanPong.Bots.Strategies;
 
 /// <summary>A sampled, short-lookahead tracker for the right paddle.</summary>
 internal sealed class TrackerBotPolicy : ILocalOpponentController

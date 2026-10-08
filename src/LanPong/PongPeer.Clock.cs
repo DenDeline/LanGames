@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using LanPong.Bots.Runtime;
 
 namespace LanPong;
 

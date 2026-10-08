@@ -1,4 +1,7 @@
-namespace LanPong;
+using LanPong.Bots.Inference;
+using LanPong.Bots.Strategies;
+
+namespace LanPong.Bots.Configuration;
 
 /// <summary>Startup-only configuration. Changes take effect after application restart.</summary>
 internal sealed class BotsOptions

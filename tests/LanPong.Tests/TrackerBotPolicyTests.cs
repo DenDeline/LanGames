@@ -1,3 +1,5 @@
+using LanPong.Bots.Strategies;
+
 namespace LanPong.Tests;
 
 public sealed class TrackerBotPolicyTests

@@ -2,6 +2,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using LanPong;
+using LanPong.Bots.Inference;
+using LanPong.Bots.Strategies;
 using static LanPong.GameConstants;
 
 namespace LanPong.TrainingData;

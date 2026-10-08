@@ -1,4 +1,8 @@
 using System.Collections.Concurrent;
+using LanPong.Bots.Catalog;
+using LanPong.Bots.Configuration;
+using LanPong.Bots.Runtime;
+using LanPong.Bots.Strategies;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 

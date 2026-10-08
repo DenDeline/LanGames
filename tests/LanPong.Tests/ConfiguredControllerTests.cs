@@ -1,4 +1,7 @@
 using System.Security.Cryptography;
+using LanPong.Bots.Catalog;
+using LanPong.Bots.Inference;
+using LanPong.Bots.Strategies;
 
 namespace LanPong.Tests;
 

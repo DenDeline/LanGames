@@ -2,6 +2,9 @@ using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using LanPong;
+using LanPong.Bots.Catalog;
+using LanPong.Bots.Configuration;
+using LanPong.Bots.Runtime;
 using Microsoft.Extensions.Options;
 
 if (args.Length == 1 && args[0] == "--onnx-smoke")

@@ -1,6 +1,6 @@
 using static LanPong.GameConstants;
 
-namespace LanPong;
+namespace LanPong.Bots.Inference;
 
 /// <summary>The versioned float32 input and action schema for a right-side bot.</summary>
 internal static class RightBotObservationV1

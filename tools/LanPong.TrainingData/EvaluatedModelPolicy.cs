@@ -1,5 +1,8 @@
 using System.Security.Cryptography;
 using LanPong;
+using LanPong.Bots.Catalog;
+using LanPong.Bots.Inference;
+using LanPong.Bots.Strategies;
 
 namespace LanPong.TrainingData;
 

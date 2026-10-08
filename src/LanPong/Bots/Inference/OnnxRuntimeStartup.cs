@@ -1,7 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
-namespace LanPong;
+namespace LanPong.Bots.Inference;
 
 internal static partial class OnnxRuntimeStartup
 {

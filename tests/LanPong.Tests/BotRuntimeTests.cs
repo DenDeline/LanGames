@@ -1,3 +1,8 @@
+using LanPong.Bots.Catalog;
+using LanPong.Bots.Configuration;
+using LanPong.Bots.Inference;
+using LanPong.Bots.Runtime;
+using LanPong.Bots.Strategies;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;

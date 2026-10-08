@@ -1,5 +1,8 @@
 using System.Buffers;
 using System.Text.Json;
+using LanPong.Bots.Catalog;
+using LanPong.Bots.Runtime;
+using LanPong.Bots.Strategies;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace LanPong.Tests;

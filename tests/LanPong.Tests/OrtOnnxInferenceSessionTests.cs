@@ -1,3 +1,5 @@
+using LanPong.Bots.Inference;
+
 namespace LanPong.Tests;
 
 public sealed class OrtOnnxInferenceSessionTests

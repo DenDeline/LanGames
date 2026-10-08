@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
+using LanPong.Bots.Catalog;
+using LanPong.Bots.Inference;
 
-namespace LanPong;
+namespace LanPong.Bots.Strategies;
 
 /// <summary>A configured strict ONNX policy, prepared before admission to the game clock.</summary>
 internal sealed class OnnxLocalOpponentController : ILocalOpponentController, IDisposable
