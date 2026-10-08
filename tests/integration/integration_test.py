@@ -587,6 +587,8 @@ class UdpRelay:
         self.stop = threading.Event()
         self.dropped_state_packets = 0
         self.dropped_welcome_packets = 0
+        self.dropped_welcome_payloads = []
+        self.forwarded_welcome_payloads = []
         self.forwarded_state_packets = 0
         self.latest_buffered_input = None
         self.input_lock = threading.Lock()
@@ -622,10 +624,13 @@ class UdpRelay:
                             self.dropped_state_packets += 1
                     elif self.drop_welcome.is_set() and packet.startswith(b"\x92\x03"):
                         self.dropped_welcome_packets += 1
+                        self.dropped_welcome_payloads.append(packet)
                     elif self.guest_address is not None:
                         self.socket.sendto(packet, self.guest_address)
                         if packet.startswith(b"\x92\x05"):
                             self.forwarded_state_packets += 1
+                        elif packet.startswith(b"\x92\x03"):
+                            self.forwarded_welcome_payloads.append(packet)
                 else:
                     self.guest_address = address
                     if self.pause_guest_inputs.is_set() and packet.startswith(b"\x92\x04"):
@@ -638,6 +643,124 @@ class UdpRelay:
             except OSError:
                 if not self.stop.is_set():
                     raise
+
+
+def check_random_bot_admission(port):
+    # One bounded admission accepts either physical outcome; deterministic draw
+    # count and both outcomes are covered by the side lifecycle unit tests.
+    admitted = request(port, "/api/local-opponent", {
+        "nickname": "RandomPlayer", "botId": "lada", "side": "random",
+    })
+    expect_opponent(admitted, "bot", "lada", "lada")
+    assert admitted["connection"] == "connected" and admitted["localSide"] in ("left", "right"), admitted
+    owned_field = admitted["localSide"] + "Y"
+    http_captures = [admitted]
+    ws_captures = []
+    with websocket(port) as conn:
+        ws_captures.append(decode_snapshot(recv_frame(conn)))
+        controls = control_packets(admitted)
+        for _ in range(8):
+            send_binary(conn, controls[-1])
+            time.sleep(0.03)
+        send_binary(conn, controls[0])
+        moved = request(port, "/api/status")
+        http_captures.append(moved)
+        # Public helper startup can outlast countdown. Verify the owned paddle
+        # while allowing the bot to move independently during live play;
+        # deterministic lifecycle tests cover exclusion of the opponent paddle.
+        assert moved[owned_field] < 0.48, moved
+        # A slow external decoder may leave historical 60 Hz snapshots queued
+        # on the input socket. Fresh public captures observe the persisted
+        # post-input position without decoding that entire historical backlog.
+        with websocket(port) as capture_conn:
+            moved_frame = decode_snapshot(recv_frame(capture_conn))
+            ws_captures.append(moved_frame)
+            assert moved_frame[owned_field] < 0.48, moved_frame
+            for _ in range(2):
+                http_captures.append(request(port, "/api/status"))
+                ws_captures.append(decode_snapshot(recv_frame(capture_conn)))
+    for capture in http_captures + ws_captures:
+        expect_identity_parity(admitted, capture)
+        assert capture["roundId"] == admitted["roundId"] and capture["localNickname"] == "RandomPlayer", capture
+    for captures in (http_captures, ws_captures):
+        sequences = [capture["snapshotSequence"] for capture in captures]
+        assert sequences == sorted(set(sequences)), sequences
+    print("EVIDENCE: random-bot-admission " + json.dumps({
+        "requestedSide": "random", "resolvedSide": admitted["localSide"],
+        "ownedPaddle": owned_field,
+        "routingAssertion": "Owned paddle moves upward; opponent may advance independently during live play.",
+        "wsCaptureProvenance": "Initial snapshot from ordinary control socket; post-input snapshots from a fresh public socket after zero input.",
+        "httpCaptures": http_captures, "wsCaptures": ws_captures,
+    }, ensure_ascii=False))
+    expect_opponent(request(port, "/api/leave", {}), "none")
+    print("PASS: one public Random bot admission preserves HTTP/MessagePack physical context and moves its owned paddle without a phase or opponent-position assumption")
+
+
+def accept_challenge_after_lost_welcomes(relay):
+    # Drop the initial Welcome and at least two retry deliveries, then let the
+    # same challenge complete without any new admission or side draw.
+    relay.drop_welcome.set()
+    dropped_before = len(relay.dropped_welcome_payloads)
+    forwarded_before = len(relay.forwarded_welcome_payloads)
+    wait_for_challenge()
+    admitted = request(5180, "/api/accept", {})
+    assert admitted["connection"] == "connected" and admitted["localSide"] in ("left", "right"), admitted
+    host_captures = [admitted]
+    pending_captures = []
+    deadline = time.monotonic() + 4
+    while time.monotonic() < deadline:
+        host = request(5180, "/api/status")
+        host_captures.append(host)
+        expect_identity_parity(admitted, host)
+        assert host["roundId"] == admitted["roundId"], host
+        guest = request(5181, "/api/status")
+        pending_captures.append(guest)
+        assert guest["role"] == "guest" and guest["connection"] == "awaitingAcceptance", guest
+        assert guest["localSide"] is None and guest["matchId"] is None, guest
+        if len(relay.dropped_welcome_payloads) >= dropped_before + 3:
+            break
+        time.sleep(0.1)
+    else:
+        raise AssertionError(f"Fewer than three Welcome deliveries were dropped: {len(relay.dropped_welcome_payloads) - dropped_before}")
+    dropped = list(relay.dropped_welcome_payloads[dropped_before:])
+    relay.drop_welcome.clear()
+    wait_until("guest recovers after initial Welcome and two retry losses", lambda:
+               request(5181, "/api/status")["connection"] == "connected"
+               and len(relay.forwarded_welcome_payloads) > forwarded_before, seconds=4)
+    forwarded = list(relay.forwarded_welcome_payloads[forwarded_before:])
+    decoded_welcomes = [msgpack_helper("decode", packet) for packet in dropped + forwarded]
+    expected_fields = None
+    for welcome in decoded_welcomes:
+        assert isinstance(welcome, list) and len(welcome) == 2 and welcome[0] == 3, welcome
+        fields = welcome[1]
+        assert isinstance(fields, list) and len(fields) == 6 and fields[0] == 9, welcome
+        assert uuid.UUID(bytes_le=bytes(fields[1])).hex == admitted["matchId"], welcome
+        assert fields[4] == (1 if admitted["localSide"] == "left" else 2), welcome
+        assert fields[5] == admitted["roundId"], welcome
+        if expected_fields is None:
+            expected_fields = fields
+        assert fields == expected_fields, decoded_welcomes
+    host = request(5180, "/api/status")
+    guest = request(5181, "/api/status")
+    expect_identity_parity(admitted, host)
+    assert host["roundId"] == admitted["roundId"], host
+    assert guest["matchId"] == host["matchId"] and guest["roundId"] == host["roundId"], (host, guest)
+    assert guest["localSide"] == ("right" if host["localSide"] == "left" else "left"), (host, guest)
+    with websocket(5180) as host_ws, websocket(5181) as guest_ws:
+        host_frame = decode_snapshot(recv_frame(host_ws))
+        guest_frame = decode_snapshot(recv_frame(guest_ws))
+        expect_identity_parity(host, host_frame)
+        expect_identity_parity(guest, guest_frame)
+        assert host_frame["roundId"] == guest_frame["roundId"] == host["roundId"], (host_frame, guest_frame)
+    print("EVIDENCE: welcome-loss-recovery " + json.dumps({
+        "droppedWelcomeCount": len(dropped), "forwardedWelcomeCount": len(forwarded),
+        "decodedDroppedWelcomes": decoded_welcomes[:len(dropped)],
+        "decodedForwardedWelcomes": decoded_welcomes[len(dropped):],
+        "hostDuringLoss": host_captures, "guestDuringLoss": pending_captures,
+        "hostRecoveredHttp": host, "guestRecoveredHttp": guest,
+        "hostRecoveredWs": host_frame, "guestRecoveredWs": guest_frame,
+    }, ensure_ascii=False))
+    print("PASS: delivery recovers after initial Welcome and at least two retry losses with unchanged session/request/host side/round and opposite guest HTTP/MessagePack ownership")
 
 
 def check_configured_tracker_process(log_dir):
@@ -873,6 +996,8 @@ def main():
         assert left_local["role"] == "none" and left_local["connection"] == "idle", left_local
         expect_opponent(left_local, "none")
         assert left_local["phase"] == "waiting" and left_local["tick"] == 0, left_local
+
+        check_random_bot_admission(5180)
 
         hard = request(5180, "/api/local-opponent", {"nickname": "ModelPlayer", "botId": "vektor", "side": "right"})
         assert hard["role"] == "host" and hard["connection"] == "connected", hard
@@ -1202,7 +1327,7 @@ def main():
         with UdpRelay(47888) as relay:
             rejoining = request(5181, "/api/join", join_payload(port=relay.port))
             assert rejoining["role"] == "guest" and rejoining["connection"] == "connecting", rejoining
-            accept_challenge()
+            accept_challenge_after_lost_welcomes(relay)
             rejoined_tick = request(5181, "/api/status")["tick"]
             wait_until("state sync after reconnect", lambda:
                        request(5181, "/api/status")["tick"] >= rejoined_tick + 10)
@@ -1334,13 +1459,14 @@ def main():
             # If every Welcome is lost after acceptance, the host's Bye must still
             # end the guest's pending connection, without a session ID.
             relay.drop_welcome.set()
+            dropped_before = relay.dropped_welcome_packets
             pending_join = request(5181, "/api/join", join_payload(port=relay.port))
             assert pending_join["role"] == "guest", pending_join
             wait_for_challenge()
             request(5180, "/api/accept", {})
             wait_until("host accepts challenge without delivering Welcome", lambda:
                        request(5180, "/api/status")["connection"] == "connected"
-                       and relay.dropped_welcome_packets >= 1)
+                       and relay.dropped_welcome_packets > dropped_before)
             pending_guest = request(5181, "/api/status")
             assert pending_guest["role"] == "guest" and pending_guest["connection"] == "awaitingAcceptance", pending_guest
             request(5180, "/api/leave", {})
@@ -1467,7 +1593,7 @@ def main():
         accept_challenge()
         terminate_connected_process(processes[0], 5180, 5181, "idle", "none", "host")
 
-        print("PASS: configuration-only fourth tracker and tuned configured-process LAN round, configured catalog bots start/input/play/rematch/leave, missing/corrupt-checksum explicit fallback with persistent requested/effective identity, catalog metadata/availability/ordering/error cases, version 9 HTTP and MessagePack WebSocket contract, static UI, discovery, pending challenge acceptance/decline/cancel, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, Quick Game port selection/cancellation/auto-accept/matching, and graceful host/guest shutdown")
+        print("PASS: configuration-only fourth tracker and tuned configured-process LAN round, configured catalog bots start/input/play/rematch/leave, public Random bot admission and stable owned paddle routing, successful recovery after initial Welcome plus two retry losses with unchanged side/round/session, missing/corrupt-checksum explicit fallback with persistent requested/effective identity, catalog metadata/availability/ordering/error cases, version 9 HTTP and MessagePack WebSocket contract, static UI, discovery, pending challenge acceptance/decline/cancel, IPv4/IPv6 UDP handshake, ping RTT, oversized UDP datagrams, gameplay, shared host/guest game events, controls, malformed and fragmented controls, multiple tabs, close handshake, state sync, restart, host leave without automatic guest rejoin (including lost Bye and Welcome), manual rejoin, host rollback of delayed inputs, guest prediction during paused host states, Quick Game port selection/cancellation/auto-accept/matching, and graceful host/guest shutdown")
     finally:
         for process in processes:
             if process.poll() is None:
