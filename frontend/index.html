@@ -92,8 +92,16 @@
           <section class="panel connect-panel">
             <div class="panel-header">
               <span class="section-number">01 / ВЫБОР ИГРЫ</span>
-              <h2>Выберите соперника</h2>
-              <p>Играйте с ботом здесь или с другом в локальной сети.</p>
+              <h2>Выберите игру</h2>
+            </div>
+
+            <div class="game-mode-field">
+              <label for="game-mode">Режим игры</label>
+              <select id="game-mode">
+                <option value="bot">Против бота</option>
+                <option value="quick">Быстрая игра по сети</option>
+                <option value="join">Присоединиться по сети</option>
+              </select>
             </div>
 
             <div class="nickname-field">
@@ -108,84 +116,39 @@
               />
             </div>
 
-            <form class="bot-offer" id="bot-form">
-              <span class="bot-label">ОДИН ИГРОК</span>
-              <fieldset
-                class="bot-catalog"
-                id="bot-catalog"
-                aria-describedby="bot-catalog-status"
-                disabled
-              >
-                <legend>Боты-соперники</legend>
-                <div class="bot-catalog-groups" id="bot-catalog-groups"></div>
-              </fieldset>
-              <p id="bot-catalog-status" role="status" aria-live="polite">
-                Загружаем список соперников…
-              </p>
-              <button class="secondary-button" id="bot-catalog-retry" type="button" hidden>
-                Повторить
-              </button>
-              <section
-                class="bot-profile"
-                id="bot-profile"
-                aria-labelledby="bot-profile-name"
-                hidden
-              >
-                <div class="bot-profile-heading">
-                  <span class="bot-avatar" id="bot-profile-avatar" aria-hidden="true"></span>
-                  <div>
-                    <span class="bot-profile-label">ВЫБРАННЫЙ СОПЕРНИК</span>
-                    <h3 id="bot-profile-name"></h3>
-                  </div>
+            <div class="mode-panel" id="bot-panel">
+              <form class="bot-offer" id="bot-form">
+                <div class="bot-summary-row">
+                  <section class="bot-summary" id="bot-summary" aria-labelledby="bot-summary-name">
+                    <div class="bot-summary-heading">
+                      <span class="bot-avatar" id="bot-summary-avatar" aria-hidden="true">?</span>
+                      <div class="bot-summary-copy">
+                        <h3 id="bot-summary-name">Выберите соперника</h3>
+                        <span id="bot-summary-difficulty"></span>
+                      </div>
+                    </div>
+                    <p id="bot-summary-availability" role="status" aria-live="polite" hidden></p>
+                  </section>
+                  <button
+                    class="secondary-button bot-picker-open"
+                    id="bot-picker-open"
+                    type="button"
+                    aria-haspopup="dialog"
+                    aria-controls="bot-picker"
+                  >
+                    Изменить
+                  </button>
                 </div>
-                <p id="bot-profile-description"></p>
-                <dl class="bot-profile-details">
-                  <div>
-                    <dt>Сложность</dt>
-                    <dd id="bot-profile-difficulty"></dd>
-                  </div>
-                  <div>
-                    <dt>Стиль</dt>
-                    <dd id="bot-profile-style"></dd>
-                  </div>
-                </dl>
-                <p
-                  class="bot-profile-availability"
-                  id="bot-profile-availability"
-                  role="status"
-                  aria-live="polite"
-                ></p>
-              </section>
-              <button class="primary-button bot-button" id="bot-button" type="submit" disabled>
-                Играть с ботом
-              </button>
-            </form>
-            <p class="mode-divider">или играйте с другом по сети</p>
-
-            <div class="tab-list" role="tablist" aria-label="Способ подключения">
-              <button
-                class="tab is-active"
-                type="button"
-                role="tab"
-                id="tab-host"
-                aria-selected="true"
-                aria-controls="quick-panel"
-              >
-                Быстрая игра
-              </button>
-              <button
-                class="tab"
-                type="button"
-                role="tab"
-                id="tab-join"
-                aria-selected="false"
-                aria-controls="join-panel"
-              >
-                Присоединиться
-              </button>
+                <p id="bot-summary-status" role="status" aria-live="polite">
+                  Загружаем список соперников…
+                </p>
+                <button class="primary-button bot-button" id="bot-button" type="submit" disabled>
+                  Играть с ботом
+                </button>
+              </form>
             </div>
 
-            <div class="tab-panel" id="quick-panel" role="tabpanel" aria-labelledby="tab-host">
+            <div class="mode-panel" id="quick-panel" hidden>
               <form id="quick-form">
                 <p class="quick-description">
                   Найдём свободного игрока или откроем вашу игру для поиска.
@@ -194,24 +157,9 @@
                   Быстрая игра
                 </button>
               </form>
-              <div class="share-box" id="share-box" hidden>
-                <span class="share-label">Вашу игру найдут по нику</span>
-                <strong id="share-nickname" class="share-nickname">—</strong>
-                <details class="manual-share">
-                  <summary>Адрес и порт для ручного подключения</summary>
-                  <div id="share-addresses" class="address-list"></div>
-                  <small>Порт: <strong id="share-port">—</strong></small>
-                </details>
-              </div>
             </div>
 
-            <div
-              class="tab-panel"
-              id="join-panel"
-              role="tabpanel"
-              aria-labelledby="tab-join"
-              hidden
-            >
+            <div class="mode-panel" id="join-panel" hidden>
               <form id="join-form">
                 <label for="peer-address">Адрес друга (вручную)</label>
                 <div class="discover-row">
@@ -259,6 +207,15 @@
               <details class="connection-help">
                 <summary>Подсказка для IPv6</summary>
                 <p>Для адреса fe80::… добавьте зону своего интерфейса, например %en0 или %3.</p>
+              </details>
+            </div>
+            <div class="share-box" id="share-box" hidden>
+              <span class="share-label">Вашу игру найдут по нику</span>
+              <strong id="share-nickname" class="share-nickname">—</strong>
+              <details class="manual-share">
+                <summary>Адрес и порт для ручного подключения</summary>
+                <div id="share-addresses" class="address-list"></div>
+                <small>Порт: <strong id="share-port">—</strong></small>
               </details>
             </div>
           </section>
@@ -325,6 +282,66 @@
       </main>
       <footer class="footer">LAN PONG <span>●</span> С ботом или другом.</footer>
     </div>
+    <dialog
+      class="bot-picker"
+      id="bot-picker"
+      aria-labelledby="bot-picker-title"
+      aria-describedby="bot-picker-description"
+    >
+      <div class="bot-picker-header">
+        <div>
+          <h2 id="bot-picker-title" tabindex="-1">Выберите бота</h2>
+          <p id="bot-picker-description">
+            Выбор применяется сразу. Нажмите «Готово», чтобы вернуться.
+          </p>
+        </div>
+        <button class="secondary-button" id="bot-picker-close" type="button">Закрыть</button>
+      </div>
+      <div class="bot-picker-body">
+        <fieldset
+          class="bot-catalog"
+          id="bot-catalog"
+          aria-describedby="bot-catalog-status"
+          disabled
+        >
+          <legend>Боты-соперники</legend>
+          <div class="bot-catalog-groups" id="bot-catalog-groups"></div>
+        </fieldset>
+        <p id="bot-catalog-status" role="status" aria-live="polite">Загружаем список соперников…</p>
+        <button class="secondary-button" id="bot-catalog-retry" type="button" hidden>
+          Повторить
+        </button>
+        <section class="bot-profile" id="bot-profile" aria-labelledby="bot-profile-name" hidden>
+          <div class="bot-profile-heading">
+            <span class="bot-avatar" id="bot-profile-avatar" aria-hidden="true"></span>
+            <div>
+              <span class="bot-profile-label">ВЫБРАННЫЙ СОПЕРНИК</span>
+              <h3 id="bot-profile-name"></h3>
+            </div>
+          </div>
+          <p id="bot-profile-description"></p>
+          <dl class="bot-profile-details">
+            <div>
+              <dt>Сложность</dt>
+              <dd id="bot-profile-difficulty"></dd>
+            </div>
+            <div>
+              <dt>Стиль</dt>
+              <dd id="bot-profile-style"></dd>
+            </div>
+          </dl>
+          <p
+            class="bot-profile-availability"
+            id="bot-profile-availability"
+            role="status"
+            aria-live="polite"
+          ></p>
+        </section>
+      </div>
+      <div class="bot-picker-footer">
+        <button class="primary-button" id="bot-picker-done" type="button">Готово</button>
+      </div>
+    </dialog>
     <div class="toast" id="toast" role="alert" hidden></div>
   </body>
 </html>

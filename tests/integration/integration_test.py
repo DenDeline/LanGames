@@ -695,7 +695,9 @@ def main():
         assert b'id="bot-catalog"' in page and b'id="bot-profile"' in page
         assert b'id="bot-catalog-status"' in page
         assert b'id="opponent-fallback"' in page
-        assert b'id="tab-host"' in page and b'id="tab-join"' in page
+        assert b'id="game-mode"' in page and b'<select' in page
+        assert b'id="bot-picker"' in page and b'<dialog' in page
+        assert b'id="bot-summary"' in page and b'id="bot-picker-open"' in page
         assets = re.findall(rb'(?:src|href)="(/assets/[^"]+)"', page)
         assert len(assets) >= 2, assets
         for asset in assets:

@@ -11,11 +11,17 @@ import {
   getSelectedBotId,
   getPort,
   loadNickname,
+  isSetupLocked,
+  noteQuickGameStart,
+  acceptQuickGameStart,
+  clearQuickGameIntent,
+  openBotPicker,
+  closeBotPicker,
   render,
   setBotCatalog,
   updateBotSelection,
   saveNickname,
-  setTab,
+  setGameMode,
   showToast,
   ui,
 } from "./view.js";
@@ -121,6 +127,8 @@ async function postAction(
   body?: { port?: number; address?: string; nickname?: string; botId?: string },
 ): Promise<void> {
   if (busy) return;
+  if (["/api/local-opponent", "/api/quick", "/api/join"].includes(path) && isSetupLocked()) return;
+  if (path === "/api/quick") noteQuickGameStart();
   const expectedBotId =
     path === "/api/local-opponent"
       ? body?.botId
@@ -139,9 +147,23 @@ async function postAction(
       headers: { "Content-Type": "application/json" },
       body: body === undefined ? "{}" : JSON.stringify(body),
     });
+    // A confirmed rejection cannot own a guest session that arrived meanwhile.
+    // Transport failures keep any observed quick start because it may have succeeded.
+    if (path === "/api/quick" && !response.ok) clearQuickGameIntent();
     const data = await readJson(response);
     if (data.role) {
       const actionSnapshot = parseSnapshot(data);
+      if (
+        path === "/api/quick" &&
+        (actionSnapshot.connection === "searching" || actionSnapshot.opponentMode === "lan")
+      )
+        acceptQuickGameStart();
+      else if (
+        path === "/api/leave" ||
+        (path === "/api/local-opponent" && actionSnapshot.opponentMode === "bot") ||
+        (path === "/api/join" && actionSnapshot.opponentMode === "lan")
+      )
+        clearQuickGameIntent();
       if (requestVersion === webSocketSnapshotVersion) session.apply(actionSnapshot);
       const successfulBotAction =
         typeof expectedBotId === "string" &&
@@ -209,6 +231,7 @@ function renderSelectedHost(): void {
     const selected = host === selectedHost;
     button.classList.toggle("is-selected", selected);
     button.setAttribute("aria-pressed", String(selected));
+    button.disabled = isSetupLocked();
   }
 }
 
@@ -218,7 +241,7 @@ function clearSelectedHost(): void {
 }
 
 async function discoverHosts(): Promise<void> {
-  if (busy || discovering) return;
+  if (busy || discovering || isSetupLocked()) return;
   discovering = true;
   clearSelectedHost();
   discoveryButtons = [];
@@ -253,6 +276,7 @@ async function discoverHosts(): Promise<void> {
         nickname.textContent = host.nickname;
         item.append(nickname);
         item.addEventListener("click", () => {
+          if (isSetupLocked()) return;
           selectedHost = host;
           ui.peerAddress.value = "";
           ui.joinPort.value = String(host.port);
@@ -268,6 +292,7 @@ async function discoverHosts(): Promise<void> {
   } finally {
     discovering = false;
     render(session.snapshot, busy, discovering);
+    renderSelectedHost();
   }
 }
 
@@ -329,8 +354,30 @@ export function startGame(): void {
   window.addEventListener("pointerdown", () => sound.unlockAudio(), { capture: true });
   window.addEventListener("keydown", () => sound.unlockAudio(), { capture: true });
   sound.bindControls();
-  ui.quickTab.addEventListener("click", () => setTab("quick"));
-  ui.joinTab.addEventListener("click", () => setTab("join"));
+  ui.gameMode.addEventListener("change", () => setGameMode(ui.gameMode.value));
+  ui.botPickerOpen.addEventListener("click", () => {
+    if (isSetupLocked()) return;
+    input.clear();
+    openBotPicker();
+  });
+  ui.botPickerClose.addEventListener("click", () => closeBotPicker());
+  ui.botPickerDone.addEventListener("click", () => closeBotPicker());
+  ui.botPicker.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    closeBotPicker();
+  });
+  ui.botPicker.addEventListener("keydown", (event) => {
+    if (!ui.botPicker.open || event.key !== "Tab") return;
+    // Keep endpoint navigation in the modal instead of moving to browser chrome.
+    const focused = document.activeElement;
+    if (event.shiftKey && (focused === ui.botPickerClose || focused === ui.botPickerTitle)) {
+      event.preventDefault();
+      ui.botPickerDone.focus();
+    } else if (!event.shiftKey && focused === ui.botPickerDone) {
+      event.preventDefault();
+      ui.botPickerClose.focus();
+    }
+  });
   ui.quickForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const nickname = getNickname();
@@ -364,6 +411,7 @@ export function startGame(): void {
   ui.peerAddress.addEventListener("input", clearSelectedHost);
   ui.joinPort.addEventListener("input", clearSelectedHost);
   ui.clearSelectedHost.addEventListener("click", () => {
+    if (isSetupLocked()) return;
     clearSelectedHost();
     ui.peerAddress.focus();
   });

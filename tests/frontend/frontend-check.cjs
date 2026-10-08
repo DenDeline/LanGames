@@ -83,7 +83,11 @@ async function main() {
             name.slice(5).replace(/-([a-z])/g, (_, character) => character.toUpperCase())
           ] ?? node.getAttribute(name))
         : (node[name] ?? node.getAttribute(name));
-      if (value === undefined ? actual === null || actual === undefined : String(actual) !== value)
+      if (
+        value === undefined
+          ? actual === null || actual === undefined || actual === false
+          : String(actual) !== value
+      )
         return false;
     }
     return !selector.includes(":checked") || node.checked;
@@ -116,6 +120,7 @@ async function main() {
       type: "",
       name: "",
       checked: false,
+      open: false,
       dataset: {},
       classList: {
         contains: (name) => classes.has(name),
@@ -135,6 +140,28 @@ async function main() {
       width: 960,
       height: 540,
       disabled: false,
+      validationMessages: [],
+      setCustomValidity(message) {
+        this.validationMessages.push(message);
+      },
+      reportValidity() {
+        return false;
+      },
+      showModalCalls: 0,
+      closeCalls: 0,
+      showModal() {
+        assert.equal(this.tagName, "DIALOG");
+        this.open = true;
+        this.showModalCalls++;
+      },
+      close() {
+        if (!this.open) return;
+        this.open = false;
+        this.closeCalls++;
+        if (this.contains(document.activeElement)) document.activeElement = null;
+        // Native close dispatch is queued after close(), never synchronous.
+        queueMicrotask(() => this.dispatch("close"));
+      },
       setAttribute(name, value) {
         attributes.set(name, String(value));
       },
@@ -184,7 +211,12 @@ async function main() {
       },
       focus(options) {
         for (let node = this; node; node = node.parentElement)
-          if (node.disabled && (node === this || node.tagName === "FIELDSET")) return;
+          if (
+            node.hidden ||
+            (node.tagName === "DIALOG" && !node.open) ||
+            (node.disabled && (node === this || node.tagName === "FIELDSET"))
+          )
+            return;
         this.focusCalls.push(options);
         document.activeElement = this;
         document.dispatch?.("focusin", { target: this });
@@ -203,6 +235,7 @@ async function main() {
           ...values,
         };
         this.dispatchEventToListeners(type, event);
+        if (type === "cancel" && this.open && !event.defaultPrevented) this.close();
         return event;
       },
       dispatchEventToListeners(type, event) {
@@ -625,15 +658,62 @@ async function main() {
   const {
     render: renderView,
     saveNickname,
-    setTab,
+    setGameMode,
+    openBotPicker,
+    closeBotPicker,
+    isSetupLocked,
     setBotCatalog,
     getSelectedBotId,
     updateBotSelection,
     ui,
   } = await import("../../.artifacts/frontend-test/view.js");
-  // The static HTML fieldset owns its groups; dynamic children use native parent traversal.
+  // Preserve the static ancestors so native hidden/closed/disabled focus behavior
+  // and dialog-descendant input ownership are represented in this fixture.
+  ui.gameMode.tagName = "SELECT";
+  ui.botPicker.tagName = "DIALOG";
+  for (const input of [ui.playerNickname, ui.peerAddress, ui.joinPort, ui.volumeRange])
+    input.tagName = "INPUT";
   ui.botCatalog.tagName = "FIELDSET";
   ui.botCatalog.append(ui.botCatalogGroups);
+  ui.botPicker.append(
+    ui.botPickerTitle,
+    ui.botPickerClose,
+    ui.botCatalog,
+    ui.botCatalogStatus,
+    ui.botCatalogRetry,
+    ui.botProfile,
+    ui.botPickerDone,
+  );
+  ui.botProfile.append(
+    ui.botProfileAvatar,
+    ui.botProfileName,
+    ui.botProfileDescription,
+    ui.botProfileDifficulty,
+    ui.botProfileStyle,
+    ui.botProfileAvailability,
+  );
+  ui.botForm.append(
+    ui.botSummaryAvatar,
+    ui.botSummaryName,
+    ui.botSummaryDifficulty,
+    ui.botSummaryAvailability,
+    ui.botSummaryStatus,
+    ui.botPickerOpen,
+    ui.botButton,
+  );
+  ui.botPanel.append(ui.botForm);
+  ui.quickForm.append(ui.quickButton);
+  ui.quickPanel.append(ui.quickForm);
+  ui.selectedHost.append(ui.selectedHostName, ui.clearSelectedHost);
+  ui.joinForm.append(
+    ui.peerAddress,
+    ui.joinPort,
+    ui.joinButton,
+    ui.discoverButton,
+    ui.discoveryResults,
+    ui.selectedHost,
+  );
+  ui.joinPanel.append(ui.joinForm);
   const radios = () => ui.botCatalog.querySelectorAll('input[name="botId"]');
   const radio = (id) => radios().find((choice) => choice.value === id);
   const checkedId = () => radios().find((choice) => choice.checked)?.value ?? null;
@@ -647,12 +727,20 @@ async function main() {
     return choice;
   };
   const selectBot = (id) => {
+    if (!ui.botPicker.open) openBotPicker();
+    assert.equal(ui.botPicker.open, true, "Native catalog selection requires an open picker");
     assert.equal(
       ui.botCatalog.disabled,
       false,
       "Native selection requires an enabled catalog fieldset",
     );
-    return checkBot(id).dispatch("change");
+    const choice = checkBot(id);
+    choice.focus();
+    return choice.dispatch("change");
+  };
+  const submitBot = () => {
+    if (ui.botPicker.open) closeBotPicker();
+    return ui.botForm.dispatch("submit");
   };
   const catalogEntry = (id, name, extra = {}) => ({
     id,
@@ -690,6 +778,10 @@ async function main() {
   renderView(selectionIdle, false, false);
   assert.equal(checkedId(), "calm");
   assert.equal(getSelectedBotId(), "calm");
+  assert.equal(ui.botPicker.open, false);
+  assert.equal(ui.botSummaryName.textContent, "Тихий");
+  assert.equal(ui.botSummaryDifficulty.textContent, "Тренировка");
+  assert.equal(ui.botSummaryStatus.hidden, true);
   checkBot("predictive");
   updateBotSelection();
   setBotCatalog(browserCatalog);
@@ -748,6 +840,7 @@ async function main() {
   assert.equal(getSelectedBotId(), null);
   assert.equal(ui.botProfile.hidden, true);
   assert.equal(ui.botButton.disabled, true);
+  assert.equal(ui.botPickerOpen.disabled, false, "All unavailable entries remain inspectable");
   assert.equal(radios().length, 3, "Unavailable entries remain visible with their safe status");
   assert.ok(radios().every((choice) => choice.disabled));
   assert.match(ui.botCatalogStatus.textContent, /нет доступных|недоступн/i);
@@ -755,7 +848,7 @@ async function main() {
   assert.equal(ui.joinButton.disabled, false);
   setBotCatalog(null);
   renderView(selectionIdle, false, false);
-  assert.equal(ui.botCatalog.disabled, true);
+  assert.equal(ui.botPickerOpen.disabled, false, "Loading still allows opening catalog status");
   assert.equal(ui.botProfile.hidden, true);
   assert.match(ui.botCatalogStatus.textContent, /Загружаем/i);
   assert.equal(ui.quickButton.disabled, false);
@@ -785,6 +878,7 @@ async function main() {
   assert.equal(ui.botProfileName.textContent, "Основной");
   assert.match(ui.botProfileAvailability.textContent, /Резервный/);
   assert.match(ui.botProfileAvailability.textContent, /недоступен/);
+  assert.match(ui.botSummaryAvailability.textContent, /Основной бот недоступен.*Резервный/);
   assert.equal(
     ui.botButton.disabled,
     false,
@@ -799,6 +893,7 @@ async function main() {
   });
   assert.equal(checkedId(), "primary");
   assert.match(ui.botProfileAvailability.textContent, /попробуем.*Резервный.*не проверена/);
+  assert.match(ui.botSummaryAvailability.textContent, /попробуем.*Резервный.*не проверена/);
   assert.doesNotMatch(ui.botProfileAvailability.textContent, /будет играть/);
 
   setBotCatalog(browserCatalog);
@@ -856,8 +951,12 @@ async function main() {
   assert.equal(ui.botProfileDescription.textContent, '<img src="x" onerror="alert(1)">');
   assert.equal(ui.botProfileStyle.textContent, "<script>Настроенный стиль</script>");
   assert.equal(ui.botProfileDifficulty.textContent, "Продвинутый");
+  assert.equal(ui.botSummaryName.textContent, htmlName);
+  assert.equal(ui.botSummaryName.children.length, 0);
+  assert.equal(ui.botSummaryDifficulty.textContent, "Продвинутый");
   assert.match(ui.botButton.textContent, /<b>Х+<\/b>/);
 
+  openBotPicker();
   checkBot("alfa").focus();
   updateBotSelection();
   const focusedRadio = radio("alfa");
@@ -891,13 +990,14 @@ async function main() {
     "Removing a focused entry moves focus to eligible selection",
   );
 
+  closeBotPicker();
   setBotCatalog(browserCatalog);
   checkBot("calm");
   updateBotSelection();
   setBotCatalog(null, "Не удалось загрузить ботов. Попробуйте ещё раз.");
   renderView(selectionIdle, false, false);
+  openBotPicker();
   ui.botCatalogRetry.focus();
-  setBotCatalog(browserCatalog);
   renderView(
     {
       ...selectionIdle,
@@ -910,23 +1010,28 @@ async function main() {
     false,
   );
   assert.equal(ui.botCatalog.disabled, true);
-  assert.equal(
-    document.activeElement,
-    ui.botCatalogRetry,
-    "Pending catalog focus does not move into disabled game controls",
-  );
+  assert.equal(ui.botPicker.open, false, "An active snapshot closes the idle picker");
+  const afterActiveFocus = document.activeElement;
+  setBotCatalog(browserCatalog);
   radio("calm").focus();
   assert.equal(
     document.activeElement,
-    ui.botCatalogRetry,
-    "Native focus ignores a disabled fieldset descendant",
+    afterActiveFocus,
+    "Native focus ignores a closed and disabled dialog descendant",
   );
   renderView(selectionIdle, false, false);
   assert.equal(
     document.activeElement,
-    radio("calm"),
-    "Deferred catalog focus restores when selection becomes available",
+    afterActiveFocus,
+    "A completed catalog refresh never queues focus into a later idle closed picker",
   );
+  openBotPicker();
+  assert.equal(
+    document.activeElement,
+    radio("calm"),
+    "Reopening focuses current eligible selection",
+  );
+  closeBotPicker();
 
   const lanSnapshot = {
     ...session.snapshot,
@@ -1174,7 +1279,7 @@ async function main() {
   assert.equal(ui.sessionMessage.textContent, terminalFailureMessage);
   renderView({ ...selectionIdle, message: "" }, false, false);
   assert.equal(ui.sessionMessage.textContent, "Выберите игру с ботом или другом.");
-  setTab("join");
+  setGameMode("join");
   assert.equal(ui.quickPanel.hidden, true);
   assert.equal(ui.joinPanel.hidden, false);
 
@@ -1330,18 +1435,25 @@ async function main() {
   assert.equal(visualResets, resetsBeforeFallback);
   assert.equal(visualMotion.sampleCount, 2);
 
-  // One selection form submits configured IDs, including an extra config-only entry.
+  // A compact selection form launches the chosen profile; the body-level
+  // native dialog retains full profiles without nested forms or launch controls.
   const html = readFileSync(`${__dirname}/../../frontend/index.html`, "utf8");
-  assert.match(
-    html,
-    /<form[^>]+id="bot-form"[\s\S]*?<fieldset[^>]+id="bot-catalog"[\s\S]*?id="bot-catalog-groups"[\s\S]*?<button[^>]+id="bot-button"/,
-  );
+  assert.match(html, /<form[^>]+id="bot-form"[\s\S]*?<button[^>]+id="bot-button"/);
   assert.doesNotMatch(html, /bot-select|hard-form|hard-button|Simple|Hard/);
   assert.match(html, /id="bot-profile"/);
   assert.match(html, /id="bot-profile-description"/);
   assert.match(html, /id="opponent-fallback"/);
-  assert.match(html, /id="tab-host"/);
-  assert.match(html, /id="tab-join"/);
+  assert.match(html, /<select[^>]+id="game-mode"/);
+  for (const mode of ["bot", "quick", "join"]) assert.match(html, new RegExp(`value="${mode}"`));
+  assert.doesNotMatch(html, /id="tab-host"|id="tab-join"/);
+  const pickerMarkup = html.match(/<dialog[\s\S]*?<\/dialog>/)?.[0];
+  assert.match(pickerMarkup, /id="bot-picker"/);
+  assert.match(pickerMarkup, /aria-labelledby="bot-picker-title"/);
+  assert.match(pickerMarkup, /id="bot-catalog"/);
+  assert.match(pickerMarkup, /id="bot-profile-description"/);
+  assert.doesNotMatch(pickerMarkup, /<form|id="bot-button"/);
+  for (const id of ["bot-picker-open", "bot-picker-close", "bot-picker-done"])
+    assert.match(html, new RegExp(`<button[^>]+id="${id}"[^>]+type="button"`));
   assert.match(html, /<section[^>]+id="game-arena"[^>]+tabindex="-1"/);
   const bindEvents = (target) => {
     const listeners = new Map();
@@ -1401,6 +1513,15 @@ async function main() {
   });
   let catalogPayload = browserCatalog;
   let catalogError = false;
+  let discoveredHosts = [];
+  let holdNextDiscovery = false;
+  let releaseDiscovery = null;
+  let holdNextAction = false;
+  let releaseAction = null;
+  let quickMatchesGuest = false;
+  let pushIdleDuringQuick = false;
+  let rejectQuickAfterGuestFrame = false;
+  let quickGuestModeWhilePending = null;
   let rejectSelection = false;
   let rejectRestart = false;
   let invalidActionResponse = false;
@@ -1414,6 +1535,21 @@ async function main() {
   let serverSnapshot = idleSnapshot;
   globalThis.fetch = async (path, options) => {
     requests.push({ path, options });
+    if (path === "/api/discover") {
+      if (holdNextDiscovery) {
+        holdNextDiscovery = false;
+        await new Promise((resolve) => {
+          releaseDiscovery = resolve;
+        });
+      }
+      return { ok: true, text: async () => JSON.stringify({ hosts: discoveredHosts }) };
+    }
+    if (options?.method === "POST" && holdNextAction) {
+      holdNextAction = false;
+      await new Promise((resolve) => {
+        releaseAction = resolve;
+      });
+    }
     if (path === "/api/bots") {
       if (catalogError) throw new Error("Network failure with sensitive detail");
       const payload = catalogPayload;
@@ -1444,6 +1580,25 @@ async function main() {
     if (path === "/api/quick" && invalidActionResponse) {
       return { ok: true, text: async () => JSON.stringify({ version: 7, role: "host" }) };
     }
+    if (path === "/api/quick" && rejectQuickAfterGuestFrame) {
+      rejectQuickAfterGuestFrame = false;
+      serverSnapshot = {
+        ...idleSnapshot,
+        opponentMode: "lan",
+        role: "guest",
+        connection: "awaitingAcceptance",
+        localNickname: "Browser Tester",
+        peerNickname: "Другая игра",
+        peerAddress: "192.168.1.44:49126",
+      };
+      pushSnapshot(serverSnapshot);
+      quickGuestModeWhilePending = ui.gameMode.value;
+      return {
+        ok: false,
+        status: 400,
+        text: async () => JSON.stringify({ error: "Быстрая игра уже недоступна." }),
+      };
+    }
     const selected =
       path === "/api/local-opponent"
         ? browserCatalog.bots.find((bot) => bot.id === JSON.parse(options.body).botId)
@@ -1467,8 +1622,37 @@ async function main() {
             leftScore: 0,
             rightScore: 0,
           }
-        : idleSnapshot;
-    if (["/api/local-opponent", "/api/leave", "/api/restart"].includes(path)) serverSnapshot = data;
+        : path === "/api/quick"
+          ? {
+              ...idleSnapshot,
+              opponentMode: "lan",
+              role: quickMatchesGuest ? "guest" : "host",
+              connection: quickMatchesGuest ? "connected" : "waiting",
+              phase: quickMatchesGuest ? "countdown" : "waiting",
+              localNickname: JSON.parse(options.body).nickname,
+              udpPort: 49123,
+              localAddresses: ["127.0.0.1", "192.168.1.10"],
+            }
+          : path === "/api/join"
+            ? {
+                ...idleSnapshot,
+                opponentMode: "lan",
+                role: "guest",
+                connection: "awaitingAcceptance",
+                localNickname: JSON.parse(options.body).nickname,
+                peerAddress: `${JSON.parse(options.body).address}:${JSON.parse(options.body).port}`,
+              }
+            : idleSnapshot;
+    if (
+      ["/api/local-opponent", "/api/leave", "/api/restart", "/api/quick", "/api/join"].includes(
+        path,
+      )
+    )
+      serverSnapshot = data;
+    if (path === "/api/quick" && pushIdleDuringQuick) {
+      pushIdleDuringQuick = false;
+      pushSnapshot(idleSnapshot);
+    }
     if (path === "/api/restart" && pushOldGameOverDuringRestart) {
       pushOldGameOverDuringRestart = false;
       pushSnapshot({
@@ -1554,6 +1738,8 @@ async function main() {
   const statusRequests = () => requests.filter((request) => request.path === "/api/status").length;
   const flush = () => new Promise((resolve) => setImmediate(resolve));
   const { startGame } = await import("../../.artifacts/frontend-test/game.js");
+  renderView(idleSnapshot, false, false);
+  setGameMode("bot");
   ui.playerNickname.value = "Browser Tester";
   startGame();
   await flush();
@@ -1563,13 +1749,330 @@ async function main() {
   assert.equal(checkedId(), "calm");
   assert.equal(radios().length, 3);
   assert.equal(ui.botButton.disabled, false);
+  const postRequests = () =>
+    requests.filter((request) => request.options?.method === "POST").length;
+  const selectMode = (mode) => {
+    ui.gameMode.focus();
+    ui.gameMode.value = mode;
+    ui.gameMode.dispatch("change");
+  };
+
+  // Setup choices only reveal controls; they retain shared fields and eligible
+  // bot identity without starting or cancelling a session.
+  const beforeModeChanges = requests.length;
+  ui.playerNickname.value = "Browser Tester";
+  ui.playerNickname.dispatch("input");
+  ui.peerAddress.value = "friend.local";
+  ui.joinPort.value = "49123";
+  for (const mode of ["join", "quick", "bot"]) {
+    selectMode(mode);
+    assert.equal(ui.gameMode.value, mode);
+    assert.equal(ui.botPanel.hidden, mode !== "bot");
+    assert.equal(ui.quickPanel.hidden, mode !== "quick");
+    assert.equal(ui.joinPanel.hidden, mode !== "join");
+    assert.equal(ui.playerNickname.value, "Browser Tester");
+    assert.equal(ui.peerAddress.value, "friend.local");
+    assert.equal(ui.joinPort.value, "49123");
+    assert.equal(getSelectedBotId(), "calm");
+  }
+  assert.equal(requests.length, beforeModeChanges);
+  ui.gameMode.value = "unsupported";
+  ui.gameMode.dispatch("change");
+  assert.equal(ui.gameMode.value, "bot", "Unsupported mode values preserve the current setup");
+
+  // Opening clears input, and full profiles remain on demand. Every user close
+  // path keeps the native selection and synchronously returns to its opener.
+  const beforePickerPosts = postRequests();
+  window.dispatch("keydown", { key: "ArrowDown", target: ui.arenaPanel });
+  assert.equal(lastSentAxis(), 1);
+  ui.botPickerOpen.focus();
+  ui.botPickerOpen.dispatch("click");
+  assert.equal(ui.botPicker.open, true);
+  assert.equal(document.activeElement, radio("calm"));
+  assert.equal(lastSentAxis(), 0, "Opening the opponent picker clears held paddle input");
+  for (const target of [
+    ui.botPickerClose,
+    ui.botPickerDone,
+    ui.botPickerTitle,
+    ui.botProfileName,
+  ]) {
+    for (const key of ["ArrowUp", "ArrowDown", "w", "s"]) {
+      assert.equal(window.dispatch("keydown", { key, target }).defaultPrevented, undefined);
+      assert.equal(lastSentAxis(), 0, "Non-editable picker content never drives the paddle");
+    }
+  }
+  // Exercise the bound dialog handler through bubbling endpoint events. Only
+  // endpoint Tab traversal is trapped; native traversal within the dialog stays free.
+  for (const start of [ui.botPickerClose, ui.botPickerTitle]) {
+    start.focus();
+    const reverseTab = start.dispatch("keydown", { key: "Tab", shiftKey: true });
+    assert.equal(reverseTab.defaultPrevented, true);
+    assert.equal(document.activeElement, ui.botPickerDone);
+    assert.equal(lastSentAxis(), 0, "Reverse modal endpoint traversal never moves the paddle");
+  }
+  ui.botPickerDone.focus();
+  const forwardTab = ui.botPickerDone.dispatch("keydown", { key: "Tab", shiftKey: false });
+  assert.equal(forwardTab.defaultPrevented, true);
+  assert.equal(document.activeElement, ui.botPickerClose);
+  assert.equal(lastSentAxis(), 0);
+  for (const [start, shiftKey] of [
+    [ui.botPickerClose, false],
+    [ui.botPickerDone, true],
+    [radio("calm"), false],
+    [radio("calm"), true],
+  ]) {
+    start.focus();
+    const nativeTab = start.dispatch("keydown", { key: "Tab", shiftKey });
+    assert.equal(nativeTab.defaultPrevented, undefined, "Interior Tab traversal remains native");
+    assert.equal(
+      document.activeElement,
+      start,
+      "The endpoint handler does not override interior focus",
+    );
+    assert.equal(lastSentAxis(), 0);
+  }
+  selectBot("config-only-opponent");
+  assert.equal(ui.botSummaryName.textContent, "Дополнительный бот из конфигурации");
+  ui.botPickerDone.dispatch("click");
+  assert.equal(ui.botPicker.open, false);
+  assert.equal(document.activeElement, ui.botPickerOpen);
+  for (const shiftKey of [false, true]) {
+    const closedTab = ui.botPicker.dispatch("keydown", { key: "Tab", shiftKey });
+    assert.equal(closedTab.defaultPrevented, undefined, "A closed picker does not trap Tab");
+    assert.equal(document.activeElement, ui.botPickerOpen);
+    assert.equal(lastSentAxis(), 0);
+  }
+  ui.botPickerOpen.dispatch("click");
+  assert.equal(document.activeElement, radio("config-only-opponent"));
+  ui.botPickerClose.dispatch("click");
+  assert.equal(document.activeElement, ui.botPickerOpen);
+  ui.botPickerOpen.dispatch("click");
+  const cancelled = ui.botPicker.dispatch("cancel");
+  assert.equal(cancelled.defaultPrevented, true);
+  assert.equal(ui.botPicker.open, false);
+  assert.equal(document.activeElement, ui.botPickerOpen);
+  assert.equal(getSelectedBotId(), "config-only-opponent");
+  assert.equal(
+    postRequests(),
+    beforePickerPosts,
+    "Open, radio selection, Done, Close and Escape never Play",
+  );
+  selectBot("calm");
+  closeBotPicker();
+
+  // A fresh tab may observe an already-open LAN host while the local setup
+  // still prefers bots. Sharing and challenge/session controls stay reachable.
+  const sharingHost = {
+    ...idleSnapshot,
+    opponentMode: "lan",
+    role: "host",
+    connection: "waiting",
+    udpPort: 49123,
+    localNickname: "Browser Tester",
+    localAddresses: ["192.168.1.10"],
+  };
+  pushSnapshot(sharingHost);
+  assert.equal(ui.gameMode.value, "quick", "Fresh LAN host context reveals quick-game sharing");
+  assert.equal(ui.quickPanel.hidden, false);
+  assert.equal(ui.shareBox.hidden, false);
+  assert.equal(ui.shareBox.closest("#quick-panel"), null);
+  assert.equal(ui.shareNickname.textContent, "Browser Tester");
+  assert.equal(ui.sharePort.textContent, "49123");
+  const beforeLockedActions = requests.length;
+  for (const snapshot of [
+    sharingHost,
+    { ...sharingHost, connection: "incomingChallenge", peerNickname: "Друг" },
+    { ...sharingHost, role: "guest", connection: "awaitingAcceptance" },
+    { ...sharingHost, connection: "disconnected" },
+    { ...sharingHost, connection: "connected", phase: "gameover" },
+    { ...sharingHost, role: "none", connection: "searching" },
+  ]) {
+    if (snapshot.connection === "disconnected") renderView(snapshot, false, false);
+    else pushSnapshot(snapshot);
+    assert.equal(isSetupLocked(), true);
+    assert.equal(ui.gameMode.disabled, true);
+    assert.equal(ui.botPickerOpen.disabled, true);
+    const displayedMode = snapshot.role === "guest" ? "join" : "quick";
+    assert.equal(
+      ui.gameMode.value,
+      displayedMode,
+      "Active mode follows host, guest or search context",
+    );
+    selectMode(displayedMode === "join" ? "bot" : "join");
+    assert.equal(
+      ui.gameMode.value,
+      displayedMode,
+      "Active, challenge and searching state reject setup changes",
+    );
+    ui.botPickerOpen.dispatch("click");
+    assert.equal(ui.botPicker.open, false);
+    ui.quickForm.dispatch("submit");
+    ui.botForm.dispatch("submit");
+    ui.joinForm.dispatch("submit");
+    ui.discoverButton.dispatch("click");
+  }
+  assert.equal(
+    requests.length,
+    beforeLockedActions,
+    "Locked setup handlers cannot send another action",
+  );
+  pushSnapshot(idleSnapshot);
+  assert.equal(ui.gameMode.value, "bot", "Returning idle restores the prior setup choice");
+  selectMode("join");
+
+  // Real discovery handlers filter malformed results, render nicknames as
+  // text, and use the selected address/port while preserving manual fallback.
+  discoveredHosts = [
+    { address: "192.168.1.42", port: 49124, nickname: "<b>Друг</b>" },
+    { address: "192.168.1.43", port: 0, nickname: "Invalid" },
+    { address: "", port: 49124, nickname: "Invalid" },
+    { address: "192.168.1.44", port: 49124, nickname: "" },
+  ];
+  ui.discoverButton.dispatch("click");
+  await flush();
+  const discoveryChoice = ui.discoveryResults.querySelector("button");
+  assert.equal(ui.discoveryResults.querySelectorAll("button").length, 1);
+  assert.equal(discoveryChoice.querySelector("strong").textContent, "<b>Друг</b>");
+  assert.equal(discoveryChoice.querySelector("strong").children.length, 0);
+  discoveryChoice.dispatch("click");
+  assert.equal(ui.selectedHost.hidden, false);
+  assert.equal(ui.selectedHostName.textContent, "<b>Друг</b>");
+  assert.equal(ui.peerAddress.value, "");
+  assert.equal(ui.joinPort.value, "49124");
+  selectMode("quick");
+  selectMode("join");
+  assert.equal(ui.selectedHost.hidden, false, "Mode changes keep the discovered host choice");
+  const beforeDiscoveredJoinScrolls = scrollCalls.length;
+  ui.joinForm.dispatch("submit");
+  await flush();
+  assert.deepEqual(
+    JSON.parse(requests.filter((request) => request.path === "/api/join").at(-1).options.body),
+    {
+      address: "192.168.1.42",
+      port: 49124,
+      nickname: "Browser Tester",
+    },
+  );
+  assert.equal(ui.gameMode.disabled, true);
+  assert.equal(discoveryChoice.disabled, true);
+  assert.equal(ui.clearSelectedHost.disabled, true);
+  const selectedName = ui.selectedHostName.textContent;
+  ui.clearSelectedHost.dispatch("click");
+  discoveryChoice.dispatch("click");
+  assert.equal(ui.selectedHostName.textContent, selectedName);
+  assert.equal(ui.selectedHost.hidden, false);
+  assert.equal(scrollCalls.length, beforeDiscoveredJoinScrolls);
+  ui.leaveButton.dispatch("click");
+  await flush();
+  ui.clearSelectedHost.dispatch("click");
+  assert.equal(ui.selectedHost.hidden, true);
+  assert.equal(document.activeElement, ui.peerAddress);
+  discoveryChoice.dispatch("click");
+  ui.peerAddress.value = "  friend.local  ";
+  ui.peerAddress.dispatch("input");
+  assert.equal(
+    ui.selectedHost.hidden,
+    true,
+    "Manual address editing clears the discovery override",
+  );
+  ui.joinPort.value = "49125";
+  ui.joinPort.dispatch("input");
+  ui.joinForm.dispatch("submit");
+  await flush();
+  assert.deepEqual(
+    JSON.parse(requests.filter((request) => request.path === "/api/join").at(-1).options.body),
+    {
+      address: "friend.local",
+      port: 49125,
+      nickname: "Browser Tester",
+    },
+  );
+  ui.leaveButton.dispatch("click");
+  await flush();
+
+  // A discovery response arriving during an active match cannot re-enable its
+  // new controls or change a locked host selection.
+  holdNextDiscovery = true;
+  ui.discoverButton.dispatch("click");
+  await flush();
+  assert.equal(ui.discoverButton.disabled, true);
+  pushSnapshot(sharingHost);
+  releaseDiscovery();
+  await flush();
+  const lateDiscoveryChoice = ui.discoveryResults.querySelector("button");
+  assert.equal(lateDiscoveryChoice.disabled, true);
+  lateDiscoveryChoice.dispatch("click");
+  assert.equal(ui.selectedHost.hidden, true);
+  assert.equal(ui.peerAddress.value, "  friend.local  ");
+  pushSnapshot(idleSnapshot);
+  selectMode("quick");
+
+  // Busy locking begins before the HTTP reply, and successful quick LAN
+  // creation uses the real handler without triggering bot arena navigation.
+  const beforeQuickScrolls = scrollCalls.length;
+  holdNextAction = true;
+  ui.quickForm.dispatch("submit");
+  await flush();
+  assert.equal(isSetupLocked(), true);
+  assert.equal(ui.gameMode.disabled, true);
+  const beforeBusyRequests = postRequests();
+  selectMode("join");
+  assert.equal(ui.gameMode.value, "quick");
+  ui.botForm.dispatch("submit");
+  ui.joinForm.dispatch("submit");
+  assert.equal(postRequests(), beforeBusyRequests);
+  releaseAction();
+  await flush();
+  assert.deepEqual(
+    JSON.parse(requests.filter((request) => request.path === "/api/quick").at(-1).options.body),
+    {
+      nickname: "Browser Tester",
+    },
+  );
+  assert.equal(ui.shareBox.hidden, false);
+  assert.equal(scrollCalls.length, beforeQuickScrolls);
+  ui.leaveButton.dispatch("click");
+  await flush();
+  assert.equal(ui.gameMode.value, "quick");
+  quickMatchesGuest = true;
+  pushIdleDuringQuick = true;
+  ui.quickForm.dispatch("submit");
+  await flush();
+  assert.equal(serverSnapshot.role, "guest");
+  assert.equal(
+    ui.connectionPill.dataset.state,
+    "idle",
+    "A newer pre-quick idle frame supersedes the successful HTTP snapshot",
+  );
+  assert.equal(ui.gameMode.value, "quick");
+  pushSnapshot(serverSnapshot);
+  assert.equal(
+    ui.gameMode.value,
+    "quick",
+    "A quick-game initiator keeps quick context when matched as guest",
+  );
+  assert.equal(ui.quickPanel.hidden, false);
+  assert.equal(ui.joinPanel.hidden, true);
+  assert.equal(ui.shareBox.hidden, true);
+  ui.leaveButton.dispatch("click");
+  await flush();
+  assert.equal(ui.gameMode.value, "quick", "Leave restores the remembered quick setup");
+  quickMatchesGuest = false;
+  selectMode("bot");
+
+  const beforeInvalidNickname = postRequests();
+  ui.playerNickname.value = "";
+  submitBot();
+  assert.equal(postRequests(), beforeInvalidNickname);
+  assert.match(ui.playerNickname.validationMessages.join(" "), /Введите ник/);
+  ui.playerNickname.value = "Browser Tester";
   const beforeFirstPlayScroll = scrollCalls.length;
   const beforeFirstPlayFocus = ui.arenaPanel.focusCalls.length;
   const beforeFirstPlayStatus = statusRequests();
   window.dispatch("keydown", { key: "ArrowDown" });
   assert.equal(lastSentAxis(), 1);
   pushIdleBeforeMatchingBotResponse = true;
-  ui.botForm.dispatch("submit");
+  submitBot();
   await flush();
   assert.equal(
     statusRequests(),
@@ -1625,6 +2128,12 @@ async function main() {
   assert.deepEqual(ui.arenaPanel.focusCalls.at(-1), { preventScroll: true });
   assert.equal(document.activeElement, ui.arenaPanel);
   assert.equal(lastSentAxis(), 0, "A successful bot launch clears held paddle input");
+  ui.botPicker.dispatch("close");
+  assert.equal(
+    document.activeElement,
+    ui.arenaPanel,
+    "A delayed dialog close event cannot override accepted arena focus",
+  );
   window.dispatch("keydown", { key: "ArrowUp", target: ui.arenaPanel });
   assert.equal(lastSentAxis(), -1, "Keyboard controls work after focus leaves the catalog");
   window.dispatch("keyup", { key: "ArrowUp", target: ui.arenaPanel });
@@ -1701,7 +2210,7 @@ async function main() {
   assert.equal(scrollCalls.length, beforeRadioBrowse, "Radio browsing does not scroll the page");
   reducedMotion = true;
   pushNewerBotDuringStart = true;
-  ui.botForm.dispatch("submit");
+  submitBot();
   await flush();
   const extraRequest = requests.find(
     (request) =>
@@ -1751,7 +2260,7 @@ async function main() {
   radio("predictive").focus();
   const rejectedPlayScrolls = scrollCalls.length;
   const rejectedPlayArenaFocus = ui.arenaPanel.focusCalls.length;
-  ui.botForm.dispatch("submit");
+  submitBot();
   await flush();
   assert.equal(checkedId(), "calm");
   assert.equal(ui.botButton.disabled, false);
@@ -1773,7 +2282,7 @@ async function main() {
   setBotCatalog(browserCatalog);
   selectBot("calm");
   holdNextCatalog = true;
-  ui.botForm.dispatch("submit");
+  submitBot();
   await flush();
   assert.equal(typeof releaseOldCatalog, "function");
   const beforeTerminalFailure = catalogRequests();
@@ -1816,7 +2325,7 @@ async function main() {
   catalogPayload = browserCatalog;
   setBotCatalog(browserCatalog);
   selectBot("predictive");
-  ui.botForm.dispatch("submit");
+  submitBot();
   await flush();
   const beforeFallback = catalogRequests();
   catalogPayload = {
@@ -1906,7 +2415,7 @@ async function main() {
   catalogPayload = browserCatalog;
   setBotCatalog(browserCatalog);
   selectBot("calm");
-  ui.botForm.dispatch("submit");
+  submitBot();
   await flush();
   serverSnapshot = { ...serverSnapshot, phase: "gameover", tick: 100 };
   pushSnapshot(serverSnapshot);
@@ -1945,7 +2454,7 @@ async function main() {
   const beforeSupersedingScrolls = scrollCalls.length;
   const beforeSupersedingFocus = ui.arenaPanel.focusCalls.length;
   supersedingBotDuringStart = "calm";
-  ui.botForm.dispatch("submit");
+  submitBot();
   await flush();
   assert.equal(ui.rightPlayer.textContent, "Бот Тихий");
   assert.equal(scrollCalls.length, beforeSupersedingScrolls);
@@ -1964,7 +2473,7 @@ async function main() {
     const beforeStatus = statusRequests();
     pushIdleBeforeMatchingBotResponse = true;
     statusAfterIdleFrame = scenario;
-    ui.botForm.dispatch("submit");
+    submitBot();
     await flush();
     assert.equal(
       statusRequests(),
@@ -1988,8 +2497,43 @@ async function main() {
     }
   }
 
+  // A guest frame accepted during an unrelated quick request remains current
+  // when HTTP rejects quick; rejected intent must not mislabel that guest session.
+  selectMode("quick");
+  const beforeQuickRejectionScrolls = scrollCalls.length;
+  const beforeQuickRejectionFocus = ui.arenaPanel.focusCalls.length;
+  rejectQuickAfterGuestFrame = true;
+  ui.quickForm.dispatch("submit");
+  await flush();
+  assert.equal(
+    quickGuestModeWhilePending,
+    "quick",
+    "Pending quick intent initially retains quick context",
+  );
+  assert.equal(
+    ui.gameMode.value,
+    "join",
+    "Confirmed quick HTTP rejection clears intent for the already accepted guest frame",
+  );
+  assert.equal(ui.gameMode.disabled, true);
+  assert.equal(ui.connectionPill.dataset.state, "awaitingAcceptance");
+  assert.equal(ui.peerDetail.textContent, "Другая игра");
+  assert.equal(serverSnapshot.role, "guest");
+  assert.equal(serverSnapshot.peerAddress, "192.168.1.44:49126");
+  assert.match(ui.toast.textContent, /Быстрая игра уже недоступна/);
+  assert.equal(scrollCalls.length, beforeQuickRejectionScrolls);
+  assert.equal(ui.arenaPanel.focusCalls.length, beforeQuickRejectionFocus);
+  ui.leaveButton.dispatch("click");
+  await flush();
+  assert.equal(
+    ui.gameMode.value,
+    "quick",
+    "Leave restores the idle choice after rejecting quick intent",
+  );
+
   // Parser errors returned by a POST remain Russian in the visible toast.
   invalidActionResponse = true;
+  selectMode("quick");
   const beforeRejectedLanAction = scrollCalls.length;
   const beforeRejectedLanFocus = ui.arenaPanel.focusCalls.length;
   ui.quickForm.dispatch("submit");
@@ -1998,8 +2542,24 @@ async function main() {
   assert.doesNotMatch(ui.toast.textContent, /Unsupported|Invalid snapshot/);
   assert.equal(scrollCalls.length, beforeRejectedLanAction);
   assert.equal(ui.arenaPanel.focusCalls.length, beforeRejectedLanFocus);
+  pushSnapshot({
+    ...idleSnapshot,
+    opponentMode: "lan",
+    role: "guest",
+    connection: "awaitingAcceptance",
+  });
+  assert.equal(
+    ui.gameMode.value,
+    "join",
+    "A rejected quick action does not label a later unrelated guest session as quick",
+  );
+  pushSnapshot(idleSnapshot);
+  assert.equal(ui.gameMode.value, "quick");
 
   // Fetch errors offer retry in Russian, and configured HTML-looking metadata remains text.
+  selectMode("bot");
+  ui.botPickerOpen.dispatch("click");
+  const catalogNodesBeforeError = [...radios()];
   catalogError = true;
   ui.botCatalogRetry.dispatch("click");
   await flush();
@@ -2008,7 +2568,9 @@ async function main() {
   assert.doesNotMatch(ui.botCatalogStatus.textContent, /Network|sensitive/);
   assert.equal(ui.quickButton.disabled, false);
   assert.equal(ui.joinButton.disabled, false);
-  assert.equal(ui.botCatalog.disabled, true);
+  assert.equal(ui.botPickerOpen.disabled, false);
+  assert.equal(ui.botButton.disabled, true);
+  assert.equal(ui.botCatalog.disabled, false, "Catalog errors do not lock the idle picker");
   ui.botCatalogRetry.focus();
   assert.equal(document.activeElement, ui.botCatalogRetry);
   catalogError = false;
@@ -2018,6 +2580,38 @@ async function main() {
       bot.id === "config-only-opponent" ? { ...bot, name: "<b>Настроенный бот</b>" } : bot,
     ),
   };
+  holdNextCatalog = true;
+  ui.botCatalogRetry.dispatch("click");
+  await flush();
+  assert.equal(typeof releaseOldCatalog, "function");
+  ui.botPickerDone.dispatch("click");
+  assert.equal(document.activeElement, ui.botPickerOpen);
+  selectMode("quick");
+  const closedPickerFocus = document.activeElement;
+  const closedRadioFocuses = catalogNodesBeforeError.map((choice) => choice.focusCalls.length);
+  releaseOldCatalog();
+  await flush();
+  assert.equal(ui.botPicker.open, false);
+  assert.equal(
+    document.activeElement,
+    closedPickerFocus,
+    "Retry completing after close/mode change never steals focus",
+  );
+  assert.deepEqual(
+    catalogNodesBeforeError.map((choice) => choice.focusCalls.length),
+    closedRadioFocuses,
+  );
+  assert.equal(ui.botSummaryName.textContent, "Тихий");
+  selectMode("bot");
+  ui.botPickerOpen.dispatch("click");
+  assert.equal(
+    document.activeElement,
+    radio("calm"),
+    "Reopening resolves current eligible selection afresh",
+  );
+  setBotCatalog(null, "Не удалось загрузить ботов. Попробуйте снова.");
+  renderView(idleSnapshot, false, false);
+  ui.botCatalogRetry.focus();
   ui.botCatalogRetry.dispatch("click");
   await flush();
   assert.equal(ui.botCatalogRetry.hidden, true);
@@ -2025,7 +2619,7 @@ async function main() {
   assert.equal(
     document.activeElement,
     radio(checkedId()),
-    "Retry restores native radio focus only after fieldset is enabled",
+    "Retry completing in the open unlocked dialog restores native radio focus",
   );
   assert.match(cardText("config-only-opponent", ".bot-card-name"), /<b>Настроенный бот<\/b>/);
   const replacements = ui.botCatalogGroups.replacementCount;
@@ -2036,13 +2630,19 @@ async function main() {
   setBotCatalog({ version: 8, defaultBotId: "calm", bots: [] });
   renderView(idleSnapshot, false, false);
   assert.equal(ui.botButton.disabled, true);
+  assert.equal(ui.botPickerOpen.disabled, false);
   assert.match(ui.botCatalogStatus.textContent, /нет ботов/);
   assert.equal(checkedId(), null);
   assert.equal(ui.botProfile.hidden, true);
   assert.equal(ui.quickButton.disabled, false);
   assert.equal(ui.joinButton.disabled, false);
+  closeBotPicker();
+  ui.botPickerOpen.dispatch("click");
+  assert.equal(ui.botPicker.open, true, "An empty catalog can still be inspected or retried");
+  assert.equal(document.activeElement, ui.botCatalogRetry);
+  ui.botPickerDone.dispatch("click");
   console.log(
-    "Frontend behavior checks passed: motion, prediction, events, bot identities/fallback, LAN, catalog refresh, and generic selection.",
+    "Frontend behavior checks passed: motion, events, native modes/dialog, input ownership, catalog/action races, and real LAN handlers.",
   );
 }
 

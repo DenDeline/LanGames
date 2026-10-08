@@ -8,9 +8,9 @@ The coordinator researches, decomposes, coordinates and reviews. Its repository 
 
 ## Current evidence and working state
 
-Baseline: branch `codex/bot-catalog`, HEAD `2424622`; the previous seven-step catalog goal is complete. The worktree has one pre-existing user edit in `BotRuntime.cs`: `_availabilityGate` changes from `object` to `System.Threading.Lock`. Preserve it; do not reset or discard it. Its treatment will be explicit in the first runtime step.
+Baseline: branch `codex/bot-catalog`, HEAD `2424622`; the previous seven-step catalog goal is complete. At that baseline, the worktree had one pre-existing user edit in `BotRuntime.cs`: `_availabilityGate` changed from `object` to `System.Threading.Lock`. Step 1 preserves it explicitly in `325021c`.
 
-The app still contains `HardLocalOpponentController`, the configured tracker's `SimpleLocalOpponentController` name, shared inference classes inside the legacy Hard file, legacy diagnostics, the configured benchmark CLI and a tiny smoke model. The training tool and tests depend on these types. The current catalog UI exposes every card inline. The app already targets stable .NET 10/C# 14 with generated binding/JSON and Native AOT.
+At baseline, the app contained duplicate legacy controllers, inference resources inside the legacy Hard file and production diagnostic dispatch/smoke assets. Steps 1–3 remove the legacy controllers, organize canonical production code into five Bots namespaces and isolate developer probes in `tools/LanPong.BotDiagnostics`. Current reviewed HEAD is `053868d`, with a clean worker stop. The catalog UI still exposes every card inline; compact UI and BenchmarkDotNet remain pending. The app targets stable .NET 10/C# 14 with generated binding/JSON and Native AOT.
 
 ## High-level implementation decomposition
 
@@ -18,9 +18,9 @@ The app still contains `HardLocalOpponentController`, the configured tracker's `
 | --- | --- | --- |
 | 1 | Canonical tracker/ONNX policies and inference adapter; remove legacy controllers and migrate all live callers/tests/training | Reviewed: `325021c` |
 | 2 | Organize production bot functionality into coherent folders and namespaces | Reviewed: `d84f8c4` |
-| 3 | Separate development diagnostics from the production app and publish payload; validate production through its real API | Assigned |
-| Checkpoint A | Reconcile canonical runtime, project boundaries, build/publish proof and compact UX specification | Required |
-| 4 | Compact game-mode dropdown and on-demand opponent picker, preserving named profiles and LAN flows | Planned |
+| 3 | Separate development diagnostics from the production app and publish payload; validate production through its real API | Reviewed: `053868d` |
+| Checkpoint A | Reconcile canonical runtime, project boundaries, build/publish proof and compact UX specification | Complete after step 3 |
+| 4 | Compact game-mode dropdown and on-demand opponent picker, preserving named profiles and LAN flows | Implementation/validation accepted; commit pending |
 | 5 | Dedicated BenchmarkDotNet project for configured sessions with bounded, meaningful comparisons | Planned |
 | 6 | Integrated browser/runtime/tooling validation and measured performance review; optimize only supported findings | Planned |
 | Checkpoint B | Reconcile UX, release exclusion and benchmark evidence before final delivery | Required |
@@ -55,3 +55,17 @@ The preceding goal turn was progress: it delivered seven reviewed commits, verif
 - 2026-10-08: The human explicitly answered "Approve the planned refactor" for all seven steps. That resolves the automatic authorization rejection and authorizes subsequent one-step assignments. Step 1 is dispatched with the refined direct-caller removal and normal production model-play gate; no other step is assigned.
 - 2026-10-08: Step 1 reviewed at `325021c`. Legacy types and obsolete Hard dispatch are absent from live source; supported ONNX/tracker behavior and strict training evaluation have golden and historical trajectory evidence. All 173 .NET tests, frontend checks, source/native integration and real-model published gameplay passed. Review caught an import that ran the full integration suite; the runner is now gated behind `main`, with unchanged logic and corrected bounded smoke evidence. The user's Lock change is preserved in the commit. Step 2 is next; diagnostic isolation remains step 3 and is not yet claimed complete.
 - 2026-10-08: Step 2 reviewed at `d84f8c4`. Root independently confirmed identical bodies for all 17 moved files. Independent review accepts the five responsibility namespaces and imports. All 173 tests, training historical parity, generated binding/JSON/delegates/native imports, fresh macOS ARM64 AOT publish and bounded real-model smoke passed. Step 3 alone is assigned next; checkpoint A remains mandatory before UI implementation.
+- 2026-10-08: Step 3 reviewed at `053868d`. Diagnostics/report serialization/tiny fixture now have a separate tool boundary. All 173 tests, managed probes, Release/osx-arm64 compile/dependency proof, publish exclusions, real native gameplay and full native integration pass. Review corrected overbroad asset exclusions and a relative-root help example; fixture checks establish both corrections. CI invokes tool/boundary checks separately. Only macOS ARM64 native execution is claimed.
+
+## Checkpoint A — reconciliation after step 3
+
+The first three commits meet their intended scope. Canonical tracker/strict ONNX policies and explicit runtime fallback remain the sole gameplay implementations; training has direct golden/historical evidence. Production's evaluated graph contains no project references, only the two intended runtime package references and the frozen real model. Native gameplay works without diagnostic dispatch, report types or the tiny model. The native telemetry guard remains necessary production code. Root and independent review accept this boundary, and the checkout was clean at the worker stop.
+
+Keep the seven-step decomposition; no extra engine/library split or runtime dependency is justified. Refine the remaining gates before new work:
+
+- Step 4 follows the completed native select/dialog research. Measure the identical old/default panel first at 1366×900, 390×844 and 320×800; require at least 50% reduction and the stated height targets. Protect fresh-tab LAN sharing, active/search/challenge locking, dialog paddle-input suppression, deferred focus invalidation, retry/unavailable access and exact bot/round action races. Real browser evidence supplements fake-DOM tests. Retain full configured profiles on demand, with no new UI package.
+- Step 5 stays a separate managed-host BDN coverage project with six cases, then twelve only after generated native-child validation. Read current skill references, resolve the latest compatible stable package through the CLI, derive selected-case coverage before execution, and propagate failed child/validation results. Explicit child content roots avoid cwd differences. Prefer the researched conventional warmup/iteration comparison; optional apples mode must disclose its forced one-warmup semantics. One invocation remains one actual prepared-session decision.
+- Step 6 rechecks the production graph after the central BDN version is added: central version metadata alone is not a production dependency. Complete technical/browser/native integration, inspect measured artifacts and optimize only supported findings. No historical speedup or native-allocation claim follows from the scoped benchmark.
+- Step 7 updates all currently stale production diagnostic commands and layout references, with clearly historical evidence retained. Final delivery requires clean conventional history and actual platform/measurement limits.
+
+Checkpoint A is complete before assigning step 4. Checkpoint B remains mandatory after step 6.

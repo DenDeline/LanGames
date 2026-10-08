@@ -30,19 +30,19 @@ async function main() {
   ]);
 
   globalThis.Element = class {
-    constructor(editable = false) {
+    constructor(editable = false, parentElement = null) {
       this.editable = editable;
+      this.parentElement = parentElement;
+      this.open = false;
     }
     closest(selector) {
       const tag =
         typeof this.editable === "string" ? this.editable : this.editable ? "input" : null;
-      return tag &&
-        selector
-          .split(",")
-          .map((part) => part.trim())
-          .includes(tag)
-        ? this
-        : null;
+      const matches = selector.split(",").some((part) => {
+        const candidate = part.trim();
+        return candidate === tag || (candidate === "dialog[open]" && tag === "dialog" && this.open);
+      });
+      return matches ? this : (this.parentElement?.closest(selector) ?? null);
     }
   };
   globalThis.window = eventTarget();
@@ -116,6 +116,40 @@ async function main() {
     window.dispatch("keydown", { key: "ArrowDown", target: new Element("select") }).prevented,
     undefined,
   );
+  assert.equal(input.axis, 0);
+
+  const picker = new Element("dialog");
+  picker.open = true;
+  const pickerButton = new Element("button", picker);
+  const pickerHeading = new Element("h2", picker);
+  const pickerLabel = new Element("label", picker);
+  const pickerDetails = new Element("span", new Element("p", picker));
+  for (const target of [picker, pickerButton, pickerHeading, pickerLabel, pickerDetails]) {
+    for (const key of ["ArrowUp", "ArrowDown", "w", "s"]) {
+      assert.equal(
+        window.dispatch("keydown", { key, target }).prevented,
+        undefined,
+        "Every open-dialog descendant keeps native keyboard handling",
+      );
+      assert.equal(input.axis, 0, "Dialog navigation must not move the paddle");
+    }
+  }
+  window.dispatch("keydown", { key: "ArrowDown" });
+  assert.equal(input.axis, 1);
+  document.dispatch("focusin", { target: pickerButton });
+  assert.equal(input.axis, 0, "Entering a dialog button clears held keyboard input");
+  upButton.dispatch("pointerdown", { pointerId: 41 });
+  assert.equal(input.axis, -1);
+  document.dispatch("focusin", { target: pickerHeading });
+  assert.equal(input.axis, 0, "Entering dialog content clears held touch input too");
+  picker.open = false;
+  assert.equal(
+    window.dispatch("keydown", { key: "w", target: pickerButton }).prevented,
+    true,
+    "A closed dialog does not globally suppress normal game keyboard handling",
+  );
+  assert.equal(input.axis, -1);
+  window.dispatch("keyup", { key: "w", target: pickerButton });
   assert.equal(input.axis, 0);
 
   assert.equal(upButton.dispatch("pointerdown", { pointerId: 42 }).prevented, true);

@@ -19,71 +19,37 @@
   font-size: 13px;
   line-height: 1.55;
 }
-.tab-list {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  margin-bottom: 21px;
-  padding: 4px;
-  border: 1px solid #2a374b;
-  border-radius: 9px;
-  background: #0e1725;
+.connect-panel {
+  padding: 20px;
 }
-.tab {
-  min-height: 35px;
-  padding: 6px 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 760;
+.connect-panel .panel-header h2 {
+  margin: 6px 0 14px;
+  font-size: 20px;
+  line-height: 1.2;
 }
-.tab.is-active {
-  background: #25364a;
-  color: var(--text);
-  box-shadow: 0 2px 8px #03091140;
-}
-.tab-panel label,
+.mode-panel label,
+.game-mode-field label,
 .nickname-field label {
   display: block;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   color: #cdd8e5;
   font-size: 12px;
   font-weight: 700;
+  line-height: 1.2;
 }
+.game-mode-field,
 .nickname-field {
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 .bot-offer {
-  margin-bottom: 10px;
-  padding: 15px;
+  margin: 0;
+  padding: 12px;
   border: 1px solid #3d756f;
   border-radius: 10px;
   background: linear-gradient(135deg, #193d42a8, #142638a8);
 }
-.bot-label {
-  display: block;
-  margin-bottom: 7px;
-  color: var(--cyan);
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-}
-.bot-offer p {
-  margin: 0 0 12px;
-  color: #c4d5dd;
-  font-size: 12px;
-  line-height: 1.5;
-}
 .bot-button {
   width: 100%;
-}
-.mode-divider {
-  margin: 5px 0 15px;
-  color: var(--muted);
-  font-size: 11px;
-  text-align: center;
 }
 .quick-description {
   margin: 0 0 14px;
@@ -184,7 +150,7 @@ button:disabled {
 .share-box[hidden],
 .discovery-results[hidden],
 .selected-host[hidden],
-.tab-panel[hidden] {
+.mode-panel[hidden] {
   display: none;
 }
 .share-label {

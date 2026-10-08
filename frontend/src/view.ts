@@ -37,8 +37,18 @@ export const ui = {
   declineButton: element<HTMLButtonElement>("decline-button"),
   liveIndicator: element("live-indicator"),
   liveLabel: element("live-label"),
-  quickTab: element<HTMLButtonElement>("tab-host"),
-  joinTab: element<HTMLButtonElement>("tab-join"),
+  gameMode: element<HTMLSelectElement>("game-mode"),
+  botPanel: element("bot-panel"),
+  botPicker: element<HTMLDialogElement>("bot-picker"),
+  botPickerTitle: element("bot-picker-title"),
+  botPickerOpen: element<HTMLButtonElement>("bot-picker-open"),
+  botPickerClose: element<HTMLButtonElement>("bot-picker-close"),
+  botPickerDone: element<HTMLButtonElement>("bot-picker-done"),
+  botSummaryAvatar: element("bot-summary-avatar"),
+  botSummaryName: element("bot-summary-name"),
+  botSummaryDifficulty: element("bot-summary-difficulty"),
+  botSummaryAvailability: element("bot-summary-availability"),
+  botSummaryStatus: element("bot-summary-status"),
   quickPanel: element("quick-panel"),
   joinPanel: element("join-panel"),
   quickForm: element<HTMLFormElement>("quick-form"),
@@ -90,7 +100,22 @@ let nicknameWasEdited = false;
 let preferredNickname: string | null = null;
 let wasActive = false;
 let botCatalogRevision = 0;
+type GameMode = "bot" | "quick" | "join";
+let idleMode: GameMode = "bot";
+let displayedMode: GameMode = "bot";
+let quickGameRequested = false;
+let quickGameAccepted = false;
+let quickGameObserved = false;
+let setupLocked = false;
 const catalogView = new BotCatalogView({
+  dialog: ui.botPicker,
+  opener: ui.botPickerOpen,
+  title: ui.botPickerTitle,
+  summaryAvatar: ui.botSummaryAvatar,
+  summaryName: ui.botSummaryName,
+  summaryDifficulty: ui.botSummaryDifficulty,
+  summaryAvailability: ui.botSummaryAvailability,
+  summaryStatus: ui.botSummaryStatus,
   fieldset: ui.botCatalog,
   groups: ui.botCatalogGroups,
   status: ui.botCatalogStatus,
@@ -174,14 +199,48 @@ function writeText(element: HTMLElement, value: string | number): void {
   if (element.textContent !== text) element.textContent = text;
 }
 
-export function setTab(tab: "quick" | "join"): void {
-  const isQuick = tab === "quick";
-  ui.quickTab.classList.toggle("is-active", isQuick);
-  ui.joinTab.classList.toggle("is-active", !isQuick);
-  ui.quickTab.setAttribute("aria-selected", String(isQuick));
-  ui.joinTab.setAttribute("aria-selected", String(!isQuick));
-  ui.quickPanel.hidden = !isQuick;
-  ui.joinPanel.hidden = isQuick;
+export function isSetupLocked(): boolean {
+  return setupLocked;
+}
+
+export function setGameMode(mode: string): void {
+  if (!setupLocked && (mode === "bot" || mode === "quick" || mode === "join")) {
+    idleMode = mode;
+    catalogView.closePicker(false);
+  }
+  presentMode(setupLocked ? displayedMode : idleMode);
+}
+
+function presentMode(mode: GameMode): void {
+  displayedMode = mode;
+  ui.gameMode.value = mode;
+  ui.botPanel.hidden = mode !== "bot";
+  ui.quickPanel.hidden = mode !== "quick";
+  ui.joinPanel.hidden = mode !== "join";
+}
+
+export function noteQuickGameStart(): void {
+  quickGameRequested = true;
+  quickGameAccepted = false;
+  quickGameObserved = false;
+}
+
+export function acceptQuickGameStart(): void {
+  quickGameAccepted = true;
+}
+
+export function clearQuickGameIntent(): void {
+  quickGameRequested = false;
+  quickGameAccepted = false;
+  quickGameObserved = false;
+}
+
+export function openBotPicker(): void {
+  if (displayedMode === "bot" && !setupLocked) catalogView.openPicker();
+}
+
+export function closeBotPicker(restoreFocus = true): void {
+  catalogView.closePicker(restoreFocus);
 }
 
 export function setBotCatalog(
@@ -329,6 +388,21 @@ function renderAddresses(snapshot: PongSnapshot): void {
 export function render(snapshot: PongSnapshot, busy: boolean, discovering: boolean): void {
   const inGame = snapshot.role === "host" || snapshot.role === "guest";
   const active = inGame || snapshot.connection === "searching";
+  setupLocked = busy || active;
+  catalogView.setDisabled(setupLocked);
+  if (quickGameRequested && active && snapshot.opponentMode !== "bot") quickGameObserved = true;
+  // An accepted quick reply may follow a newer pre-action idle frame. Keep its
+  // origin until the resulting session is observed, without applying stale data.
+  if (!active && !busy && (quickGameObserved || !quickGameAccepted)) clearQuickGameIntent();
+  presentMode(
+    !active
+      ? idleMode
+      : snapshot.opponentMode === "bot"
+        ? "bot"
+        : snapshot.role === "guest" && !quickGameRequested
+          ? "join"
+          : "quick",
+  );
   if (active && snapshot.localNickname && ui.playerNickname.value !== snapshot.localNickname)
     ui.playerNickname.value = snapshot.localNickname;
   else if (!active && wasActive && preferredNickname) ui.playerNickname.value = preferredNickname;
@@ -344,6 +418,7 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
     snapshot.effectiveBotName,
     snapshot.botFallbackReason,
     botCatalogRevision,
+    displayedMode,
     snapshot.opponentMode,
     snapshot.opponentFallbackActive,
     snapshot.connection,
@@ -484,8 +559,11 @@ export function render(snapshot: PongSnapshot, busy: boolean, discovering: boole
 
   ui.quickButton.disabled = busy || active;
   ui.botButton.disabled = busy || active || getSelectedBotId() === null;
-  catalogView.setDisabled(busy || active || getSelectedBotId() === null);
   ui.botCatalogRetry.disabled = busy || active;
+  ui.gameMode.disabled = setupLocked;
+  ui.clearSelectedHost.disabled = setupLocked;
+  for (const button of ui.discoveryResults.querySelectorAll<HTMLButtonElement>("button"))
+    button.disabled = setupLocked;
   writeText(
     ui.quickButton,
     snapshot.connection === "searching"

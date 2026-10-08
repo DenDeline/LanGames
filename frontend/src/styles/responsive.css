@@ -73,9 +73,26 @@
   }
   .sidebar {
     display: flex;
+    align-items: stretch;
   }
   .panel {
     padding: 19px;
+  }
+  .bot-picker-header {
+    gap: 12px;
+    padding: 16px;
+  }
+  .bot-picker-header h2 {
+    font-size: 19px;
+  }
+  .bot-picker-header p {
+    font-size: 11px;
+  }
+  .bot-picker-body {
+    padding: 16px;
+  }
+  .bot-picker-footer {
+    padding: 12px 16px;
   }
   .touch-controls {
     display: flex;

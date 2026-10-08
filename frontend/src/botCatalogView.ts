@@ -1,6 +1,14 @@
 import type { BotCatalogEntry, BotCatalogResponse } from "./botCatalog.js";
 
 interface CatalogElements {
+  dialog: HTMLDialogElement;
+  opener: HTMLButtonElement;
+  title: HTMLElement;
+  summaryAvatar: HTMLElement;
+  summaryName: HTMLElement;
+  summaryDifficulty: HTMLElement;
+  summaryAvailability: HTMLElement;
+  summaryStatus: HTMLElement;
   fieldset: HTMLFieldSetElement;
   groups: HTMLElement;
   status: HTMLElement;
@@ -63,7 +71,7 @@ export class BotCatalogView {
   private rememberedId: string | null = null;
   private structureKey: string | null = null;
   private nextGroupId = 0;
-  private pendingFocusId: string | null = null;
+  private disabled = false;
 
   constructor(private readonly elements: CatalogElements) {}
 
@@ -79,16 +87,19 @@ export class BotCatalogView {
     this.catalog = catalog;
     this.elements.retry.hidden = error === null;
     if (catalog === null) {
-      this.pendingFocusId = null;
       this.selectedId = null;
       this.structureKey = null;
       this.elements.groups.replaceChildren();
       this.elements.profile.hidden = true;
       this.elements.status.dataset.state = error === null ? "loading" : "error";
+      this.elements.summaryStatus.dataset.state = this.elements.status.dataset.state;
       text(this.elements.status, error ?? "Загружаем список соперников…");
+      text(this.elements.summaryStatus, this.elements.status.textContent ?? "");
+      this.elements.summaryStatus.hidden = false;
+      this.updateSummary(null);
       text(this.elements.play, "Играть с ботом");
-      if (focusedId !== undefined && error !== null)
-        this.elements.retry.focus({ preventScroll: true });
+      if (this.elements.dialog.open && !this.disabled && focusedId !== undefined && error !== null)
+        this.elements.retry.focus();
       return;
     }
 
@@ -141,6 +152,7 @@ export class BotCatalogView {
     for (const category of this.groups.keys())
       if (!grouped.has(category)) this.groups.delete(category);
     this.elements.status.dataset.state = this.selectedId === null ? "empty" : "ready";
+    this.elements.summaryStatus.dataset.state = this.elements.status.dataset.state;
     text(
       this.elements.status,
       bots.length === 0
@@ -149,6 +161,9 @@ export class BotCatalogView {
           ? "Сейчас все боты недоступны. Вы можете сыграть с другом по сети."
           : "Выберите соперника. Вы управляете левой ракеткой.",
     );
+    text(this.elements.summaryStatus, this.elements.status.textContent ?? "");
+    this.elements.summaryStatus.hidden = this.selectedId !== null;
+    this.elements.retry.hidden = this.selectedId !== null;
     this.applySelection();
     if (focusedId !== undefined && document.activeElement !== this.cards.get(focusedId)?.radio) {
       const previousFocus = this.cards.get(focusedId);
@@ -159,6 +174,7 @@ export class BotCatalogView {
             ? null
             : this.cards.get(this.selectedId);
       if (target) this.restoreFocus(target.radio.value);
+      else if (this.elements.dialog.open && !this.disabled) this.focusSelection();
     } else if (
       ((focusedId !== undefined && this.cards.get(focusedId)?.radio.disabled) || retryWasFocused) &&
       this.selectedId !== null
@@ -168,25 +184,55 @@ export class BotCatalogView {
   }
 
   setDisabled(disabled: boolean): void {
+    this.disabled = disabled;
     this.elements.fieldset.disabled = disabled;
-    if (!disabled && this.pendingFocusId !== null) {
-      const pendingId = this.pendingFocusId;
-      this.pendingFocusId = null;
-      this.restoreFocus(pendingId);
-    }
+    this.elements.opener.disabled = disabled;
+    if (disabled) this.closePicker(false);
+  }
+
+  openPicker(): void {
+    if (this.disabled || this.elements.dialog.open) return;
+    this.elements.dialog.showModal();
+    this.focusSelection();
+  }
+
+  closePicker(restoreFocus = true): void {
+    if (!this.elements.dialog.open) return;
+    this.elements.dialog.close();
+    // Native close events are asynchronous. Restore only in this user action,
+    // never from a later event that could override accepted match arena focus.
+    if (restoreFocus && !this.disabled && !this.elements.opener.disabled)
+      this.elements.opener.focus({ preventScroll: true });
+  }
+
+  private focusSelection(): void {
+    if (!this.elements.dialog.open || this.disabled) return;
+    const selected = this.selectedId === null ? null : this.cards.get(this.selectedId)?.radio;
+    const target =
+      selected && !selected.disabled
+        ? selected
+        : !this.elements.retry.hidden && !this.elements.retry.disabled
+          ? this.elements.retry
+          : this.elements.title;
+    // Native focus scrolls a selected radio/retry into the bounded dialog body.
+    target.focus();
   }
 
   private restoreFocus(id: string): void {
     const radio = this.cards.get(id)?.radio;
-    if (!radio || radio.disabled) return;
-    if (this.elements.fieldset.disabled) {
-      this.pendingFocusId = id;
+    if (
+      !radio ||
+      radio.disabled ||
+      this.disabled ||
+      this.elements.fieldset.disabled ||
+      !this.elements.dialog.open
+    )
       return;
-    }
-    radio.focus({ preventScroll: true });
+    radio.focus();
   }
 
   updateSelection(): void {
+    if (this.disabled) return;
     const checked = this.elements.fieldset.querySelector<HTMLInputElement>(
       'input[name="botId"]:checked',
     );
@@ -274,6 +320,7 @@ export class BotCatalogView {
       card.label.classList.toggle("is-selected", id === this.selectedId);
     }
     const selected = this.catalog?.bots.find((bot) => bot.id === this.selectedId);
+    this.updateSummary(selected ?? null);
     this.elements.profile.hidden = !selected;
     if (!selected) {
       text(this.elements.play, "Играть с ботом");
@@ -298,5 +345,16 @@ export class BotCatalogView {
           : `Играть с «${substitute.name}»`
         : `Играть с «${selected.name}»`,
     );
+  }
+
+  private updateSummary(selected: BotCatalogEntry | null): void {
+    const visual = selected ? avatar(selected) : "?";
+    this.elements.summaryAvatar.dataset.dense = String(Array.from(visual).length > 3);
+    text(this.elements.summaryAvatar, visual);
+    text(this.elements.summaryName, selected?.name ?? "Выберите соперника");
+    text(this.elements.summaryDifficulty, selected?.difficulty ?? "");
+    text(this.elements.summaryAvailability, selected ? this.availabilityText(selected) : "");
+    this.elements.summaryAvailability.hidden = selected === null;
+    this.elements.summaryAvailability.dataset.state = selected?.availability ?? "empty";
   }
 }

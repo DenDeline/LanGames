@@ -36,7 +36,7 @@ export class InputController {
       if (!["w", "s", "arrowup", "arrowdown"].includes(key)) return;
       if (
         event.target instanceof Element &&
-        event.target.closest("input, textarea, select, [contenteditable]")
+        event.target.closest("input, textarea, select, [contenteditable], dialog[open]")
       )
         return;
       event.preventDefault();
@@ -56,7 +56,7 @@ export class InputController {
     document.addEventListener("focusin", (event) => {
       if (
         event.target instanceof Element &&
-        event.target.closest("input, textarea, select, [contenteditable]")
+        event.target.closest("input, textarea, select, [contenteditable], dialog[open]")
       )
         this.clear();
     });

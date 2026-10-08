@@ -1,3 +1,143 @@
+.bot-summary-row {
+  display: flex;
+  align-items: start;
+  gap: 10px;
+  min-width: 0;
+  margin-bottom: 12px;
+}
+.bot-summary {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.bot-summary-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.bot-summary-heading .bot-avatar {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  font-size: 17px;
+}
+.bot-summary-heading .bot-avatar[data-dense="true"] {
+  font-size: 7px;
+}
+.bot-summary-copy {
+  min-width: 0;
+}
+#bot-summary-name {
+  margin: 0 0 3px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+#bot-summary-difficulty {
+  display: block;
+  color: var(--cyan);
+  font-size: 11px;
+  line-height: 1.25;
+}
+#bot-summary-availability,
+#bot-summary-status {
+  margin: 8px 0 0;
+  color: #a3d3ce;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+#bot-summary-status {
+  margin: 0 0 12px;
+  color: #a5bdc9;
+}
+#bot-summary-availability[data-state="unavailable"],
+#bot-summary-status[data-state="error"] {
+  color: #ffd0a4;
+}
+.bot-picker-open {
+  flex: none;
+  min-height: 44px;
+  padding-inline: 10px;
+  font-size: 11px;
+}
+.bot-picker {
+  width: min(600px, calc(100% - 24px));
+  max-width: none;
+  max-height: min(760px, calc(100dvh - 24px));
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid #3c5265;
+  border-radius: 20px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 24px 80px #0009;
+}
+.bot-picker[open] {
+  display: flex;
+  flex-direction: column;
+}
+.bot-picker:not([open]),
+.bot-summary[hidden],
+#bot-summary-availability[hidden],
+#bot-summary-status[hidden] {
+  display: none;
+}
+.bot-picker::backdrop {
+  background: #030815b3;
+  backdrop-filter: blur(4px);
+}
+.bot-picker-header {
+  display: flex;
+  flex: none;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px;
+  border-bottom: 1px solid var(--line);
+}
+.bot-picker-header > div {
+  min-width: 0;
+}
+.bot-picker-header h2 {
+  margin: 0;
+  font-size: 21px;
+  line-height: 1.2;
+  letter-spacing: -0.03em;
+  overflow-wrap: anywhere;
+}
+.bot-picker-header p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+#bot-picker-close,
+#bot-picker-done {
+  flex: none;
+  min-height: 44px;
+}
+.bot-picker-body {
+  min-height: 0;
+  padding: 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.bot-picker-footer {
+  display: flex;
+  flex: none;
+  justify-content: end;
+  padding: 14px 20px;
+  border-top: 1px solid var(--line);
+}
+#bot-picker-done {
+  min-width: 110px;
+}
 .bot-catalog {
   min-width: 0;
   margin: 0 0 14px;
@@ -31,7 +171,7 @@
   display: grid;
   gap: 8px;
 }
-.bot-offer .bot-card {
+.bot-picker .bot-card {
   display: grid;
   grid-template-columns: 18px 38px minmax(0, 1fr);
   align-items: start;
@@ -48,16 +188,16 @@
     background-color 0.15s,
     border-color 0.15s;
 }
-.bot-offer .bot-card:hover {
+.bot-picker .bot-card:hover {
   border-color: #56838a;
   background: #18303ccc;
 }
-.bot-offer .bot-card.is-selected {
+.bot-picker .bot-card.is-selected {
   border-color: var(--cyan);
   background: #173c44cc;
   box-shadow: inset 0 0 0 1px #66e8df33;
 }
-.bot-offer .bot-card:has(input:focus-visible) {
+.bot-picker .bot-card:has(input:focus-visible) {
   outline: 2px solid var(--cyan);
   outline-offset: 3px;
 }
@@ -68,7 +208,7 @@
 .bot-catalog:disabled .bot-card {
   cursor: default;
 }
-.bot-offer .bot-card input[type="radio"] {
+.bot-picker .bot-card input[type="radio"] {
   width: 18px;
   height: 18px;
   min-width: 18px;
@@ -149,7 +289,7 @@
 }
 .bot-profile {
   min-width: 0;
-  margin: 0 0 14px;
+  margin: 0;
   padding: 15px;
   border: 1px solid #44626e;
   border-radius: 11px;
@@ -185,6 +325,12 @@
   font-size: 18px;
   line-height: 1.2;
 }
+#bot-profile-description {
+  margin: 0 0 12px;
+  color: #c4d5dd;
+  font-size: 12px;
+  line-height: 1.5;
+}
 .bot-profile-details {
   display: grid;
   gap: 9px;
@@ -208,14 +354,15 @@
   font-weight: 700;
   line-height: 1.45;
 }
-.bot-offer .bot-profile-availability {
+.bot-profile-availability {
   margin: 0;
   padding-top: 10px;
   border-top: 1px solid #355763;
   color: #a3d3ce;
   font-size: 11px;
+  line-height: 1.5;
 }
-.bot-offer .bot-profile-availability[data-state="unavailable"] {
+.bot-profile-availability[data-state="unavailable"] {
   color: #ffd0a4;
 }
 .bot-button {
