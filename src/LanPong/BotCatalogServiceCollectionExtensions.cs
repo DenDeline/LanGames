@@ -4,6 +4,15 @@ namespace LanPong;
 
 internal static class BotCatalogServiceCollectionExtensions
 {
+    public static IServiceCollection AddConfiguredBots(this IServiceCollection services, IConfiguration configuration)
+    {
+        services.AddBotCatalog(configuration);
+        services.AddSingleton<IBotStrategyFactory, TrackerBotStrategyFactory>();
+        services.AddSingleton<IBotStrategyFactory, OnnxBotStrategyFactory>();
+        services.AddSingleton<BotRuntime>();
+        return services;
+    }
+
     public static IServiceCollection AddBotCatalog(this IServiceCollection services, IConfiguration configuration)
     {
         services.AddSingleton(new BotStrategyDescriptor(BotStrategyDescriptor.TrackerId, BotSettingsKind.Tracker));

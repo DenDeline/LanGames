@@ -2,6 +2,7 @@ using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using LanPong;
+using Microsoft.Extensions.Options;
 
 if (args.Length == 1 && args[0] == "--onnx-smoke")
 {
@@ -19,11 +20,25 @@ if (args.Length == 1 && args[0] == "--hard-benchmark")
     return;
 }
 
+try
+{
+    if (ConfiguredBotDiagnostics.ParseCommand(args) is { } benchmark)
+    {
+        ConfiguredBotDiagnostics.Run(benchmark, Console.Out);
+        return;
+    }
+}
+catch (Exception error)
+{
+    Console.Error.WriteLine(error is ArgumentException or InvalidOperationException or OptionsValidationException
+        ? $"Configured bot benchmark failed: {error.Message}"
+        : "Configured bot benchmark failed during configuration or preparation.");
+    Environment.ExitCode = 1;
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddBotCatalog(builder.Configuration);
-builder.Services.AddSingleton<IBotStrategyFactory, TrackerBotStrategyFactory>();
-builder.Services.AddSingleton<IBotStrategyFactory, OnnxBotStrategyFactory>();
-builder.Services.AddSingleton<BotRuntime>();
+builder.Services.AddConfiguredBots(builder.Configuration);
 builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.TypeInfoResolverChain.Insert(0, AppJsonSerializerContext.Default));
 builder.Services.AddSingleton<PongPeer>();

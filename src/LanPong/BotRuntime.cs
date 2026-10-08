@@ -226,6 +226,10 @@ internal sealed class PreparedBotSession : ILocalOpponentController, IDisposable
     public string? FallbackReason { get; private set; }
     public bool IsPlayable => !_disposed && _current < _candidates.Count;
 
+    // Diagnostic metadata is read after preparation, never during gameplay decisions.
+    internal string? VerifiedModelSha256 => IsPlayable &&
+        _candidates[_current].Controller is OnnxLocalOpponentController onnx ? onnx.ModelSha256 : null;
+
     public int GetAxis(GameState state)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
